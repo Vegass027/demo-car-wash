@@ -1,0 +1,3 @@
+ALTER TABLE bookings 
+ADD COLUMN is_paid BOOLEAN DEFAULT false,
+ADD COLUMN paid_at TIMESTAMP NULL;

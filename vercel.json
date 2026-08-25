@@ -1,0 +1,17 @@
+{
+  "functions": {
+    "api/**/*.ts": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/reset-daily",
+      "schedule": "0 17 * * *"
+    },
+    {
+      "path": "/api/cleanup-expired-payments",
+      "schedule": "0 18 * * *"
+    }
+  ]
+}
