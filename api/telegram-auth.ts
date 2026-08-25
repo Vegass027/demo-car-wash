@@ -36,7 +36,7 @@ const supabaseAdmin = createClient(
  *   - `hash` param missing
  *   - `auth_date` older than 24 hours
  */
-function verifyTelegramInitData(
+export function verifyTelegramInitData(
   initData: string,
   botToken: string
 ): { valid: boolean; user?: any } {
@@ -78,7 +78,7 @@ function verifyTelegramInitData(
 /**
  * Base64URL encoder for JWT (RFC 7515 §2 — base64url without padding).
  */
-function base64url(input: Buffer | string): string {
+export function base64url(input: Buffer | string): string {
   const buf = typeof input === 'string' ? Buffer.from(input) : input;
   return buf
     .toString('base64')
@@ -97,7 +97,7 @@ function base64url(input: Buffer | string): string {
  *   sig     = base64url(HMAC-SHA256(secret, header + "." + payload))
  *   token   = header + "." + payload + "." + sig
  */
-function signJwt(payload: object, secret: string): string {
+export function signJwt(payload: object, secret: string): string {
   const header = { alg: 'HS256', typ: 'JWT' };
   const encodedHeader = base64url(JSON.stringify(header));
   const encodedPayload = base64url(JSON.stringify(payload));
