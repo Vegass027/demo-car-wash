@@ -190,13 +190,18 @@ export default async function handler(req: any, res: any) {
       .single();
 
     if (created) {
-      // Create linked clients row (replaces old anon-insert in ClientBookingWrapper)
-      await supabaseAdmin.from('clients').insert({
+      // Create linked clients row (replaces old anon-insert in ClientBookingWrapper).
+      // Phone is NOT NULL in clients table; we don't have one from Telegram initData,
+      // so insert '' as placeholder. Real phone comes later via /api/link-client-profile.
+      const { error: clientErr } = await supabaseAdmin.from('clients').insert({
         profile_id: created.id,
         full_name: created.full_name,
-        phone: created.phone || null,
+        phone: created.phone || '',
         is_active: true,
       });
+      if (clientErr) {
+        console.error('[telegram-auth] clients insert error:', clientErr);
+      }
     }
     profile = created;
   }
