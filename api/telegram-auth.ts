@@ -146,17 +146,16 @@ export default async function handler(req: any, res: any) {
   // 1. Verify HMAC signature
   const { valid, user } = verifyTelegramInitData(initData, botToken);
 
-  // 2. Log attempt (best effort — don't fail request if logging fails)
-  try {
-    await supabaseAdmin.from('auth_logs').insert({
-      telegram_id: user?.id ?? null,
-      success: valid && !!user?.id,
-      ip_address: getClientIp(req),
-      user_agent: getUserAgent(req),
-      auth_method: 'telegram',
-    });
-  } catch (e) {
-    console.error('[telegram-auth] Failed to log auth attempt:', e);
+  // 2. Log attempt (debug: not catching so we see real error if INSERT fails)
+  const { error: logError } = await supabaseAdmin.from('auth_logs').insert({
+    telegram_id: user?.id ?? null,
+    success: valid && !!user?.id,
+    ip_address: getClientIp(req),
+    user_agent: getUserAgent(req),
+    auth_method: 'telegram',
+  });
+  if (logError) {
+    console.error('[telegram-auth] auth_logs insert error:', logError);
   }
 
   if (!valid || !user?.id) {
