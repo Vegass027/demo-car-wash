@@ -180,6 +180,7 @@ export default async function handler(req: any, res: any) {
     const { data: created } = await supabaseAdmin
       .from('profiles')
       .insert({
+        id: crypto.randomUUID(), // ← explicit, since profiles.id has no DEFAULT
         role: 'client', // ← hardcoded, never from body
         full_name: fullName,
         telegram_id: user.id,
