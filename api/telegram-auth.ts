@@ -149,7 +149,7 @@ export default async function handler(req: any, res: any) {
   // 2. Log attempt (best effort — don't fail request if logging fails)
   try {
     await supabaseAdmin.from('auth_logs').insert({
-      login: `tg:${user?.id ?? 'unknown'}`,
+      telegram_id: user?.id ?? null,
       success: valid && !!user?.id,
       ip_address: getClientIp(req),
       user_agent: getUserAgent(req),
