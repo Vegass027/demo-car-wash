@@ -1,0 +1,245 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Telegram Mini App Safe Areas */
+:root {
+  --is-telegram: false;
+  --tg-header-height: 0px;
+  --tg-safe-area-top: 0px;
+  --tg-safe-area-bottom: 0px;
+  /* Динамическая высота viewport для планшетов и мобильных устройств */
+  --vh: 1vh;
+}
+
+/* Если запущено в Telegram - применяем padding для хедера */
+html[data-is-telegram="true"] {
+  --tg-header-height: 56px;
+}
+
+/* Safe area insets из системы (для PWA на iOS/Android) */
+@supports (padding: env(safe-area-inset-top)) {
+  :root {
+    --tg-safe-area-top: env(safe-area-inset-top);
+    --tg-safe-area-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+    caret-color: hsl(var(--foreground));
+    touch-action: manipulation;
+  }
+
+  /* Для Safari PWA - убрать 300ms delay */
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* CSS hack для кнопок в Safari PWA */
+  button {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    cursor: pointer;
+  }
+
+  *::selection {
+    background-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+
+  html, body {
+    height: 100%;
+    min-height: 100%;
+    /* Блокируем overscroll behavior для PWA Safari - предотвращает "резиновый" скролл
+       который может смещать координаты touch events после программного скролла */
+    overscroll-behavior: none;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+
+  /* В Telegram: фиксируем высоту и блокируем скролл на body */
+  html[data-is-telegram="true"] {
+    overflow: hidden;
+  }
+
+  html[data-is-telegram="true"] body {
+    height: var(--tg-viewport-height, 100vh);
+    overflow: hidden;
+    /* Отступ сверху для хедера Telegram + safe area */
+    padding-top: calc(var(--tg-header-height, 0px) + var(--tg-safe-area-top, 0px));
+  }
+
+  /* В браузере (ПК): разрешаем скролл и убираем ограничения */
+  html[data-is-telegram="false"] {
+    overflow-y: auto;
+  }
+
+  html[data-is-telegram="false"] body {
+    height: auto;
+    min-height: 100vh;
+    overflow-y: auto;
+    padding-top: 0;
+  }
+
+  /* PWA на мобильных устройствах: добавляем safe area padding */
+  @supports (padding: env(safe-area-inset-top)) {
+    html[data-is-telegram="false"] body {
+      padding-top: env(safe-area-inset-top);
+    }
+  }
+  
+  #root {
+    min-height: 100%;
+    position: relative;
+  }
+
+  /* В Telegram: root занимает фиксированную высоту */
+  html[data-is-telegram="true"] #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  /* В браузере: root занимает всю высоту контента */
+  html[data-is-telegram="false"] #root {
+    height: auto;
+    overflow: visible;
+  }
+}
+
+/* Mobile scroll improvements */
+@layer utilities {
+  .scroll-mobile {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+  
+  .scroll-mobile::-webkit-scrollbar {
+    width: 4px;
+  }
+  
+  .scroll-mobile::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .scroll-mobile::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 2px;
+  }
+}
+
+/* Стили скроллбара для ПК */
+html[data-is-telegram="false"] ::-webkit-scrollbar {
+  width: 8px;
+}
+
+html[data-is-telegram="false"] ::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+}
+
+html[data-is-telegram="false"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+html[data-is-telegram="false"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Скрываем скроллбар в Telegram для чистого UI */
+html[data-is-telegram="true"] ::-webkit-scrollbar {
+  width: 0;
+  background: transparent;
+}
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 222.2 84% 4.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 222.2 84% 4.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222.2 84% 4.9%;
+  --primary: 0 0% 0%;
+  --primary-foreground: 210 40% 98%;
+  --secondary: 210 40% 96.1%;
+  --secondary-foreground: 222.2 47.4% 11.2%;
+  --muted: 210 40% 96.1%;
+  --muted-foreground: 215.4 16.3% 46.9%;
+  --accent: 210 40% 96.1%;
+  --accent-foreground: 222.2 47.4% 11.2%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 214.3 31.8% 91.4%;
+  --input: 214.3 31.8% 91.4%;
+  --ring: 222.2 84% 4.9%;
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --popover: 222.2 84% 4.9%;
+  --popover-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 212.7 26.8% 83.9%;
+}
+
+/* Telegram Mini App specific styles */
+.telegram-safe-area-top {
+  padding-top: calc(var(--tg-header-height, 0px) + var(--tg-safe-area-top, 0px));
+}
+
+.telegram-safe-area-bottom {
+  padding-bottom: var(--tg-safe-area-bottom, 0px);
+}
+
+/* Prevent content from being hidden under Telegram header */
+.telegram-content-wrapper {
+  padding-top: calc(var(--tg-header-height, 0px) + var(--tg-safe-area-top, 0px));
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Full screen mode adjustments */
+body[data-tg-viewport-height] {
+  height: var(--tg-viewport-height);
+}
+
+body[data-tg-viewport-stable-height] {
+  height: var(--tg-viewport-stable-height);
+}
+
+/* Safe area padding для элементов с position: fixed или sticky */
+.pb-safe {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.pt-safe {
+  padding-top: max(1rem, env(safe-area-inset-top));
+}
+
+/* Анимации для прогресс-бара с эффектом воды */
+/* Примечание: Теперь все анимации реализованы через SVG в компоненте LiquidProgressBar */
+/* Старые CSS анимации удалены для оптимизации производительности */
