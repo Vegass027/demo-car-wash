@@ -20,7 +20,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { signJwt } from './_lib/jwt';
+import { signJwt } from './_lib/jwt.js';
 
 export const config = {
   maxDuration: 10, // 10s — 1 RPC + 1 INSERT + 1 JWT sign
