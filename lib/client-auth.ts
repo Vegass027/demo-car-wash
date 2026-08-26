@@ -48,7 +48,29 @@ export interface TelegramAuthResult {
   full_name?: string;
 }
 
+/**
+ * Inflight dedup for loginViaTelegram(). When 3 components mount in
+ * quick succession (e.g., navigate carwash → tire → garage in <1s),
+ * each calls loginViaTelegram() simultaneously → 3 parallel
+ * /api/telegram-auth requests, 3 audit_logs entries, last-arrival
+ * wins through setSessionToken. Dedup returns the same promise to
+ * all callers, so only 1 network round-trip.
+ *
+ * `finally { inflightAuth = null }` runs on both success and throw
+ * so a failed auth doesn't deadlock subsequent retries.
+ */
+let inflightAuth: Promise<TelegramAuthResult> | null = null;
+
 export async function loginViaTelegram(): Promise<TelegramAuthResult> {
+  if (inflightAuth) return inflightAuth;
+
+  inflightAuth = doLoginViaTelegram().finally(() => {
+    inflightAuth = null;
+  });
+  return inflightAuth;
+}
+
+async function doLoginViaTelegram(): Promise<TelegramAuthResult> {
   // 1. Init Telegram SDK (idempotent — safe to call multiple times).
   await initTelegramWebApp();
 
