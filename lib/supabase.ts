@@ -14,12 +14,12 @@
  */
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { wrappedFetch, setSessionToken } from './_supabase-wrapper';
+import { wrappedFetch, setSessionToken, registerSessionExpiredHandler, getSessionToken } from './_supabase-wrapper';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL!;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY!;
 
-export { setSessionToken };
+export { setSessionToken, registerSessionExpiredHandler, getSessionToken };
 
 export const supabase: SupabaseClient = createClient(
   supabaseUrl,

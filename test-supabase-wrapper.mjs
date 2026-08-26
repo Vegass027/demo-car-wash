@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const wrapperPath = path.join(process.cwd(), 'lib', '_supabase-wrapper.ts');
-const { setSessionToken, getSessionToken, wrappedFetch } =
+const { setSessionToken, getSessionToken, wrappedFetch, registerSessionExpiredHandler } =
   await import(pathToFileURL(wrapperPath).href);
 
 // Polyfill window so wrapper's isClientSession() works in Node.
@@ -174,6 +174,65 @@ test('T7: local retriedThisRequest — concurrent 401s each get their own retry 
   assert.equal(supabaseCalls401, 6, 'expected 6 supabase 401s (3 initial + 3 retries)');
   assert.equal(telegramAuthCalls, 3,
     `expected 3 telegram-auth calls (one per concurrent request), got ${telegramAuthCalls}`);
+});
+
+// ============================================================
+test('T9: 401 in STAFF mode with token — onSessionExpired handler fires, token cleared', async () => {
+  reset();
+  // Install own fetch mock that pushes to fetchCalls (T7's mock doesn't).
+  globalThis.fetch = async (url, options = {}) => {
+    const urlStr = String(url);
+    fetchCalls.push({
+      url: urlStr, method: options?.method || 'GET',
+      headers: extractHeaders(options?.headers), body: options?.body,
+    });
+    const next = fetchResponses.shift() || { status: 200, body: [] };
+    return new Response(JSON.stringify(next.body), {
+      status: next.status, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  setSessionToken('staff.token');
+  let handlerCalls = 0;
+  registerSessionExpiredHandler(() => { handlerCalls++; });
+  fetchResponses.push({ status: 401, body: { error: 'expired' } });
+
+  const res = await wrappedFetch('https://example.com/api', {});
+  assert.equal(res.status, 401);
+  assert.equal(handlerCalls, 1, 'handler should fire exactly once');
+  assert.equal(getSessionToken(), null, 'currentToken should be cleared');
+  // No retry, no telegram-auth — exactly 1 fetch call
+  assert.equal(fetchCalls.filter(c => !c.url.includes('/api/telegram-auth')).length, 1);
+});
+
+// ============================================================
+test('T10: 401 in CLIENT mode — onSessionExpired does NOT fire (re-auth path instead)', async () => {
+  reset();
+  globalThis.Telegram = { WebApp: { initData: 'fake' } };
+  setSessionToken('client.token');
+  let handlerCalls = 0;
+  registerSessionExpiredHandler(() => { handlerCalls++; });
+  fetchResponses.push({ status: 401, body: { error: 'expired' } });
+  fetchResponses.push({ status: 200, body: [] });
+
+  await wrappedFetch('https://example.com/api', {});
+  // Client path: silent re-auth fires. Handler should NOT have fired —
+  // re-auth is the recovery, not session expiry.
+  assert.equal(handlerCalls, 0,
+    'handler should NOT fire in client mode (re-auth handles 401)');
+});
+
+// ============================================================
+test('T11: 401 in anon mode (no token) — onSessionExpired does NOT fire (no session)', async () => {
+  reset();
+  setSessionToken(null); // ensure anon
+  let handlerCalls = 0;
+  registerSessionExpiredHandler(() => { handlerCalls++; });
+  fetchResponses.push({ status: 401, body: { error: 'unauthorized' } });
+
+  const res = await wrappedFetch('https://example.com/api', {});
+  assert.equal(res.status, 401);
+  assert.equal(handlerCalls, 0,
+    'handler should NOT fire when there was no session to begin with');
 });
 
 // ============================================================

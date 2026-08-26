@@ -25,6 +25,17 @@ const SESSION_STORAGE_KEY = 'sb_token';
 // Module-level singleton — the only place the current JWT lives.
 let currentToken: string | null = null;
 
+// Centralized 401 handler for staff sessions.
+// When a staff user's JWT expires mid-session (12h TTL), any of 17+ importers
+// of supabase-js may hit a 401. Without a central handler, the failure is
+// silent (form doesn't save, no explanation). App.tsx registers one callback
+// here on mount; when invoked, it clears UI state and shows a re-login prompt.
+let onSessionExpired: (() => void) | null = null;
+
+export function registerSessionExpiredHandler(cb: (() => void) | null): void {
+  onSessionExpired = cb;
+}
+
 // Restore on first module load (browser only). sessionStorage may throw in
 // private mode or if disabled — swallow silently. Staff never writes here.
 if (typeof window !== 'undefined') {
@@ -120,6 +131,15 @@ export async function wrappedFetch(
       }
       res = await fetch(url, injectAuth(options));
     }
+  }
+
+  // Staff 401 (no silent retry): notify App.tsx so it can show re-login UI.
+  // Token is cleared so subsequent requests are anonymous (matching what
+  // a logged-out user would see). App.tsx handler is responsible for
+  // clearing userId/userRole state and showing the Login screen.
+  if (res.status === 401 && !isClientSession() && currentToken !== null) {
+    setSessionToken(null);
+    onSessionExpired?.();
   }
 
   return res;

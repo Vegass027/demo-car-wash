@@ -5,13 +5,23 @@ import { Label } from '../ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card';
 import { cn } from '../../lib/utils';
 import { Lock } from 'lucide-react';
-import { supabase } from '../../lib/supabase';
+import { setSessionToken } from '../../lib/supabase';
 
 interface LoginProps {
   onLogin: (userId: string, userRole: 'admin' | 'owner') => void;
+  expiredMessage?: string; // shown above the form when session expired mid-session
 }
 
-export const Login: React.FC<LoginProps> = ({ onLogin }) => {
+// Error mapping per plan §1.6a table. Single source of truth — never expose
+// server-side details (stack, RPC names) to the user. console.error keeps
+// the details available for developer debugging.
+const LOGIN_ERRORS: Record<number, string> = {
+  400: 'Проверьте правильность ввода',
+  401: 'Неверный логин или пароль',
+  500: 'Сервис временно недоступен. Попробуйте через минуту.',
+};
+
+export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
   const [login, setLogin] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -23,61 +33,37 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
     setLoading(true);
 
     try {
-      // Проверяем логин и пароль через RPC функцию
-      const { data: authData, error: rpcError } = await supabase.rpc('verify_password', {
-        p_login: login,
-        p_password: password,
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login, password }),
       });
 
-      if (rpcError) {
-        console.error('[Login] Ошибка RPC:', rpcError);
-        setError('Ошибка авторизации');
+      if (!res.ok) {
+        const msg = LOGIN_ERRORS[res.status] || 'Ошибка входа';
+        console.error('[Login] /api/login failed:', res.status, res.statusText);
+        setError(msg);
         setLoading(false);
         return;
       }
 
-      if (!authData || authData.length === 0) {
-        console.log('[Login] Пользователь не найден');
-        setError('Неверный логин или пароль');
-        setLoading(false);
-        return;
-      }
+      const { token, profile_id, app_role } = await res.json();
 
-      const profile = authData[0];
-      console.log('[Login] Профиль найден, роль:', profile.role);
+      // Inject JWT into module-level currentToken so subsequent supabase-js
+      // requests carry Authorization: Bearer <jwt>. Per plan: staff tokens
+      // are in-memory only — no sessionStorage write.
+      setSessionToken(token);
 
-      // Проверяем успешность проверки пароля
-      if (!profile.success) {
-        console.log('[Login] Неверный пароль');
-        setError('Неверный логин или пароль');
-        setLoading(false);
-        return;
-      }
+      // UI-state kept in localStorage for legacy compatibility (admin/owner
+      // components receive userId/userRole as props). Two separate setItem
+      // calls preserve the existing key/value contract from old Login.tsx.
+      localStorage.setItem('userId', profile_id);
+      localStorage.setItem('userRole', app_role);
 
-      // Проверяем роль
-      if (profile.role !== 'admin' && profile.role !== 'owner') {
-        console.log('[Login] Роль не подходит:', profile.role);
-        setError('Доступ запрещён');
-        setLoading(false);
-        return;
-      }
-
-      console.log('[Login] Успешный вход, роль:', profile.role);
-
-      // Обновляем last_auth_method
-      await supabase
-        .from('profiles')
-        .update({ last_auth_method: 'password', updated_at: new Date().toISOString() })
-        .eq('id', profile.id);
-
-      // Сохраняем в localStorage
-      localStorage.setItem('userId', profile.id);
-      localStorage.setItem('userRole', profile.role);
-
-      onLogin(profile.id, profile.role);
+      onLogin(profile_id, app_role);
     } catch (err) {
-      console.error('[Login] Ошибка входа:', err);
-      setError('Ошибка входа');
+      console.error('[Login] network error:', err);
+      setError('Нет связи с сервером. Проверьте интернет.');
       setLoading(false);
     }
   };
@@ -93,6 +79,11 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
           <CardDescription>Введите логин и пароль для доступа</CardDescription>
         </CardHeader>
         <CardContent>
+          {expiredMessage && (
+            <p className="text-sm text-amber-600 font-medium text-center mb-4">
+              {expiredMessage}
+            </p>
+          )}
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="login">Логин</Label>
