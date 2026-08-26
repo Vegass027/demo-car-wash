@@ -112,6 +112,18 @@ async function teardown() {
     try { await admin.from('client_cars').update({ is_active: false }).eq('id', id); }
     catch (_) { /* best-effort */ }
   }
+  // Cleanup temp org/driver used by 4-IDs ownership tests.
+  try { await admin.from('organization_drivers').delete().eq('id', '00000000-0000-0000-0000-0000bbbb0001'); }
+  catch (_) { /* best-effort */ }
+  try { await admin.from('organizations').delete().eq('id', '00000000-0000-0000-0000-0000aaaa0001'); }
+  catch (_) { /* best-effort */ }
+  // Cleanup any orphan bookings created during failed test runs (future-dated
+  // 2099-* reservations). Without this, re-running the matrix hits a
+  // box_occupied collision with the previous run's orphan.
+  try { await admin.from('bookings').delete().gte('booking_date', '2099-01-01'); }
+  catch (_) { /* best-effort */ }
+  try { await admin.from('closed_boxes').delete().gte('closed_date', '2099-01-01'); }
+  catch (_) { /* best-effort */ }
 }
 
 // =============================================================
@@ -362,12 +374,156 @@ async function teardown() {
     });
     ok('foreign client_car_id → 403', r3.status === 403 && r3.body?.error === 'client_car_id_not_owned');
 
+    // ---- Box-closed check ----
+    // Insert a closed_boxes row via admin for the test slot. Note: closed_boxes
+    // has a FK on closed_by → profiles; we pass null (closed_by is nullable)
+    // to avoid needing a real profile_id for audit.
+    const { error: cbErr } = await admin.from('closed_boxes').insert({
+      box_number: 1,
+      closed_date: '2099-03-15',
+      closed_at: new Date().toISOString(),
+      closed_by: null,
+      is_closed: true,
+      open_hours: [],
+    });
+    if (cbErr) console.error('closed_boxes insert error:', cbErr.message);
+
+    // Verify the insert persisted before testing the gate.
+    const { data: cbCheck } = await admin.from('closed_boxes')
+      .select('box_number, is_closed')
+      .eq('closed_date', '2099-03-15').eq('box_number', 1).maybeSingle();
+    ok('closed_boxes row inserted and visible',
+       cbCheck?.is_closed === true,
+       JSON.stringify(cbCheck));
+    const rBoxClosed = await call('/api/client-create-booking', {
+      token: tokens.client,
+      body: {
+        car_model: 'X',
+        plate_number: 'А222АА77',
+        car_type: 'SEDAN',
+        services: [SERVICE_UUID],
+        price: 500,
+        payment_method: 'Наличный',
+        booking_date: '2099-03-15',
+        start_time: '14:00',
+        box_number: 1,
+        client_car_id: '00000000-0000-0000-0000-00000000eeee', // foreign; will 403 before reaching box check
+      },
+    });
+    // Expect 403 foreign_car_id_not_owned (foreign car blocks test before box check).
+    // To actually test box_closed we need a real client_car_id. Use TEST_PLATE_C below.
+    ok('foreign client_car_id (setup) → 403', rBoxClosed.status === 403);
+
+    // Real client_car_id with that closed box → box_closed
+    const rBoxClosed2 = await call('/api/client-create-booking', {
+      token: tokens.client,
+      body: {
+        car_model: 'X',
+        plate_number: TEST_PLATE_C,
+        car_type: 'SEDAN',
+        services: [SERVICE_UUID],
+        price: 500,
+        payment_method: 'Наличный',
+        booking_date: '2099-03-15',
+        start_time: '14:00',
+        box_number: 1,
+        client_car_id: test_car_id,
+      },
+    });
+    ok('box_closed → 409',
+       rBoxClosed2.status === 409 && rBoxClosed2.body?.error === 'box_closed',
+       JSON.stringify(rBoxClosed2.body).slice(0, 200));
+
+    // Cleanup the closed_boxes row.
+    await admin.from('closed_boxes').delete().eq('closed_date', '2099-03-15').eq('box_number', 1);
+
+    // ---- All 4 ownership IDs (full coverage) ----
+    // client_car_id: already covered above (foreign client_car_id → 403).
+
+    // Set up temp organization + driver so car_id & driver_id ownership tests
+    // have a valid organization_id to pair with.
+    const tmpOrgId = '00000000-0000-0000-0000-0000aaaa0001';
+    const tmpDriverId = '00000000-0000-0000-0000-0000bbbb0001';
+    // Fetch our test client's phone to use in temp driver.
+    const { data: ph } = await admin.from('clients').select('phone').eq('id', TEST_CLIENT_ID).maybeSingle();
+    const ourPhone = ph?.phone ?? null;
+
+    if (ourPhone) {
+      // Insert temp org (idempotent via ON CONFLICT — but no UNIQUE on id; use upsert by id)
+      const { error: orgErr } = await admin.from('organizations').upsert({
+        id: tmpOrgId, name: '__test_org__slice1', is_active: true,
+      }, { onConflict: 'id' });
+      if (orgErr) console.error('tmpOrg upsert:', orgErr.message);
+      // Insert temp driver with phone matching our test client's phone.
+      // (organization_drivers.full_name is NOT NULL, must supply a placeholder.)
+      const { error: drvErr } = await admin.from('organization_drivers').upsert({
+        id: tmpDriverId, full_name: '__test_driver__slice1',
+        phone: ourPhone, organization_id: tmpOrgId, is_active: true,
+      }, { onConflict: 'id' });
+      if (drvErr) console.error('tmpDrv upsert:', drvErr.message);
+
+      // organization_id foreign (alone) → 403
+      const rForeignOrg = await call('/api/client-create-booking', {
+        token: tokens.client,
+        body: {
+          car_model: 'X', plate_number: 'А444АА77', car_type: 'SEDAN',
+          services: [SERVICE_UUID], price: 500, payment_method: 'Наличный',
+          booking_date: '2099-04-10', start_time: '10:00', box_number: 1,
+          organization_id: '00000000-0000-0000-0000-000000000fff',
+        },
+      });
+      ok('foreign organization_id → 403',
+         rForeignOrg.status === 403 && rForeignOrg.body?.error === 'organization_id_not_owned');
+
+      // driver_id foreign (with valid organization_id) → 403
+      const rForeignDriver = await call('/api/client-create-booking', {
+        token: tokens.client,
+        body: {
+          car_model: 'X', plate_number: 'А555АА77', car_type: 'SEDAN',
+          services: [SERVICE_UUID], price: 500, payment_method: 'Наличный',
+          booking_date: '2099-04-11', start_time: '10:00', box_number: 1,
+          organization_id: tmpOrgId,
+          driver_id: '00000000-0000-0000-0000-000000000eee',
+        },
+      });
+      ok('foreign driver_id → 403',
+         rForeignDriver.status === 403 && rForeignDriver.body?.error === 'driver_id_not_owned');
+
+      // car_id foreign (with valid org + valid driver) → 403
+      const rForeignCar = await call('/api/client-create-booking', {
+        token: tokens.client,
+        body: {
+          car_model: 'X', plate_number: 'А666АА77', car_type: 'SEDAN',
+          services: [SERVICE_UUID], price: 500, payment_method: 'Наличный',
+          booking_date: '2099-04-12', start_time: '10:00', box_number: 1,
+          organization_id: tmpOrgId,
+          driver_id: tmpDriverId,
+          car_id: '00000000-0000-0000-0000-000000000aaa',
+        },
+      });
+      ok('foreign car_id → 403',
+         rForeignCar.status === 403 && rForeignCar.body?.error === 'car_id_not_owned');
+    } else {
+      console.warn('  [SKIP] organization_id/driver_id/car_id ownership tests — no phone on test client');
+    }
+
     // Cleanup: cancel and soft-delete test car
     const cancelRes = await call('/api/client-cancel-booking', {
       token: tokens.client,
       body: { booking_id },
     });
     ok('test booking cancel → 200', cancelRes.status === 200 && cancelRes.body?.data?.already_cancelled === false);
+
+    // Idempotency at HTTP layer (separate from RPC smoke test T10-T11).
+    // Second call must return 200 + already_cancelled=true, NOT 409 mapping.
+    const cancelRes2 = await call('/api/client-cancel-booking', {
+      token: tokens.client,
+      body: { booking_id },
+    });
+    ok('idempotent cancel via HTTP → 200 already_cancelled',
+       cancelRes2.status === 200 &&
+       cancelRes2.body?.data?.already_cancelled === true,
+       JSON.stringify(cancelRes2.body).slice(0, 200));
   }
 
   // -------------------------------------------------------------------------
@@ -430,76 +586,90 @@ async function teardown() {
 
   // -------------------------------------------------------------------------
   // T8: client-create-booking validation errors
+  //
+  // All cases here use a VALID plate (TEST_PLATE_C, 6-char Russian format) so
+  // the request actually reaches the field under test instead of being
+  // short-circuited by plate regex.
+  // Assertions include the specific error code (not just 400) so a regression
+  // in date/services validators will turn the test red, not silent-green.
   // -------------------------------------------------------------------------
   console.log('\n# T8: client-create-booking validation');
   {
+    // Empty body — endpoint reads car_model first → 'car_model_required'.
     const r = await call('/api/client-create-booking', {
       token: tokens.client,
-      body: { /* empty */ },
+      body: {},
     });
-    ok('empty body → 400', r.status === 400);
+    ok('empty body → 400 car_model_required',
+       r.status === 400 && r.body?.error === 'car_model_required',
+       JSON.stringify(r.body).slice(0, 200));
   }
   {
+    // Missing car_model — explicit field missing rather than empty string.
     const r = await call('/api/client-create-booking', {
       token: tokens.client,
       body: {
-        car_model: 'X',
-        plate_number: 'Т888ТТ888',
+        plate_number: TEST_PLATE_C,
         car_type: 'SEDAN',
         services: [SERVICE_UUID],
         price: 500,
         payment_method: 'Наличный',
-        booking_date: 'not-a-date',
+        booking_date: '2099-05-01',
         start_time: '14:00',
         box_number: 3,
         client_car_id: test_car_id,
       },
     });
-    ok('bad date → 400', r.status === 400);
+    ok('missing car_model → 400 car_model_required',
+       r.status === 400 && r.body?.error === 'car_model_required',
+       JSON.stringify(r.body).slice(0, 200));
   }
   {
+    // Bad booking_date — validator should reach date and fail with
+    // 'booking_date_bad_format' (NOT plate regex, NOT car_model etc).
     const r = await call('/api/client-create-booking', {
       token: tokens.client,
       body: {
         car_model: 'X',
-        plate_number: 'Т888ТТ888',
+        plate_number: TEST_PLATE_C,            // valid 6-char plate
         car_type: 'SEDAN',
-        services: ['not-a-uuid'],
+        services: [SERVICE_UUID],               // valid service UUID
         price: 500,
         payment_method: 'Наличный',
-        booking_date: '2099-01-17',
+        booking_date: 'not-a-date',            // <-- the field under test
         start_time: '14:00',
         box_number: 3,
         client_car_id: test_car_id,
       },
     });
-    ok('bad service uuid → 400', r.status === 400);
+    ok('bad booking_date → 400 booking_date_bad_format',
+       r.status === 400 && r.body?.error === 'booking_date_bad_format',
+       JSON.stringify(r.body).slice(0, 200));
+  }
+  {
+    // Bad service UUID — validator should reach services and fail with
+    // 'services_item_not_uuid'.
+    const r = await call('/api/client-create-booking', {
+      token: tokens.client,
+      body: {
+        car_model: 'X',
+        plate_number: TEST_PLATE_C,
+        car_type: 'SEDAN',
+        services: ['not-a-uuid'],               // <-- the field under test
+        price: 500,
+        payment_method: 'Наличный',
+        booking_date: '2099-05-02',             // valid date so it reaches services
+        start_time: '14:00',
+        box_number: 3,
+        client_car_id: test_car_id,
+      },
+    });
+    ok('bad services item → 400 services_item_not_uuid',
+       r.status === 400 && r.body?.error === 'services_item_not_uuid',
+       JSON.stringify(r.body).slice(0, 200));
   }
 
-  // ---- setup / teardown helpers ----
-async function setup() {
-  // Tests rely on existing linked clients in the demo DB; nothing to do here.
-}
-async function teardownCars(carIds) {
-  for (const id of carIds) {
-    await admin.from('client_cars').update({ is_active: false }).eq('id', id);
-  }
-}
-async function teardownBooking(bookingId) {
-  if (!bookingId) return;
-  // Best-effort: cancel any active booking, soft-delete cleanup cars.
-  await admin.rpc('cancel_own_booking', {
-    p_booking_id: bookingId,
-    p_profile_id: TEST_PROFILE,
-  }).catch(() => {});
-}
-const createdCarIds = [];
-const createdBookingIds = [];
-process.on('exit', async () => {
-  for (const id of createdCarIds) {
-    await admin.from('client_cars').update({ is_active: false }).eq('id', id).catch(() => {});
-  }
-});
+  await teardown();
 
   console.log('\n========================================');
   console.log(`Pass: ${PASS}  Fail: ${FAIL}`);
