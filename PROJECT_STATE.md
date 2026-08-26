@@ -166,6 +166,8 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 17 | **Verified:** 11/11 unit-тестов на wrapper через `node --experimental-strip-types --test` (T3 = Authorization header инжектится, T6 = 1 retry с новым токеном, T7 = 3 параллельных 401 каждый получает свой retry). Real REST: anon apikey + JWT из `/api/login` = 200 (это то что wrapper шлёт). Anon без токена = 200 (regression OK, 17 файлов не задеты). Vite build без TS-ошибок | Подтверждено node:test + curl |
 | 18 | **Фаза 1.6a:** `Login.tsx` → `/api/login` + `setSessionToken` + `registerSessionExpiredHandler` для централизованной обработки staff 401 mid-session + legacy localStorage миграция + `last_auth_method` обновление на сервере (`/api/login` + `/api/telegram-auth`) | Коммит `ee8c0e8` |
 | 19 | **Verified 1.6a:** curl-тесты `/api/login` (200/401/400/405), Supabase REST с JWT = 200, `auth_logs` имеет запись с `success=true, profile_id=44444444...`, `profiles.last_auth_method='password'`. Unit-тесты 11/11 (T9=staff handler fires, T10=client не fires, T11=anon не fires) | Подтверждено curl + psql + node:test |
+| 20 | **Фаза 1.6b:** `lib/client-auth.ts` (loginViaTelegram + TelegramAuthError union + UI mapper + reloadMiniApp) + 3 wrapper'а → `loginViaTelegram()` + recovery buttons + `api/telegram-auth:179` role-check fix | Коммиты `0492a4f` + `83b828c` |
+| 21 | **Verified 1.6b:** ✅ admin telegram_id=222222222 → **HTTP 403** «Role not permitted — Telegram Mini App is for client role only» (regression fix!). ✅ client telegram_id=333333333 → HTTP 200 + JWT (347 chars, app_role=client). ✅ bad HMAC → HTTP 401. ✅ Supabase REST с новым JWT = 200 (wrapper proof). ✅ `auth_logs` записан. ✅ `profiles.last_auth_method='telegram'`. Unit-тесты wrapper 11/11 (regression) | Подтверждено curl + psql |
 
 ---
 
@@ -179,8 +181,11 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 4 | Фаза 1.2 — `/api/telegram-auth.ts` | ✅ Готово, задеплоен, end-to-end проверен |
 | 5 | Фаза 1.3 — `/api/login.ts` | ✅ Готово, задеплоен, end-to-end проверен (5 curl-тестов) |
 | 6 | Фаза 1.4 — `lib/supabase.ts` fetch-wrapper + `setSessionToken()` + sessionStorage restore + 401-retry | ✅ Готово, задеплоен, 8/8 unit-тестов прошли, регресс-чек anon OK |
-| 7 | Фаза 1.5 — `/api/link-client-profile.ts` + миграция legacy-клиентов по phone | Не начато (после Фазы 1.6) |
+| 7 | Фаза 1.5 — `/api/link-client-profile.ts` + миграция legacy-клиентов по phone | Не начато (после Фазы 1.7) |
 | 8 | Фаза 1.6a — `Login.tsx` → `/api/login` + `registerSessionExpiredHandler` + legacy localStorage миграция + `last_auth_method` server-side | ✅ Готово, задеплоен, end-to-end проверен |
+| 9 | Фаза 1.6b — `lib/client-auth.ts` + `ClientBookingWrapper/ClientTireBookingWrapper/MyGarage` → `/api/telegram-auth` + server-side role-check fix (`profile.role !== 'client'`) + recovery buttons | ✅ Готово, задеплоен, end-to-end проверен |
+| 10 | Фаза 1.6b мониторинг 1-2 дня в demo | ⏭ Текущий шаг |
+| 11 | Фаза 1.7 — REVOKE EXECUTE на `verify_password` для anon | Не начато (после 1-2 дней 1.6b в demo) |
 | 9 | Фаза 1.7 — REVOKE EXECUTE на `verify_password` для anon | Не начато (в тот же день что 1.6 для Login) |
 | 10 | Фаза 1.8 — `/api/upload-receipt.ts` + Storage lockdown | Не начато |
 | 11 | Фаза 2 — RLS 5 категорий A-E | Не начато |
