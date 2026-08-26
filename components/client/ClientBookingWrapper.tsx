@@ -1,11 +1,11 @@
 import { useEffect, useState, useMemo } from 'react'
 import { OnlineBookingWizard, OnlineBookingWizardData } from './OnlineBookingWizard'
 import { DayTimeline } from '../admin/DayTimeline'
-import { supabase } from '../../lib/supabase'
+import { supabase, getSessionToken } from '../../lib/supabase'
 import { loginViaTelegram, telegramAuthErrorUI, reloadMiniApp, TelegramAuthError } from '../../lib/client-auth'
 import { getBookingsByDate, Booking, createOnlineBooking, getClientOrganizationIds } from '../../lib/api/bookings'
 import { formatDate, addDays } from '../../shared/utils/date'
-import { createClient, createClientCar } from '../../lib/api/clients'
+import { createClientCar } from '../../lib/api/clients'
 import { normalizePhoneNumber } from '../../shared/utils/phone'
 import { findDriversByPhone } from '../../lib/api/organizations'
 import { Service } from '../../lib/api/services'
@@ -382,26 +382,36 @@ export function ClientBookingWrapper({
       if (clientError || !client) {
         console.log('[ClientBookingWrapper] Клиент не найден, создаём автоматически');
         try {
-          const newClient = await createClient({
-            full_name: full_name || '',
-            phone: '',
+          // Phase 1.5: replace anon INSERT with /api/link-client-profile
+          // (client-only, service_role-backed). JWT is the same one set by
+          // loginViaTelegram() above.
+          const token = getSessionToken();
+          if (!token) throw new Error('No session token for link-client-profile');
+
+          const res = await fetch('/api/link-client-profile', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              full_name: full_name || '',
+              phone: '', // empty OK if row exists; endpoint returns 400 for new row
+            }),
           });
 
-          const { error: linkError } = await supabase
-            .from('clients')
-            .update({ profile_id })
-            .eq('id', newClient.id);
-
-          if (linkError) {
-            console.error('[ClientBookingWrapper] Ошибка при связывании клиента с профилем:', linkError);
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => ({}));
+            const errMsg = errBody.error || `HTTP ${res.status}`;
+            console.error('[ClientBookingWrapper] link-client-profile failed:', res.status, errMsg);
+            throw new Error(errMsg);
           }
 
+          const { client: newClient } = await res.json();
           resolvedClientId = newClient.id;
         } catch (createError: any) {
           console.error('[ClientBookingWrapper] Ошибка при создании клиента:', createError);
-          setError(createError?.message === 'Такой клиент уже существует'
-            ? 'Такой клиент уже существует'
-            : 'Ошибка при создании клиента');
+          setError(createError?.message || 'Ошибка при создании клиента');
           setLoading(false);
           return;
         }
