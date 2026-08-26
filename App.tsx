@@ -25,7 +25,7 @@ import { Worker, WorkingMode } from './lib/api/workers';
 import { TireWorker } from './lib/api/tire-workers';
 import { TireBooking, TireServiceItem } from './lib/api/tire-bookings';
 import type { Admin } from './lib/types/admin';
-import { supabase } from './lib/supabase';
+import { supabase, setSessionToken, registerSessionExpiredHandler, getSessionToken } from './lib/supabase';
 import { initTelegramWebApp, getTelegramId } from './shared/telegram/telegram';
 
 import { getServices, getServicesWithPrices, Service, getServicePrice } from './lib/api/services';
@@ -88,11 +88,57 @@ export default function App() {
   const [isCreatingBooking, setIsCreatingBooking] = useState(false);
   const [isCreatingTireBooking, setIsCreatingTireBooking] = useState(false);
   const [userId, setUserId] = useState<string>(() => localStorage.getItem('userId') || '');
-  const [userRole, setUserRole] = useState<'admin' | 'owner'>(() => 
+  const [userRole, setUserRole] = useState<'admin' | 'owner'>(() =>
     (localStorage.getItem('userRole') as 'admin' | 'owner') || 'admin'
   );
+  // When wrapper fires onSessionExpired (staff 401 mid-session), surface a
+  // banner above the Login form. Cleared on next successful login.
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string>('');
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false); // Отслеживание состояния клавиатуры
   const [initialViewportHeight, setInitialViewportHeight] = useState<number | null>(null); // Начальная высота viewport
+
+  // Phase 1.6a: legacy localStorage migration + 401 handler.
+  //   - If userId/userRole exist in localStorage but no JWT in memory →
+  //     this is a legacy session from before Phase 1.6 (RPC-based login
+  //     without JWT). Clear it and force re-login via /api/login.
+  //   - For NEW users who logged in via /api/login: localStorage has both
+  //     userId/userRole AND the module-level currentToken is set. We DON'T
+  //     clear in that case (the user is mid-session, valid JWT in memory).
+  //   - Staff on page reload: currentToken is null (by design, staff token
+  //     lives in memory only), so cleanup runs and forces re-login. This
+  //     is the documented "close-tab/reload = logout" trade-off.
+  //   - Client on Mini App reload: currentToken is restored from
+  //     sessionStorage in wrapper module-load, so cleanup does NOT run.
+  useEffect(() => {
+    const hasLegacyKeys = !!(
+      localStorage.getItem('userId') && localStorage.getItem('userRole')
+    );
+    const hasCurrentJwt = !!getSessionToken();
+    if (hasLegacyKeys && !hasCurrentJwt) {
+      localStorage.removeItem('userId');
+      localStorage.removeItem('userRole');
+      setUserId('');
+      setUserRole('admin');
+      setIsAuthenticated(false);
+      setSessionExpiredMessage('Сессия устарела. Войдите снова.');
+    }
+
+    // Centralized handler for staff 401 mid-session. Any of 17+ supabase-js
+    // importers may trigger this; we handle it once here.
+    registerSessionExpiredHandler(() => {
+      localStorage.removeItem('userId');
+      localStorage.removeItem('userRole');
+      setUserId('');
+      setUserRole('admin');
+      setIsAuthenticated(false);
+      setSessionExpiredMessage('Сессия истекла. Войдите снова.');
+    });
+
+    return () => {
+      // On App unmount (rare — single-page app), deregister the handler.
+      registerSessionExpiredHandler(null);
+    };
+  }, []);
 
   // Логируем изменения состояния клавиатуры
   useEffect(() => {
@@ -1768,11 +1814,15 @@ export default function App() {
 
   // Для админских views показываем Login если не авторизован
   if (!isAuthenticated) {
-    return <Login onLogin={(id, role) => {
-      setUserId(id);
-      setUserRole(role);
-      setIsAuthenticated(true);
-    }} />;
+    return <Login
+      onLogin={(id, role) => {
+        setUserId(id);
+        setUserRole(role);
+        setIsAuthenticated(true);
+        setSessionExpiredMessage(''); // clear any pre-login banner
+      }}
+      expiredMessage={sessionExpiredMessage}
+    />;
   }
 
   const renderContent = () => {

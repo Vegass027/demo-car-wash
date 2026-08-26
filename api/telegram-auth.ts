@@ -180,6 +180,16 @@ export default async function handler(req: any, res: any) {
     return res.status(403).json({ error: 'Role not permitted' });
   }
 
+  // Best-effort: bump last_auth_method on existing profiles.
+  // (Self-register path already sets it on INSERT above.)
+  const { error: methodErr } = await supabaseAdmin
+    .from('profiles')
+    .update({ last_auth_method: 'telegram' })
+    .eq('id', profile.id);
+  if (methodErr) {
+    console.error('[telegram-auth] last_auth_method update error:', methodErr);
+  }
+
   // 5. Sign JWT (HS256, 12h TTL)
   const secret = process.env.SUPABASE_JWT_SECRET;
   if (!secret) {

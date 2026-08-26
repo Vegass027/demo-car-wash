@@ -149,6 +149,16 @@ export default async function handler(req: any, res: any) {
     secret
   );
 
+  // Best-effort: update last_auth_method on the profile. Failure here doesn't
+  // affect auth outcome — staff still gets their JWT. Logged for forensics.
+  const { error: updateErr } = await supabaseAdmin
+    .from('profiles')
+    .update({ last_auth_method: 'password' })
+    .eq('id', profile.id);
+  if (updateErr) {
+    console.error('[login] last_auth_method update error:', updateErr);
+  }
+
   return res.status(200).json({
     token,
     profile_id: profile.id,
