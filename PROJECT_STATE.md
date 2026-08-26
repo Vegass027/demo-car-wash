@@ -181,7 +181,8 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 4 | Фаза 1.2 — `/api/telegram-auth.ts` | ✅ Готово, задеплоен, end-to-end проверен |
 | 5 | Фаза 1.3 — `/api/login.ts` | ✅ Готово, задеплоен, end-to-end проверен (5 curl-тестов) |
 | 6 | Фаза 1.4 — `lib/supabase.ts` fetch-wrapper + `setSessionToken()` + sessionStorage restore + 401-retry | ✅ Готово, задеплоен, 8/8 unit-тестов прошли, регресс-чек anon OK |
-| 7 | Фаза 1.5 — DB-часть: `migrations/create_normalize_phone_function.sql` + `migrations/link_legacy_clients_1to1.sql` | ✅ Применены на test DB, отчёт `audit=0, NO_MATCH=3, AMBIGUOUS=0`. Endpoint `/api/link-client-profile.ts` pending |
+| 7 | Фаза 1.5 — DB-часть: `migrations/create_normalize_phone_function.sql` + `migrations/link_legacy_clients_1to1.sql` | ✅ Применены на test DB, отчёт `audit=0, NO_MATCH=3, AMBIGUOUS=0` |
+| 8 | Фаза 1.5 — Endpoint `/api/link-client-profile.ts` (client-only, JWT-verified, smart upsert с 4 состояниями) + refactor 2 client wrappers | ✅ Готово, задеплоен, 13/13 verifyJwt unit-тестов + 9/9 endpoint curl-тестов (E1-E3, E4-E6, E7-E10, E13 + bonus notes validation) |
 | 8 | Фаза 1.6a — `Login.tsx` → `/api/login` + `registerSessionExpiredHandler` + legacy localStorage миграция + `last_auth_method` server-side | ✅ Готово, задеплоен, end-to-end проверен |
 | 9 | Фаза 1.6b — `lib/client-auth.ts` + `ClientBookingWrapper/ClientTireBookingWrapper/MyGarage` → `/api/telegram-auth` + server-side role-check fix (`profile.role !== 'client'`) + recovery buttons | ✅ Готово, задеплоен, end-to-end проверен |
 | 10 | Фаза 1.6b мониторинг 1-2 дня в demo | ✅ Мониторинг завершён, реальный Mini App протестирован, ошибок не было |
