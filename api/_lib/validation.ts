@@ -204,6 +204,69 @@ export function readServicesArray(
   return out;
 }
 
+// Tire service items are JSONB objects stored in tire_bookings.services.
+// Schema: { service_id: uuid, name: string, quantity: int, price: int,
+//            total: int, customPrice?: int, comment?: string }
+// Returns the validated array (NOT mutated). Throws ValidationError on
+// shape violation.
+export interface TireServiceItem {
+  service_id: string;
+  name: string;
+  quantity: number;
+  price: number;
+  total: number;
+  customPrice?: number;
+  comment?: string;
+}
+
+const MAX_TIRE_SERVICES = 50;
+
+export function readTireServicesArray(
+  body: Record<string, any>,
+  field: string,
+  opts: { min?: number; max?: number } = {},
+): TireServiceItem[] {
+  const v = body[field];
+  if (!Array.isArray(v)) fail(`${field}_must_be_array`);
+  const min = opts.min ?? 1;
+  const max = opts.max ?? MAX_TIRE_SERVICES;
+  if (v.length < min || v.length > max) fail(`${field}_bad_length`);
+
+  const out: TireServiceItem[] = [];
+  for (let i = 0; i < v.length; i++) {
+    const item = v[i];
+    if (typeof item !== 'object' || item === null) fail(`${field}_${i}_not_object`);
+    const sid = item.service_id;
+    if (typeof sid !== 'string' || !isUuid(sid)) fail(`${field}_${i}_service_id_not_uuid`);
+    const name = item.name;
+    if (typeof name !== 'string' || name.length === 0 || name.length > 200) {
+      fail(`${field}_${i}_name_invalid`);
+    }
+    const quantity = item.quantity;
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
+      fail(`${field}_${i}_quantity_invalid`);
+    }
+    const price = item.price;
+    if (!Number.isInteger(price) || price < 0 || price > 1_000_000) {
+      fail(`${field}_${i}_price_invalid`);
+    }
+    const total = item.total;
+    if (!Number.isInteger(total) || total < 0 || total > 10_000_000) {
+      fail(`${field}_${i}_total_invalid`);
+    }
+    out.push({
+      service_id: sid,
+      name,
+      quantity,
+      price,
+      total,
+      customPrice: item.customPrice,
+      comment: item.comment,
+    });
+  }
+  return out;
+}
+
 export function readBoolean(body: Record<string, any>, field: string): boolean {
   const v = body[field];
   if (typeof v !== 'boolean') fail(`${field}_must_be_boolean`);

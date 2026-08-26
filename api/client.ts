@@ -40,6 +40,7 @@ import {
   readCarType,
   readPaymentMethod,
   readServicesArray,
+  readTireServicesArray,
   readBoolean,
 } from './_lib/validation.js';
 
@@ -625,7 +626,9 @@ async function createTireBooking(claims: { profile_id: string }, body: AnyObj): 
 
   const plate_number = readString(body, 'plate_number', { max: 12, required: true })!.trim().toUpperCase();
 
-  const services = readServicesArray(body, 'services', { min: 1, max: 50 });
+  // tire_bookings.services is a JSONB array of TireServiceItem objects
+  // (different shape from carwash bookings.services which is just string[]).
+  const services = readTireServicesArray(body, 'services', { min: 1, max: 50 });
   const total_price = readNumberInRange(body, 'total_price', 0, 1_000_000) ?? 0;
   const payment_method = readPaymentMethod(body, 'payment_method');
   const booking_date = readISODate(body, 'booking_date');
