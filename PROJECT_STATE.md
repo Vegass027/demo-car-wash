@@ -202,9 +202,12 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 10 | Фаза 1.6b мониторинг 1-2 дня в demo | ✅ Мониторинг завершён, реальный Mini App протестирован, ошибок не было |
 | 11 | Фаза 1.7 — REVOKE EXECUTE на `verify_password` для anon | ✅ Готово, задеплоен, end-to-end проверен (7 curl-тестов) |
 | 12 | Фаза 1.8 — `/api/upload-receipt.ts` + Storage lockdown | Не начато |
-| 13 | Фаза 2 — RLS 5 категорий A-E | Не начато (после 1.5 + 1.8) |
-| 14 | Фаза 2.5 — REVOKE INSERT/UPDATE на `clients` | Не начато (после 1.5 + admin staff-client-create) |
-| 15 | Фаза 3 — public views для занятости слотов | Не начато |
+| 13 | Фаза 2 — Slice #1 (carwash client flow) | ✅ Done (commits 4fbffff, 6bdcd89, f3947d8, 4a204b4, e346ad7) |
+| 14 | Фаза 2 — Slice #2 (tire client flow) | ✅ Done (5 deploys, 4 contract-bugs обнаружены тестами — детали §5.9); commits 1e4e3c7, 142c646, df6a6e2, e293c07, b681190 |
+| 15 | **Фаза 2 — Slice #3 (staff booking flow — BookingWizard)** | ⚠️ Не начато — следующий шаг после Slice #1+2. 14 anon-write call sites в `BookingWizard.tsx` (createClient, createClientCar, updateClientCar, updateClient, createOrganization, createOrganizationDriver, createOrganizationCar, updates + unblockClientForOnlineBooking). Сейчас работает через anon supabase, сломается при RLS Category C. План → recon → вопросы → ОК → реализация. Сервер-функция `api/staff.ts` (dispatcher pattern, как `api/client.ts`). Доступно 1 слот Vercel Hobby из 12 (текущие 11 функций + 1 dispatcher = 12) |
+| 16 | Фаза 2 — RLS 5 категорий A-E | Не начато (ПОСЛЕ Slice #3 staff-flow, иначе RLS Category C сломает admin wizard) |
+| 17 | Фаза 2.5 — REVOKE INSERT/UPDATE на `clients` | Не начато (после Slice #3 + admin staff-client-create) |
+| 18 | Фаза 3 — public views для занятости слотов | Не начато (для оставшихся surfaces, частично закрыто Slice #1) |
 
 ---
 
@@ -327,6 +330,35 @@ UPDATE public.clients
 ```
 
 Также включено в `test-slice2-cleanup.sh` (для ручного reset между сессиями) и inline в `test-slice2-tire-rpcs.sh` и `test-slice2-tire-concurrent-cancel.sh` (pre-test reset перед каждым тестом).
+
+---
+
+## 5.9. Правило cross-check перед copy-paste валидаторов/insert-логики (Slice #2 retrospective)
+
+**Проблема (зафиксирована в Slice #2):** при переиспользовании **уже написанного** car-wash кода (lib/api/, api/_lib/validation.ts, insert payloads в `api/client.ts`) для tire-flow было поймано **четыре** бага контрактных несовпадений, которые copy-paste-паттерн сам по себе не обнаруживает:
+
+| # | Bug | Что произошло | Что должен был делать cross-check |
+|---|---|---|---|
+| 1 | `tire_bookings.notes` не существует | Я добавил колонку в `.select(...)` по TS-интерфейсу, не сверяясь с реальной `\d tire_bookings`. Postgres SQLSTATE 42703 | Перед каждой новой таблицей — `psql \d <table>` или `information_schema.columns`, не доверять TS-интерфейсу |
+| 2 | `services[]` JSONB shape | carwash `readServicesArray()` принимал `string[]` UUID, а tire требует массив `{service_id, name, quantity, price, total}` объектов. validation error `services_item_not_uuid` | Разная форма массивов → новый validator. Schema cross-check должен показать `services JSONB` vs `services text[]` типов |
+| 3 | `payment_method: 'Наличные'` vs `'Наличный'` | My E2E отправлял `'Наличные'` (по CHECK constraint), но Slice #1 API принимает только `'Наличный'`. CASCADE: 400 даже когда формально valid | CHECK constraint ≠ API-контракт enum. Перед каждым create endpoint — посмотреть Slice #1 `PAYMENT_METHODS` в `api/_lib/validation.ts`, **а не** `tire_bookings_payment_method_check` |
+| 4 | `end_time` GENERATED ALWAYS AS | Я пытался вставить `end_time` через dispatcher. Postgres: "cannot insert a non-DEFAULT value into column end_time" | PostgreSQL GENERATED columns не попадают ни в `\d` defaults, ни в CHECK — нужно `attgenerated != ''` или `pg_get_expr()` |
+
+**Правило (обязательно, применимое ко всем будущим slice'ам — staff, RLS Category C, real-time-to-view):**
+
+1. **Перед копированием insert/validator логики из соседнего slice** — выполнить schema diff целевой таблицы vs исходной через `psql`/`pg_catalog`, не полагаясь на TS-интерфейс. Конкретные шаги:
+   ```sql
+   -- Всегда перед первым endpoint для новой таблицы:
+   SELECT column_name, data_type, is_nullable, column_default, attgenerated
+   FROM information_schema.columns
+   JOIN pg_attribute ON attrelid=('public.<table>')::regclass AND attname=column_name
+   WHERE table_schema='public' AND table_name='<table>'
+   ORDER BY ordinal_position;
+   ```
+2. **Не доверять** `CHECK (column IN (...))` для API-контрактов. Это constraint, не API allow-list. Узнавать API allow-list из `api/_lib/validation.ts` (Slice #1 `PAYMENT_METHODS = ['Наличный', ...]`).
+3. **GENERATED columns** помечать в плане явно. Любая колонка, помеченная GENERATED ALWAYS AS, не попадает в INSERT/UPDATE — её обрабатывает Postgres.
+
+**Экономия:** 4 бага в Slice #2 = 4 дополнительных deploy × ~3 мин = ~12 мин. В Slice #3 (staff flow) применяется правило на старте.
 
 ---
 
