@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../../lib/supabase';
+import { supabase, getSessionToken } from '../../lib/supabase';
 import { Card, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -9,7 +9,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { ArrowLeft, Search, Check, Calculator, Clock, CreditCard, User, Building2, Users, Plus, Send, Lock, Trash2, Edit2, Pen, CheckCircle, AlertCircle, Unlock, Circle, ClipboardList, Banknote, QrCode, Minus } from 'lucide-react';
 import { SignatureModal } from './SignatureModal';
 import { ClientDatabaseAccordion } from './ClientDatabaseAccordion';
-import { updateDriverSignature } from '../../lib/api/organizations';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/utils';
 import { CarType } from '../../types';
@@ -19,19 +18,13 @@ import { SERVICE_CATEGORIES, isBonusService } from '../../lib/config/serviceCate
 import { findDriversByPhone } from '../../lib/api/organizations';
 import { Organization, OrganizationDriver, OrganizationCar } from '../../entities/organization/model';
 import { Booking } from '../../lib/api/bookings';
-import { searchByPhone, searchByPlateNumber } from '../../lib/api/search';
+import { searchByPlateNumber } from '../../lib/api/search';
 import { SearchResult } from '../../lib/api/search';
 import {
   Client,
   ClientCar,
   getClientCars,
-  createClient,
-  createClientCar,
-  updateClientCar,
-  updateClient
 } from '../../lib/api/clients';
-import { createOrganizationDriver, createOrganizationCar, createOrganization, updateOrganizationDriver, updateOrganizationCar, updateOrganization, findDriverByPhone } from '../../lib/api/organizations';
-import { unblockClientForOnlineBooking } from '../../lib/api/booking-cancellations';
 // ✅ Новые импорты для рефакторинга
 import { validatePhone, validateCarNumber } from '../booking/validation';
 import { CarCard } from '../booking/CarCard';
@@ -39,6 +32,37 @@ import { AddCarButton } from '../booking/AddCarButton';
 import { FieldWithChange } from '../booking/FieldWithChange';
 import { trackCarChanges, findCarById } from '../booking/carUtils';
 import { normalizePhoneNumber } from '../../shared/utils/phone';
+
+// =========================================================================
+// Phase 2 / Slice #3a: staff writes go through /api/staff dispatcher
+// (Phase 1 service-role pattern). Booking-side mutations remain in
+// lib/api/bookings.ts (anon) until Slice #3b.
+//
+// dispatchStaffCall POSTs to /api/staff?action=<name> with the staff JWT
+// from current session (admin/owner app_role). The dispatcher enforces
+// ownership of the parent client/organization/driver before allowing the
+// write, so client-side validation here only needs the user-facing shape.
+// =========================================================================
+async function dispatchStaffCall<T = unknown>(action: string, body: AnyObj): Promise<T> {
+  const token = getSessionToken();
+  if (!token) throw new Error('Missing session token — please log in again');
+  const url = `/api/staff?action=${encodeURIComponent(action)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({} as AnyObj));
+  if (!res.ok) {
+    const err = (data as AnyObj)?.error || `http_${res.status}`;
+    throw new Error(err);
+  }
+  return ((data as AnyObj)?.data ?? data) as T;
+}
+type AnyObj = Record<string, any>;
 
 const ANTIFREEZE_SERVICE_IDS = ['antifreeze-org', 'antifreeze-umc'];
 
@@ -490,18 +514,20 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
       }
 
       try {
-        // Создаем клиента через API функцию (телефон нормализуется автоматически)
-        const newClient = await createClient({
+        // Create client through Slice #3a staff dispatcher (service_role
+        // writes; phone normalized server-side).
+        const createClientRes = await dispatchStaffCall<{ client: { id: string } }>('create-client', {
           full_name: clientName,
-          phone: normalizePhoneNumber(phone)
+          phone: normalizePhoneNumber(phone),
         });
+        const newClient = createClientRes.client;
 
-        // Создаем автомобиль клиента через API функцию
-        await createClientCar({
+        // Create the car through the same dispatcher.
+        await dispatchStaffCall('create-client-car', {
           client_id: newClient.id,
           car_model: carModel,
           plate_number: carNumber,
-          car_type: newCarType
+          car_type: newCarType,
         });
 
         setSaveSuccess(true);
@@ -552,24 +578,25 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
       }
 
       try {
-        // Создаем организацию через API функцию
-        const newOrg = await createOrganization({
-          name: newOrganizationName
+        // Create organization through Slice #3a dispatcher.
+        const createOrgRes = await dispatchStaffCall<{ organization: { id: string } }>('create-organization', {
+          name: newOrganizationName,
         });
+        const newOrg = createOrgRes.organization;
 
-        // Создаем водителя организации через API функцию (телефон нормализуется автоматически, если указан)
-        await createOrganizationDriver({
+        // Create the org-driver.
+        await dispatchStaffCall('create-org-driver', {
           organization_id: newOrg.id,
           full_name: newDriverName,
-          phone: phone && phone.trim() !== '+7 ' ? normalizePhoneNumber(phone) : undefined
+          phone: phone && phone.trim() !== '+7 ' ? normalizePhoneNumber(phone) : undefined,
         });
 
-        // Создаем автомобиль организации через API функцию
-        await createOrganizationCar({
+        // Create the org-car.
+        await dispatchStaffCall('create-org-car', {
           organization_id: newOrg.id,
           car_model: carModel,
           plate_number: carNumber,
-          car_type: newCarType
+          car_type: newCarType,
         });
 
         setSaveSuccess(true);
@@ -656,8 +683,8 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
       if (validatePhone(phone) && step === 1) {
         setIsSearching(true);
         try {
-          const results = await searchByPhone(phone);
-          setSearchResults(results);
+          const results = await dispatchStaffCall<{ results: typeof searchResults }>('search-client-by-phone', { phone });
+          setSearchResults(results.results);
         } catch (error) {
           console.error('Ошибка при поиске:', error);
           setSearchResults([]);
@@ -804,7 +831,10 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
     if (!selectedDriverForSignature) return;
 
     try {
-      await updateDriverSignature(selectedDriverForSignature.id, signatureBase64);
+      await dispatchStaffCall('update-driver-signature', {
+        driver_id: selectedDriverForSignature.id,
+        signature_data: signatureBase64,
+      });
 
       // Обновляем локальное состояние
       setEditingOrgData(prev => ({
@@ -1703,31 +1733,32 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
 
                                 try {
                                   if (editingDriverId) {
-                                    // Редактируем существующего водителя через API функцию (телефон нормализуется автоматически)
-                                    const updatedDriver = await updateOrganizationDriver(editingDriverId, {
+                                    // Update driver via Slice #3a dispatcher.
+                                    const updatedRes = await dispatchStaffCall<{ driver: { id: string; full_name: string; phone: string | null } }>('update-org-driver', {
+                                      driver_id: editingDriverId,
                                       full_name: newDriverNameInEdit,
-                                      phone: newDriverPhoneInEdit
+                                      phone: newDriverPhoneInEdit,
                                     });
 
                                     setEditingOrgData(prev => ({
                                       ...prev,
                                       drivers: prev.drivers.map(d =>
-                                        d.id === editingDriverId ? updatedDriver : d
+                                        d.id === editingDriverId ? { ...d, ...updatedRes.driver } : d
                                       )
                                     }));
 
                                     delete (window as any).editingDriverId;
                                   } else {
-                                    // Добавляем нового водителя через API функцию (телефон нормализуется автоматически)
-                                    const newDriver = await createOrganizationDriver({
+                                    // Add new driver via Slice #3a dispatcher.
+                                    const createdRes = await dispatchStaffCall<{ driver: { id: string; full_name: string; phone: string | null } }>('create-org-driver', {
                                       organization_id: selectedOrganizationId!,
                                       full_name: newDriverNameInEdit,
-                                      phone: newDriverPhoneInEdit
+                                      phone: newDriverPhoneInEdit,
                                     });
 
                                     setEditingOrgData(prev => ({
                                       ...prev,
-                                      drivers: [...prev.drivers, newDriver]
+                                      drivers: [...prev.drivers, createdRes.driver]
                                     }));
                                   }
 
@@ -1928,36 +1959,37 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
 
                                  const editingCarId = (window as any).editingCarId;
 
-                                 try {
-                                   if (editingCarId) {
-                                     // Редактируем существующий автомобиль через API функцию
-                                     const updatedCar = await updateOrganizationCar(editingCarId, {
-                                       car_model: newCarModelInEdit,
-                                       plate_number: newCarNumberInEdit,
-                                       car_type: newCarType
-                                     });
-
-                                     setEditingOrgData(prev => ({
-                                       ...prev,
-                                       cars: prev.cars.map(c =>
-                                         c.id === editingCarId ? updatedCar : c
-                                       )
-                                     }));
-
-                                     delete (window as any).editingCarId;
-                                    } else {
-                                      // Добавляем новый автомобиль через API функцию
-                                      const newCar = await createOrganizationCar({
-                                        organization_id: selectedOrganizationId!,
+try {
+                                    if (editingCarId) {
+                                      // Update org-car via Slice #3a dispatcher.
+                                      const updatedCarRes = await dispatchStaffCall<{ car: { id: string; car_model: string; plate_number: string; car_type: string; is_active: boolean } }>('update-org-car', {
+                                        car_id: editingCarId,
                                         car_model: newCarModelInEdit,
                                         plate_number: newCarNumberInEdit,
-                                        car_type: newCarType
+                                        car_type: newCarType,
                                       });
 
-                                     setEditingOrgData(prev => ({
-                                       ...prev,
-                                       cars: [...prev.cars, newCar]
-                                     }));
+                                      setEditingOrgData(prev => ({
+                                        ...prev,
+                                        cars: prev.cars.map(c =>
+                                          c.id === editingCarId ? { ...c, ...updatedCarRes.car } : c
+                                        )
+                                      }));
+
+                                      delete (window as any).editingCarId;
+                                     } else {
+                                       // Add new org-car via Slice #3a dispatcher.
+                                       const createdCarRes = await dispatchStaffCall<{ car: { id: string; car_model: string; plate_number: string; car_type: string; is_active: boolean } }>('create-org-car', {
+                                         organization_id: selectedOrganizationId!,
+                                         car_model: newCarModelInEdit,
+                                         plate_number: newCarNumberInEdit,
+                                         car_type: newCarType,
+                                       });
+
+                                      setEditingOrgData(prev => ({
+                                        ...prev,
+                                        cars: [...prev.cars, createdCarRes.car]
+                                      }));
                                    }
 
                                    setNewCarModelInEdit('');
@@ -2192,7 +2224,9 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                         onClick={async () => {
                           if (!selectedClientId) return;
                           try {
-                            await unblockClientForOnlineBooking(selectedClientId);
+                            await dispatchStaffCall('unblock-client', {
+                              client_id: selectedClientId,
+                            });
                             // Обновляем локальное состояние
                             setEditingClientData(prev => ({
                               ...prev,
@@ -2284,37 +2318,38 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
 
                                  const editingCarId = (window as any).editingCarId;
 
-                                  try {
-                                    if (editingCarId) {
-                                      // Редактируем существующий автомобиль через API функцию
-                                      const updatedCar = await updateClientCar(editingCarId, {
-                                        car_model: newCarModelInEdit,
-                                        plate_number: newCarNumberInEdit,
-                                        car_type: newCarType
-                                      });
+try {
+                                     if (editingCarId) {
+                                       // Update client-car via Slice #3a dispatcher.
+                                       const updatedCarRes = await dispatchStaffCall<{ car: { id: string; car_model: string; plate_number: string; car_type: string; is_active: boolean } }>('update-client-car', {
+                                         car_id: editingCarId,
+                                         car_model: newCarModelInEdit,
+                                         plate_number: newCarNumberInEdit,
+                                         car_type: newCarType,
+                                       });
+
+                                       setEditingClientData(prev => ({
+                                         ...prev,
+                                         cars: prev.cars.map(c =>
+                                           c.id === editingCarId ? { ...c, ...updatedCarRes.car } : c
+                                         )
+                                       }));
+
+                                       delete (window as any).editingCarId;
+                                     } else {
+                                       // Add new client-car via Slice #3a dispatcher.
+                                       const createdCarRes = await dispatchStaffCall<{ car: { id: string; car_model: string; plate_number: string; car_type: string; is_active: boolean } }>('create-client-car', {
+                                         client_id: selectedClientId!,
+                                         car_model: newCarModelInEdit,
+                                         plate_number: newCarNumberInEdit,
+                                         car_type: newCarType,
+                                       });
 
                                       setEditingClientData(prev => ({
                                         ...prev,
-                                        cars: prev.cars.map(c =>
-                                          c.id === editingCarId ? updatedCar : c
-                                        )
+                                        cars: [...prev.cars, createdCarRes.car]
                                       }));
-
-                                      delete (window as any).editingCarId;
-                                    } else {
-                                      // Добавляем новый автомобиль через API функцию
-                                      const newCar = await createClientCar({
-                                        client_id: selectedClientId!,
-                                        car_model: newCarModelInEdit,
-                                        plate_number: newCarNumberInEdit,
-                                        car_type: newCarType
-                                      });
-
-                                     setEditingClientData(prev => ({
-                                       ...prev,
-                                       cars: [...prev.cars, newCar]
-                                     }));
-                                   }
+                                    }
 
                                    setNewCarModelInEdit('');
                                    setNewCarNumberInEdit('');
@@ -2558,8 +2593,9 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                     if (!editingOrgData.organization) return;
 
                     try {
-                      // Обновляем все поля организации через API функцию
-                      await updateOrganization(selectedOrganizationId!, {
+                      // Update organization via Slice #3a dispatcher.
+                      await dispatchStaffCall('update-organization', {
+                        org_id: selectedOrganizationId!,
                         name: editingOrgData.organization.name,
                         inn: editingOrgData.organization.inn,
                         kpp: editingOrgData.organization.kpp,
@@ -2568,7 +2604,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                         payment_account: editingOrgData.organization.payment_account,
                         bank_name: editingOrgData.organization.bank_name,
                         correspondent_account: editingOrgData.organization.correspondent_account,
-                        bik: editingOrgData.organization.bik
+                        bik: editingOrgData.organization.bik,
                       });
 
                       setSaveSuccess(true);
@@ -2598,9 +2634,10 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                    if (!editingClientData.client) return;
 
                     try {
-                      // Обновляем имя клиента через API функцию
-                      await updateClient(selectedClientId!, {
-                        full_name: editingClientData.client.full_name
+                      // Update client via Slice #3a dispatcher.
+                      await dispatchStaffCall('update-client', {
+                        client_id: selectedClientId!,
+                        full_name: editingClientData.client.full_name,
                       });
 
                      setSaveSuccess(true);
