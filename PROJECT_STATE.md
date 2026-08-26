@@ -181,16 +181,15 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 4 | Фаза 1.2 — `/api/telegram-auth.ts` | ✅ Готово, задеплоен, end-to-end проверен |
 | 5 | Фаза 1.3 — `/api/login.ts` | ✅ Готово, задеплоен, end-to-end проверен (5 curl-тестов) |
 | 6 | Фаза 1.4 — `lib/supabase.ts` fetch-wrapper + `setSessionToken()` + sessionStorage restore + 401-retry | ✅ Готово, задеплоен, 8/8 unit-тестов прошли, регресс-чек anon OK |
-| 7 | Фаза 1.5 — `/api/link-client-profile.ts` + миграция legacy-клиентов по phone | Не начато (после Фазы 1.7) |
+| 7 | Фаза 1.5 — DB-часть: `migrations/create_normalize_phone_function.sql` + `migrations/link_legacy_clients_1to1.sql` | ✅ Применены на test DB, отчёт `audit=0, NO_MATCH=3, AMBIGUOUS=0`. Endpoint `/api/link-client-profile.ts` pending |
 | 8 | Фаза 1.6a — `Login.tsx` → `/api/login` + `registerSessionExpiredHandler` + legacy localStorage миграция + `last_auth_method` server-side | ✅ Готово, задеплоен, end-to-end проверен |
 | 9 | Фаза 1.6b — `lib/client-auth.ts` + `ClientBookingWrapper/ClientTireBookingWrapper/MyGarage` → `/api/telegram-auth` + server-side role-check fix (`profile.role !== 'client'`) + recovery buttons | ✅ Готово, задеплоен, end-to-end проверен |
-| 10 | Фаза 1.6b мониторинг 1-2 дня в demo | ⏭ Текущий шаг |
-| 11 | Фаза 1.7 — REVOKE EXECUTE на `verify_password` для anon | Не начато (после 1-2 дней 1.6b в demo) |
-| 9 | Фаза 1.7 — REVOKE EXECUTE на `verify_password` для anon | Не начато (в тот же день что 1.6 для Login) |
-| 10 | Фаза 1.8 — `/api/upload-receipt.ts` + Storage lockdown | Не начато |
-| 11 | Фаза 2 — RLS 5 категорий A-E | Не начато |
-| 12 | Фаза 2.5 — REVOKE INSERT/UPDATE на `clients` | Не начато (после 1.5) |
-| 13 | Фаза 3 — public views для занятости слотов | Не начато |
+| 10 | Фаза 1.6b мониторинг 1-2 дня в demo | ✅ Мониторинг завершён, реальный Mini App протестирован, ошибок не было |
+| 11 | Фаза 1.7 — REVOKE EXECUTE на `verify_password` для anon | ✅ Готово, задеплоен, end-to-end проверен (7 curl-тестов) |
+| 12 | Фаза 1.8 — `/api/upload-receipt.ts` + Storage lockdown | Не начато |
+| 13 | Фаза 2 — RLS 5 категорий A-E | Не начато (после 1.5 + 1.8) |
+| 14 | Фаза 2.5 — REVOKE INSERT/UPDATE на `clients` | Не начато (после 1.5 + admin staff-client-create) |
+| 15 | Фаза 3 — public views для занятости слотов | Не начато |
 
 ---
 
@@ -217,6 +216,31 @@ imported from /var/task/api/<your-endpoint>.js
 **Уже применено в:**
 - `api/telegram-auth.ts` (commit `b3be469`)
 - `api/login.ts` (commit `e7934b1`)
+
+---
+
+## 5.6. Supavisor timeout workaround (Phase 1.5 DB migrations)
+
+**Проблема (зафиксирована Phase 1.5):** Supavisor connection pooler в нашей demo-среде теряет long-running `psql` сессии через свой TCP-keepalive. Любой DO block / multi-statement `psql -f` через Supavisor может оставить `idle in transaction` zombie-сессии, которые держат row-level locks. Последующие запуски блокируются на этих locks — внешне выглядит как зависание миграции.
+
+**Workaround (применён в Phase 1.5 миграциях):**
+
+1. **Никаких `DO $$ ... RAISE NOTICE` блоков** — были опробованы v1 и v2 миграции, обе зависали. v3 использует plain SQL statements.
+2. **Insert + Update в одном atomic CTE statement** через `WITH inserted AS (INSERT ... RETURNING) UPDATE ... FROM inserted` — нет окна между INSERT и UPDATE, нет zombie.
+3. **Report queries отдельными короткими `psql` вызовами** — write-side (atomic CTE) и read-side (SELECT-ы для отчёта) не должны жить в одной `psql -f` сессии, потому что длинная сессия = риск Supavisor timeout.
+4. **Никаких `BEGIN; ... COMMIT;` обёрток** — DDL + DML в одной сессии = та же проблема. Каждый statement autocommit.
+
+**Cleanup zombie-сессий** (если что-то залипло):
+```sql
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND state IN ('idle in transaction', 'idle in transaction (aborted)')
+  AND pid != pg_backend_pid();
+```
+**Не трогать** pid из `supabase_admin` (WalSender — `START_REPLICATION SLOT`, Realtime agent, pg_cron scheduler) — это replication-инфраструктура, не блокирует `UPDATE clients`.
+
+**Если будущие миграции зависают** — сначала проверить `pg_stat_activity` на наличие zombie, потом рефакторить в plain SQL без DO block.
 
 ---
 
