@@ -162,6 +162,8 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 13 | **Фаза 1.2:** `/api/telegram-auth.ts` с HMAC-проверкой initData + JWT HS256 (12ч TTL) + auth_logs INSERT (каждая попытка) + саморегистрация profile+clients с `role='client'` хардкод | Коммиты `6c1f16d` → `0f33773` |
 | 14 | **Фаза 1.3:** `/api/login.ts` для staff + extract JWT helpers в `api/_lib/jwt.ts` + рефактор telegram-auth на общий модуль + ESM `.js` extension fix (Vercel bundler требует `.js` в relative-импортах, не `.ts`) | Коммиты `0ae2947` → `e7934b1` → `b3be469` |
 | 15 | **Verified end-to-end** `/api/login`: 200 + JWT (demo_owner), 401 (wrong pwd), 401 (non-existent login), 400 (oversized 300-char pwd, length guard сработал ДО bcrypt), 405 (GET). Все 4 попытки в `auth_logs` с корректным IP, error_message хранит только длину логина (не сам логин) | Подтверждено curl + psql |
+| 16 | **Фаза 1.4:** `lib/supabase.ts` fetch-wrapper с JWT-инъекцией + `lib/_supabase-wrapper.ts` (testable, без Vite-API) + race-condition fix (LOCAL `retriedThisRequest`, не module-level) | Коммиты `09ec6a2` → `fd31656` |
+| 17 | **Verified:** 8/8 unit-тестов на wrapper через `node --experimental-strip-types --test` (T3 = Authorization header инжектится, T6 = 1 retry с новым токеном, T7 = 3 параллельных 401 каждый получает свой retry). Real REST: anon apikey + JWT из `/api/login` = 200 (это то что wrapper шлёт). Anon без токена = 200 (regression OK, 17 файлов не задеты). Vite build без TS-ошибок | Подтверждено node:test + curl |
 
 ---
 
@@ -174,9 +176,9 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 3 | Фаза 1.1 — env-переменные | ✅ Готово (см. п.1) |
 | 4 | Фаза 1.2 — `/api/telegram-auth.ts` | ✅ Готово, задеплоен, end-to-end проверен |
 | 5 | Фаза 1.3 — `/api/login.ts` | ✅ Готово, задеплоен, end-to-end проверен (5 curl-тестов) |
-| 6 | Фаза 1.4 — `lib/supabase.ts` fetch-wrapper + `setSessionToken()` + sessionStorage restore + 401-retry | ⏭ Следующий шаг |
-| 7 | Фаза 1.5 — `/api/link-client-profile.ts` + миграция legacy-клиентов по phone | Не начато (после Фазы 1.4-1.6) |
-| 8 | Фаза 1.6 — переключение `Login.tsx` и `ClientBookingWrapper.tsx` на новые эндпоинты | Не начато |
+| 6 | Фаза 1.4 — `lib/supabase.ts` fetch-wrapper + `setSessionToken()` + sessionStorage restore + 401-retry | ✅ Готово, задеплоен, 8/8 unit-тестов прошли, регресс-чек anon OK |
+| 7 | Фаза 1.5 — `/api/link-client-profile.ts` + миграция legacy-клиентов по phone | Не начато (после Фазы 1.6) |
+| 8 | Фаза 1.6 — переключение `Login.tsx` и `ClientBookingWrapper.tsx` на новые эндпоинты | ⏭ Следующий шаг |
 | 9 | Фаза 1.7 — REVOKE EXECUTE на `verify_password` для anon | Не начато (в тот же день что 1.6 для Login) |
 | 10 | Фаза 1.8 — `/api/upload-receipt.ts` + Storage lockdown | Не начато |
 | 11 | Фаза 2 — RLS 5 категорий A-E | Не начато |
