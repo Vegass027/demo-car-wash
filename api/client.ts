@@ -1,7 +1,8 @@
 /**
  * /api/client — single dispatcher for all client (Mini App) endpoints.
  *
- * Phase 2 / Slice #1 of carwash-full-security-lockdown-plan.md.
+ * Phase 2 / Slice #1 (carwash client flow, 7 actions) + Phase 2 / Slice #2
+ * (tire client flow, 3 actions).
  *
  * Why one file: Vercel Hobby plan allows max 12 serverless functions per
  * deployment. Before consolidation, api/ had 10 existing + 7 slice-1 = 17
@@ -9,11 +10,14 @@
  * Collapsing the 7 slice-1 endpoints into a single dispatcher with
  * ?action= query routing brings the total to 11 (under the limit).
  *
+ * Slice #2 adds 3 tire actions on top, total 10 serverless actions (well
+ * within 12-function Hobby limit). No new serverless file.
+ *
  * Security contract (unchanged from the per-file versions):
  *   - POST only.
  *   - Bearer client JWT required (app_role='client' claim).
  *   - One centralized requireClient() before dispatch.
- *   - Allow-list of 7 known actions; unknown / missing → 404.
+ *   - Allow-list of 10 known actions; unknown / missing → 404.
  *   - Each action handler preserves its prior HTTP status codes, validation,
  *     ownership checks, structured response shape.
  *
@@ -52,6 +56,10 @@ const ALLOWED_ACTIONS = new Set([
   'create-car',
   'update-car',
   'delete-car',
+  // Slice #2 — tire client flow:
+  'get-tire-bookings',
+  'create-tire-booking',
+  'cancel-tire-booking',
 ]);
 
 const ACTIVE_STATUSES = ['ОЖИДАЕТ', 'В РАБОТЕ'] as const;
@@ -553,6 +561,272 @@ async function deleteCarAction(claims: { profile_id: string }, body: AnyObj): Pr
   return { status: 200, body: { data: { success: true, car_id } } };
 }
 
+// =========================================================================
+// Slice #2 — tire client flow (3 actions, inline handlers below)
+// =========================================================================
+
+// Convert "HH:MM" or "HH:MM:SS" string to minutes since midnight.
+// Postgres time arithmetic companion used to feed find_tire_booking_overlap
+// (RPC which compares via EXTRACT(EPOCH FROM start_time)::int / 60).
+function timeToMinutesHHMM(s: string): number {
+  const parts = s.split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1] || '0', 10);
+  return h * 60 + m;
+}
+
+// === action: get-tire-bookings ===
+//
+// Same shape as carwash get-bookings but for tire_bookings. Returns OWN
+// bookings only (server-side resolve profile_id → client_id).
+async function getTireBookings(claims: { profile_id: string }, body: AnyObj): Promise<ActionResult> {
+  const date = readISODate(body, 'date');
+
+  const { data: clientRow, error: clientErr } = await supabaseAdmin
+    .from('clients').select('id')
+    .eq('profile_id', claims.profile_id).maybeSingle();
+  if (clientErr) {
+    console.error('[client:get-tire-bookings] clients lookup error:', clientErr.message);
+    return failAction(500, 'db_error');
+  }
+  if (!clientRow) {
+    return { status: 404, body: { error: 'client_profile_not_linked', hint: 'Reopen the Telegram Mini App' } };
+  }
+  const ownClientId = clientRow.id as string;
+
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings')
+    .select('id, booking_date, start_time, estimated_duration, end_time, status, '
+      + 'client_name, phone, car_model, plate_number, services, total_price, '
+      + 'payment_method, is_paid, is_org, organization_id, driver_id, car_id, '
+      + 'client_car_id, signature_data, signature_obtained_at, notes, '
+      + 'worker_id, worker_name, created_at, updated_at, booking_source, '
+      + 'created_by_profile_id')
+    .eq('booking_date', date)
+    .eq('client_id', ownClientId)
+    .order('start_time', { ascending: true, nullsFirst: false });
+  if (error) {
+    console.error('[client:get-tire-bookings] db error:', error.message);
+    return failAction(500, 'db_error');
+  }
+  return { status: 200, body: { data: { bookings: data ?? [] } } };
+}
+
+// === action: create-tire-booking ===
+//
+// Server-resolves client_id, validates 4-ID ownership chain, checks overlap
+// via find_tire_booking_overlap RPC, INSERTs with computed end_time.
+async function createTireBooking(claims: { profile_id: string }, body: AnyObj): Promise<ActionResult> {
+  const car_model = (readString(body, 'car_model', { max: 120, required: true }) ?? '').trim();
+  if (!car_model) throw new ValidationError('car_model_required');
+
+  const plate_number = readString(body, 'plate_number', { max: 12, required: true })!.trim().toUpperCase();
+
+  const services = readServicesArray(body, 'services', { min: 1, max: 50 });
+  const total_price = readNumberInRange(body, 'total_price', 0, 1_000_000) ?? 0;
+  const payment_method = readPaymentMethod(body, 'payment_method');
+  const booking_date = readISODate(body, 'booking_date');
+  const start_time = readTimeHHMM(body, 'start_time');
+  const estimated_duration = readNumberInRange(body, 'estimated_duration', 30, 240) ?? 60;
+
+  // Tire has a single post (no box_number). Is_org is implied by which IDs
+  // are present, consistent with TireTimeline (employee uses 1 fixed post).
+  const is_org = !!(body.organization_id || body.driver_id || body.car_id);
+  const organization_id = readUuidOpt(body, 'organization_id') || null;
+  const driver_id = readUuidOpt(body, 'driver_id') || null;
+  const car_id = readUuidOpt(body, 'car_id') || null;
+  const client_car_id = readUuidOpt(body, 'client_car_id') || null;
+
+  if (client_car_id && car_id) {
+    throw new ValidationError('client_car_id_and_car_id_mutually_exclusive');
+  }
+  if (car_id && (!organization_id || !driver_id)) {
+    throw new ValidationError('org_booking_requires_organization_id_and_driver_id');
+  }
+  if (driver_id && !organization_id) {
+    throw new ValidationError('driver_id_requires_organization_id');
+  }
+
+  // (1) resolve own client.id + phone + full_name
+  const { data: clientRow, error: clientErr } = await supabaseAdmin
+    .from('clients')
+    .select('id, phone, full_name')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (clientErr) {
+    console.error('[client:create-tire-booking] clients lookup error:', clientErr.message);
+    return failAction(500, 'db_error');
+  }
+  if (!clientRow) {
+    return { status: 404, body: { error: 'client_profile_not_linked', hint: 'Reopen the Telegram Mini App' } };
+  }
+  const ownClientId = clientRow.id as string;
+  const ownPhone = (clientRow.phone ?? null) as string | null;
+  const clientName = ((clientRow.full_name ?? '') as string).trim()
+    || `Client ${claims.profile_id.slice(0, 8)}`;
+
+  // (2) ownership checks (mirror carwash create-booking)
+  if (client_car_id) {
+    const { data: own, error } = await supabaseAdmin
+      .from('client_cars').select('id')
+      .eq('id', client_car_id).eq('client_id', ownClientId).maybeSingle();
+    if (error) {
+      console.error('[client:create-tire-booking] client_car_id ownership error:', error.message);
+      return failAction(500, 'db_error');
+    }
+    if (!own) return { status: 403, body: { error: 'client_car_id_not_owned' } };
+  }
+  if (driver_id) {
+    if (!ownPhone) return { status: 403, body: { error: 'driver_id_phone_missing' } };
+    const { data: own, error } = await supabaseAdmin
+      .from('organization_drivers').select('id')
+      .eq('id', driver_id).eq('phone', ownPhone).eq('is_active', true).maybeSingle();
+    if (error) {
+      console.error('[client:create-tire-booking] driver_id ownership error:', error.message);
+      return failAction(500, 'db_error');
+    }
+    if (!own) return { status: 403, body: { error: 'driver_id_not_owned' } };
+  }
+  if (organization_id) {
+    if (!ownPhone) return { status: 403, body: { error: 'organization_id_phone_missing' } };
+    const { data: own, error } = await supabaseAdmin
+      .from('organization_drivers').select('id')
+      .eq('organization_id', organization_id).eq('phone', ownPhone).eq('is_active', true).limit(1);
+    if (error) {
+      console.error('[client:create-tire-booking] organization_id ownership error:', error.message);
+      return failAction(500, 'db_error');
+    }
+    if (!own || own.length === 0) return { status: 403, body: { error: 'organization_id_not_owned' } };
+  }
+  if (car_id) {
+    const { data: own, error } = await supabaseAdmin
+      .from('organization_cars').select('id')
+      .eq('id', car_id).eq('organization_id', organization_id).eq('is_active', true).maybeSingle();
+    if (error) {
+      console.error('[client:create-tire-booking] car_id ownership error:', error.message);
+      return failAction(500, 'db_error');
+    }
+    if (!own) return { status: 403, body: { error: 'car_id_not_owned' } };
+  }
+
+  // (3) overlap check via find_tire_booking_overlap RPC
+  const startTimeSec = start_time.length === 5 ? `${start_time}:00` : start_time;
+  const startMinutes = timeToMinutesHHMM(startTimeSec);
+  const { data: overlaps, error: overlapErr } = await supabaseAdmin
+    .rpc('find_tire_booking_overlap', {
+      p_target_date: booking_date,
+      p_start_minutes: startMinutes,
+      p_duration_minutes: estimated_duration,
+    });
+  if (overlapErr) {
+    console.error('[client:create-tire-booking] overlap RPC error:', overlapErr.message);
+    return failAction(500, 'rpc_failed');
+  }
+  if (overlaps && overlaps.length > 0) {
+    return {
+      status: 409,
+      body: {
+        error: 'slot_occupied',
+        time: start_time,
+        conflicting_count: overlaps.length,
+      },
+    };
+  }
+
+  // (4) duplicate-check (same as carwash Slice #1, against partial UNIQUE INDEX).
+  //     Same car + same date + same start_time = blocked by DB even without
+  //     this check, but a friendly 409 is better than a 23P01.
+  if (client_car_id) {
+    const { data: dup, error: dupErr } = await supabaseAdmin
+      .from('tire_bookings').select('id')
+      .eq('client_car_id', client_car_id).eq('booking_date', booking_date)
+      .eq('start_time', startTimeSec.slice(0, 5))
+      .not('status', 'in', '(ОТМЕНЕНО,ГОТОВО)').limit(1);
+    if (dupErr) {
+      console.error('[client:create-tire-booking] duplicate check error:', dupErr.message);
+      return failAction(500, 'db_error');
+    }
+    if (dup && dup.length > 0) {
+      return { status: 409, body: { error: 'duplicate_booking_for_car', time: start_time } };
+    }
+  }
+
+  // (5) Compute end_time server-side (HH:MM, no seconds). start_time +
+  //     estimated_duration minutes, may roll past midnight (caller must not
+  //     ask for > 24:00; UI's DURATION_OPTIONS tops out at 240 min / 4h).
+  const endMinutes = (startMinutes + estimated_duration) % (24 * 60);
+  const endHH = Math.floor(endMinutes / 60);
+  const endMM = endMinutes % 60;
+  const endTimeStr = `${String(endHH).padStart(2, '0')}:${String(endMM).padStart(2, '0')}`;
+
+  // (6) INSERT
+  const insertPayload: AnyObj = {
+    client_id: ownClientId,
+    client_name: clientName,
+    phone: ownPhone || `+7${claims.profile_id.replace(/-/g, '').slice(0, 10)}`,
+    car_model,
+    plate_number,
+    booking_date,
+    start_time: startTimeSec.slice(0, 5),
+    end_time: endTimeStr,
+    estimated_duration,
+    services,
+    total_price,
+    payment_method,
+    is_paid: false,
+    status: 'ОЖИДАЕТ',
+    is_org,
+    booking_source: 'online',
+    created_by_profile_id: claims.profile_id,
+  };
+  if (client_car_id) insertPayload.client_car_id = client_car_id;
+  if (car_id) insertPayload.car_id = car_id;
+  if (organization_id) insertPayload.organization_id = organization_id;
+  if (driver_id) insertPayload.driver_id = driver_id;
+
+  const { data: booking, error: insertErr } = await supabaseAdmin
+    .from('tire_bookings').insert(insertPayload).select().single();
+  if (insertErr) {
+    console.error('[client:create-tire-booking] insert error:', insertErr.message);
+    return failAction(500, 'db_error', { detail: insertErr.message });
+  }
+  return { status: 200, body: { data: { booking } } };
+}
+
+// === action: cancel-tire-booking ===
+//
+// Thin RPC adapter (same shape as cancel-booking for carwash).
+async function cancelTireBooking(claims: { profile_id: string }, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const reason = readString(body, 'reason', { max: 500, required: false }) ?? null;
+
+  const { data, error } = await supabaseAdmin.rpc('cancel_own_tire_booking', {
+    p_tire_booking_id: tire_booking_id,
+    p_profile_id: claims.profile_id,
+    p_reason: reason,
+  });
+  if (error) {
+    const msg = error?.message || '';
+    const code = error?.code;
+    if (msg === 'NOT_FOUND_OR_NOT_OWNED') {
+      return { status: 404, body: { error: 'tire_booking_not_found_or_not_owned' } };
+    }
+    if (msg.startsWith('CANNOT_CANCEL_STATUS_')) {
+      return {
+        status: 409,
+        body: { error: 'cannot_cancel', current_status: msg.replace('CANNOT_CANCEL_STATUS_', '') },
+      };
+    }
+    // 23505 unique_violation on booking_cancellations.tire_booking_id would
+    // surface here under concurrent races (UNIQUE INDEX from migration 006).
+    // RPC FOR UPDATE serialises within, so we only see this if a non-RPC
+    // writer inserted a duplicate — treat as 500.
+    console.error('[client:cancel-tire-booking] unexpected RPC error:', { code, message: msg, hint: error?.hint, tire_booking_id });
+    return failAction(500, 'rpc_failed');
+  }
+  return { status: 200, body: { data } };
+}
+
 // ---------- dispatch ----------
 
 // Defensive action extractor: prefer Vercel/Next pre-parsed req.query, fall
@@ -625,6 +899,19 @@ export default async function handler(req: any, res: any) {
       }
       case 'delete-car': {
         result = await deleteCarAction(guard.claims, body);
+        break;
+      }
+      // ---- Slice #2: tire client flow ----
+      case 'get-tire-bookings': {
+        result = await getTireBookings(guard.claims, body);
+        break;
+      }
+      case 'create-tire-booking': {
+        result = await createTireBooking(guard.claims, body);
+        break;
+      }
+      case 'cancel-tire-booking': {
+        result = await cancelTireBooking(guard.claims, body);
         break;
       }
       default:

@@ -9,8 +9,8 @@ import { getServices } from '../../lib/api/services';
 import { getTireServices } from '../../lib/api/tire-services';
 import { formatTimeWithoutSeconds, calculateEndTime } from '../../shared/utils/time';
 import { cancelOnlineBooking } from '../../lib/api/bookings';
-import { cancelOnlineTireBooking } from '../../lib/api/tire-bookings';
 import { getCancellationCountByProfileId } from '../../lib/api/booking-cancellations';
+import { getSessionToken } from '../../lib/supabase';
 
 interface ActiveBookingCardProps {
   booking: Booking | TireBooking;
@@ -65,14 +65,47 @@ export const ActiveBookingCard: React.FC<ActiveBookingCardProps> = ({ booking, t
         if (isCarwash) {
           await cancelOnlineBooking((booking as Booking).id, clientId);
         } else {
-          await cancelOnlineTireBooking((booking as TireBooking).id, clientId);
+          // Slice #2: tire cancel now routes through service_role-owned RPC
+          // via /api/client dispatcher (cancel_own_tire_booking). Replaces
+          // the previous anon UPDATE path that leaked cross-tenant UPDATE
+          // permissions on tire_bookings.
+          const token = getSessionToken();
+          if (!token) throw new Error('Missing session token (reopen Mini App)');
+
+          const res = await fetch('/api/client?action=cancel-tire-booking', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              tire_booking_id: (booking as TireBooking).id,
+              reason: 'client_self_cancel',
+            }),
+          });
+
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => ({}));
+            const errStatus = res.status;
+            const errCode = errBody?.error || 'http_error';
+            if (errStatus === 404) {
+              throw new Error('Бронирование не найдено или вам не принадлежит');
+            }
+            if (errStatus === 409 && errBody?.current_status) {
+              throw new Error(`Нельзя отменить (текущий статус: ${errBody.current_status})`);
+            }
+            throw new Error(`Не удалось отменить (${errStatus} ${errCode})`);
+          }
+
+          await res.json().catch(() => ({}));
         }
         if (onDelete) {
           onDelete(booking.id);
         }
       } catch (error) {
         console.error('Ошибка при удалении заказа:', error);
-        alert('Не удалось удалить заказ');
+        const message = (error as Error)?.message || 'Не удалось удалить заказ';
+        alert(message);
       }
     }
   };
