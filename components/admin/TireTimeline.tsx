@@ -507,15 +507,18 @@ const BookingCellContent: React.FC<BookingCellContentProps> = ({ booking, userRo
               {formatTimeWithoutSeconds(booking.start_time)} - {calculateEndTime(booking.start_time, booking.estimated_duration)}
             </span>
           </div>
-          
-          {/* ✅ Если это собственная запись - показываем "Ваша запись" */}
-          {isOwnBooking && (
+
+          {/* ✅ Своя запись — показываем "Ваша запись" */}
+          {isOwnBooking ? (
             <>
-              {/* Разделитель */}
-              <div className="w-full border-t border-gray-300"></div>
-              
-              {/* "Ваша запись" (снизу) */}
+              <div className="w-full border-t border-gray-300" />
               <span className="text-xs font-semibold text-gray-600 whitespace-nowrap">Ваша запись</span>
+            </>
+          ) : (
+            // ✅ Чужая запись — показываем "Занято" (без утечки чужого статуса/деталей)
+            <>
+              <div className="w-full border-t border-gray-300" />
+              <span className="text-xs font-semibold text-gray-500 whitespace-nowrap">Занято</span>
             </>
           )}
         </div>
