@@ -606,7 +606,10 @@ async function getTireBookings(claims: { profile_id: string }, body: AnyObj): Pr
     .eq('client_id', ownClientId)
     .order('start_time', { ascending: true, nullsFirst: false });
   if (error) {
-    console.error('[client:get-tire-bookings] db error:', error.message);
+    // Log FULL error object so Vercel logs shows hint/code/details fields
+    // (not just `message`). Helps debug DB-side failures (RLS, column
+    // permissions, missing relations) without re-deploying instrumentation.
+    console.error('[client:get-tire-bookings] full error:', JSON.stringify(error));
     return failAction(500, 'db_error');
   }
   return { status: 200, body: { data: { bookings: data ?? [] } } };
