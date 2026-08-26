@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Card, CardContent } from '../ui/card';
 import { Badge } from '../ui/badge';
 import { Calendar, History } from 'lucide-react';
-import { supabase } from '../../lib/supabase';
+import { supabase, getSessionToken } from '../../lib/supabase';
 import { loginViaTelegram, telegramAuthErrorUI, reloadMiniApp, TelegramAuthError } from '../../lib/client-auth';
 import { LoyaltyProgressBar } from './LoyaltyProgressBar';
 import { ActiveBookingCard } from './ActiveBookingCard';
@@ -16,7 +16,8 @@ import { useBookingHistory } from '../../shared/hooks/useBookingHistory';
 import { Service } from '../../lib/api/services';
 import { Organization, OrganizationDriver, OrganizationCar } from '../../lib/api/organizations';
 import { Client } from '../../lib/api/clients';
-import { deleteClientCar } from '../../lib/api/clients';
+// deleteClientCar removed: soft-delete routes through POST /api/client-delete-car
+// (server-admin BACKEND enforced ownership gate, JWT-verified).
 
 interface MyGarageProps {
   services: Service[];
@@ -152,10 +153,29 @@ export const MyGarage: React.FC<MyGarageProps> = ({
       return;
     }
 
+    const token = getSessionToken();
+    if (!token) {
+      alert('Сессия не активна. Перезагрузите Mini App.');
+      return;
+    }
+
     try {
-      console.log('[MyGarage] Вызываем deleteClientCar');
-      await deleteClientCar(carId);
-      console.log('[MyGarage] deleteClientCar выполнен успешно, ждем Realtime обновления');
+      const res = await fetch('/api/client-delete-car', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ car_id: carId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const code = body?.error || `HTTP ${res.status}`;
+        let friendly = 'Не удалось удалить машину';
+        if (code === 'car_id_not_owned') friendly = 'Машина вам не принадлежит.';
+        throw new Error(friendly);
+      }
+      console.log('[MyGarage] car soft-deleted via /api/client-delete-car');
       // ❌ НЕ вызываем refetchCars() - Realtime подписка сама обработает изменение
       // await refetchCars();
     } catch (err: any) {

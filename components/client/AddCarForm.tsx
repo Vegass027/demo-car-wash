@@ -4,7 +4,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { CarType } from '../../types';
-import { createClientCar } from '../../lib/api/clients';
+import { getSessionToken } from '../../lib/supabase';
 
 interface AddCarFormProps {
   clientId: string | null;
@@ -12,30 +12,40 @@ interface AddCarFormProps {
   onCancel: () => void;
 }
 
-export const AddCarForm: React.FC<AddCarFormProps> = ({ clientId, onSuccess, onCancel }) => {
+// Phase 2 / Slice #1 of carwash-full-security-lockdown-plan.md.
+//
+// switch from lib/api/clients.ts:createClientCar (anon INSERT on client_cars)
+// to POST /api/client-create-car. Server resolves client.id from JWT — this
+// component no longer passes nor knows client_id. Authoritative ownership
+// gate is on the server side.
+
+export const AddCarForm: React.FC<AddCarFormProps> = ({ onSuccess, onCancel }) => {
   const [carModel, setCarModel] = useState('');
   const [plateNumber, setPlateNumber] = useState('');
   const [carType, setCarType] = useState<CarType>(CarType.SEDAN);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Same regex as api/_lib/validation.ts PLATE_RE — keep client-side check
+  // for instant UX feedback; server is authoritative.
+  const plateRegex = /^[А-ЯA-Z]\d{3}[А-ЯA-Z]{2}$/i;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (!clientId) {
-      setError('Не удалось определить клиента');
-      return;
-    }
 
     if (!carModel.trim() || !plateNumber.trim()) {
       setError('Заполните все поля');
       return;
     }
 
-    // Валидация формата гос номера: А555АА (1 буква, 3 цифры, 2 буквы)
-    const plateRegex = /^[А-Яа-яA-Za-z]\d{3}[А-Яа-яA-Za-z]{2}$/;
     if (!plateRegex.test(plateNumber.trim())) {
       setError('Неверный формат номера. Используйте формат: А555АА');
+      return;
+    }
+
+    const token = getSessionToken();
+    if (!token) {
+      setError('Сессия не активна. Перезагрузите Mini App.');
       return;
     }
 
@@ -43,14 +53,29 @@ export const AddCarForm: React.FC<AddCarFormProps> = ({ clientId, onSuccess, onC
     setError(null);
 
     try {
-      await createClientCar({
-        client_id: clientId,
-        car_model: carModel.trim(),
-        plate_number: plateNumber.trim().toUpperCase(),
-        car_type: carType
+      const res = await fetch('/api/client-create-car', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          car_model: carModel.trim(),
+          plate_number: plateNumber.trim().toUpperCase(),
+          car_type: carType,
+        }),
       });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const code = body?.error || `HTTP ${res.status}`;
+        let friendly = 'Не удалось добавить машину';
+        if (code === 'car_model_required') friendly = 'Укажите марку машины.';
+        else if (code === 'plate_number_bad_format') friendly = 'Неверный формат гос. номера.';
+        else if (code === 'plate_number_required') friendly = 'Укажите гос. номер.';
+        else if (code === 'car_type_invalid') friendly = 'Неверный тип автомобиля.';
+        throw new Error(friendly);
+      }
 
-      // Сбрасываем форму
       setCarModel('');
       setPlateNumber('');
       setCarType(CarType.SEDAN);
@@ -69,7 +94,6 @@ export const AddCarForm: React.FC<AddCarFormProps> = ({ clientId, onSuccess, onC
         <form onSubmit={handleSubmit} className="space-y-4">
           <h3 className="text-lg font-bold">Добавить машину</h3>
 
-          {/* Марка авто */}
           <div className="space-y-2">
             <Label htmlFor="car-model">Марка и модель</Label>
             <Input
@@ -81,7 +105,6 @@ export const AddCarForm: React.FC<AddCarFormProps> = ({ clientId, onSuccess, onC
             />
           </div>
 
-          {/* Гос. номер */}
           <div className="space-y-2">
             <Label htmlFor="plate-number">Гос. номер</Label>
             <Input
@@ -94,7 +117,6 @@ export const AddCarForm: React.FC<AddCarFormProps> = ({ clientId, onSuccess, onC
             />
           </div>
 
-          {/* Тип авто */}
           <div className="space-y-2">
             <Label>Тип автомобиля</Label>
             <div className="grid grid-cols-2 gap-2">
@@ -122,12 +144,10 @@ export const AddCarForm: React.FC<AddCarFormProps> = ({ clientId, onSuccess, onC
             </div>
           </div>
 
-          {/* Ошибка */}
           {error && (
             <div className="text-red-500 text-sm">{error}</div>
           )}
 
-          {/* Кнопки */}
           <div className="flex gap-2 pt-2">
             <Button
               type="button"
