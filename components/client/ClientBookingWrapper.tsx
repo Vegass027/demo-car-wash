@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo } from 'react'
 import { OnlineBookingWizard, OnlineBookingWizardData } from './OnlineBookingWizard'
 import { DayTimeline } from '../admin/DayTimeline'
-import { getTelegramId, initTelegramWebApp, isTelegramWebApp } from '../../shared/telegram/telegram'
 import { supabase } from '../../lib/supabase'
+import { loginViaTelegram, telegramAuthErrorUI, reloadMiniApp, TelegramAuthError } from '../../lib/client-auth'
 import { getBookingsByDate, Booking, createOnlineBooking, getClientOrganizationIds } from '../../lib/api/bookings'
 import { formatDate, addDays } from '../../shared/utils/date'
 import { createClient, createClientCar } from '../../lib/api/clients'
@@ -43,6 +43,7 @@ export function ClientBookingWrapper({
   const [profilePhone, setProfilePhone] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [recoveryAction, setRecoveryAction] = useState<'reload_mini_app' | 'retry' | 'none'>('none')
   const [combinedCars, setCombinedCars] = useState<any[]>([])
   // ✅ NEW: ID организаций, где клиент является водителем
   const [driverOrganizationIds, setDriverOrganizationIds] = useState<string[]>([])
@@ -334,136 +335,96 @@ export function ClientBookingWrapper({
   const loadClientData = async () => {
     try {
       console.log('[ClientBookingWrapper] Начало загрузки данных клиента')
-      
-      // 1. Инициализация Telegram Web App
-      console.log('[ClientBookingWrapper] Инициализация Telegram Web App')
-      await initTelegramWebApp()
 
-      // 2. Проверка что открыто в Telegram
-      const isTelegram = isTelegramWebApp()
-      console.log('[ClientBookingWrapper] isTelegramWebApp:', isTelegram)
-      if (!isTelegram) {
-        setError('Откройте через Telegram бота')
-        setLoading(false)
-        return
-      }
+      // Phase 1.6b: single HMAC-verified call to /api/telegram-auth replaces
+      // the old 4-step flow (initTelegram + isTelegram check + getTelegramId +
+      // supabase.from('profiles').eq('telegram_id')). JWT is injected into the
+      // supabase-js wrapper on success; subsequent supabase calls carry it.
+      const { profile_id, full_name } = await loginViaTelegram();
 
-      // 3. Получить telegram_id
-      const telegramId = getTelegramId()
-      console.log('[ClientBookingWrapper] telegramId:', telegramId)
-      if (!telegramId) {
-        setError('Не удалось получить данные Telegram')
-        setLoading(false)
-        return
-      }
-
-      // 4. Найти profile по telegram_id
-      console.log('[ClientBookingWrapper] Поиск профиля по telegram_id:', telegramId)
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
-        .select('id, full_name, phone, role')
-        .eq('telegram_id', telegramId)
-        .single()
-
-      console.log('[ClientBookingWrapper] Профиль:', profile, 'Ошибка:', profileError)
-
-      if (profileError || !profile) {
-        setError('Профиль не найден. Авторизуйтесь через бота')
-        setLoading(false)
-        return
-      }
-
-      // 5. Проверить что профиль - клиент
-      console.log('[ClientBookingWrapper] Роль профиля:', profile.role)
-      if (profile.role !== 'client') {
-        setError('Доступ только для клиентов')
-        setLoading(false)
-        return
-      }
-
-      // 6. Найти client по profile_id
-      console.log('[ClientBookingWrapper] Поиск клиента по profile_id:', profile.id)
+      // Найти client по profile_id (через wrapper с JWT — RLS Категории C пока
+      // нет, public_all_access). auto-create flow остаётся до Phase 1.5 / 2.5.
       const { data: client, error: clientError } = await supabase
         .from('clients')
-        .select('id, online_booking_blocked_until')
-        .eq('profile_id', profile.id)
-        .single()
+        .select('id, online_booking_blocked_until, phone')
+        .eq('profile_id', profile_id)
+        .single();
 
-      console.log('[ClientBookingWrapper] Клиент:', client, 'Ошибка:', clientError)
+      // Если клиент не найден — создаём автоматически (TODO: заменить на
+      // /api/link-client-profile в Фазе 1.5; anon INSERT закроется в 2.5).
+      let resolvedClientId: string;
+      let resolvedPhone: string | null = null;
 
-      // Если клиент не найден - создаем автоматически
       if (clientError || !client) {
-        console.log('[ClientBookingWrapper] Клиент не найден, создаем автоматически')
+        console.log('[ClientBookingWrapper] Клиент не найден, создаём автоматически');
         try {
-          // Создаем клиента через API функцию (телефон нормализуется автоматически)
           const newClient = await createClient({
-            full_name: profile.full_name || '',
-            phone: profile.phone || ''
-          })
+            full_name: full_name || '',
+            phone: '',
+          });
 
-          // Связываем клиента с профилем
           const { error: linkError } = await supabase
             .from('clients')
-            .update({ profile_id: profile.id })
-            .eq('id', newClient.id)
+            .update({ profile_id })
+            .eq('id', newClient.id);
 
           if (linkError) {
-            console.error('[ClientBookingWrapper] Ошибка при связывании клиента с профилем:', linkError)
+            console.error('[ClientBookingWrapper] Ошибка при связывании клиента с профилем:', linkError);
           }
 
-          // Используем созданного клиента
-          const createdClient = { id: newClient.id, online_booking_blocked_until: null }
-          console.log('[ClientBookingWrapper] Клиент создан:', createdClient)
-
-          // Продолжаем с созданным клиентом
-          setProfileId(profile.id)
-          setClientId(createdClient.id)
-          setProfileName(profile.full_name || '')
-          setProfilePhone(profile.phone || '')
-
-          // Загружаем заказы
-          await loadBookings()
-          setLoading(false)
-          return
-        } catch (createError) {
-          console.error('[ClientBookingWrapper] Ошибка при создании клиента:', createError)
-          
-          // Проверяем тип ошибки для красивого сообщения
-          if (createError.message === 'Такой клиент уже существует') {
-            setError('Такой клиент уже существует')
-          } else {
-            setError('Ошибка при создании клиента')
-          }
-          setLoading(false)
-          return
+          resolvedClientId = newClient.id;
+        } catch (createError: any) {
+          console.error('[ClientBookingWrapper] Ошибка при создании клиента:', createError);
+          setError(createError?.message === 'Такой клиент уже существует'
+            ? 'Такой клиент уже существует'
+            : 'Ошибка при создании клиента');
+          setLoading(false);
+          return;
         }
+      } else {
+        resolvedClientId = client.id;
+        resolvedPhone = client.phone || null;
       }
 
-      // 7. Всё ОК - сохраняем данные
-      console.log('[ClientBookingWrapper] Данные загружены успешно')
-      setProfileId(profile.id)
-      setClientId(client.id)
-      setProfileName(profile.full_name || '')
-      setProfilePhone(profile.phone || '')
+      // Всё ОК — сохраняем данные и грузим дальше
+      console.log('[ClientBookingWrapper] Данные загружены успешно');
+      setProfileId(profile_id);
+      setClientId(resolvedClientId);
+      setProfileName(full_name || '');
+      setProfilePhone(resolvedPhone || '');
 
-      // Загружаем машины клиента
-      if (client.id && profile.phone) {
-        const cars = await getClientCombinedCars(client.id, profile.phone)
-        setCombinedCars(cars)
+      // Загружаем машины клиента (через phone из clients, не из profile)
+      if (resolvedClientId && resolvedPhone) {
+        const cars = await getClientCombinedCars(resolvedClientId, resolvedPhone);
+        setCombinedCars(cars);
       }
 
-      // ✅ NEW: Загружаем ID организаций, где клиент является водителем
-      if (profile.phone) {
-        const orgIds = await getClientOrganizationIds(profile.phone)
-        console.log('[ClientBookingWrapper] Организации клиента:', orgIds)
-        setDriverOrganizationIds(orgIds)
+      // Загружаем организации, где клиент — водитель (по phone из clients)
+      if (resolvedPhone) {
+        try {
+          const orgIds = await getClientOrganizationIds(resolvedPhone);
+          setDriverOrganizationIds(orgIds);
+        } catch (error) {
+          console.error('[ClientBookingWrapper] Ошибка загрузки организаций клиента:', error);
+        }
       }
 
       // Загружаем заказы
       await loadBookings()
     } catch (err) {
-      console.error('[ClientBookingWrapper] Error loading client:', err)
-      setError('Ошибка загрузки данных')
+      // TelegramAuthError has typed `kind` — map to user-friendly UI.
+      // Other errors (e.g. supabase.from('clients') failure) fall through
+      // to generic message.
+      const maybeAuthErr = err as Partial<TelegramAuthError>;
+      if (maybeAuthErr && typeof maybeAuthErr.kind === 'string') {
+        const ui = telegramAuthErrorUI(maybeAuthErr.kind as TelegramAuthError['kind']);
+        setError(ui.message);
+        setRecoveryAction(ui.recovery);
+      } else {
+        console.error('[ClientBookingWrapper] Error loading client:', err);
+        setError('Ошибка загрузки данных');
+        setRecoveryAction('retry');
+      }
     } finally {
       setLoading(false)
     }
@@ -589,12 +550,30 @@ export function ClientBookingWrapper({
         <div className="bg-red-50 border border-red-200 rounded-lg p-6 max-w-md">
           <h2 className="text-xl font-bold text-red-800 mb-2">Ошибка</h2>
           <p className="text-red-600">{error}</p>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
-          >
-            Попробовать снова
-          </button>
+          {recoveryAction === 'reload_mini_app' && (
+            <button
+              onClick={reloadMiniApp}
+              className="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
+            >
+              Перезагрузить Mini App
+            </button>
+          )}
+          {recoveryAction === 'retry' && (
+            <button
+              onClick={() => loadClientData()}
+              className="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
+            >
+              Повторить
+            </button>
+          )}
+          {recoveryAction === 'none' && (
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
+            >
+              Попробовать снова
+            </button>
+          )}
         </div>
       </div>
     )

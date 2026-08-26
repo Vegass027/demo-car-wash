@@ -176,8 +176,8 @@ export default async function handler(req: any, res: any) {
     profile = created;
   }
 
-  if (!profile || !['client', 'admin', 'owner'].includes(profile.role)) {
-    return res.status(403).json({ error: 'Role not permitted' });
+  if (!profile || profile.role !== 'client') {
+    return res.status(403).json({ error: 'Role not permitted — Telegram Mini App is for client role only' });
   }
 
   // Best-effort: bump last_auth_method on existing profiles.
