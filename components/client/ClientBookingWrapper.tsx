@@ -85,25 +85,49 @@ export function ClientBookingWrapper({
   }, [selectedDate, profileId])
 
   // ✅ Перезагружаем заказы после закрытия мастера (для СБП оплаты)
+  // Bug 2 fix: retry up to 2 times on transient network failure (Safari
+  // "Load failed" — fetch-level error, no HTTP body). isMounted guard
+  // prevents setState on unmounted component when user navigates away
+  // during retry window.
   useEffect(() => {
-    if (!isWizardOpen && profileId && selectedDate) {
-      console.log('[ClientBookingWrapper] Мастер закрыт, перезагружаем заказы через 2 секунды')
-      const timeout = setTimeout(async () => {
-        try {
-          // Перезагружаем из БД (игнорируя кэш)
-          const data = await getBookingsByDate(selectedDate)
-          console.log('[ClientBookingWrapper] Заказы перезагружены:', data.length)
+    if (!isWizardOpen || !profileId || !selectedDate) return;
+
+    let isMounted = true;
+    const MAX_RETRIES = 2;
+    const RELOAD_DELAY_MS = 2000;
+    const RETRY_DELAY_MS = 1000;
+
+    async function reloadWithRetry(attempt = 0): Promise<void> {
+      try {
+        const data = await getBookingsByDate(selectedDate);
+        if (isMounted) {
+          console.log('[ClientBookingWrapper] Заказы перезагружены:', data.length);
           setBookingsByDate(prev => cleanOldCache({
             ...prev,
-            [selectedDate]: data || []
-          }))
-        } catch (error) {
-          console.error('[ClientBookingWrapper] Ошибка при перезагрузке заказов:', error)
+            [selectedDate]: data || [],
+          }));
         }
-      }, 2000) // Задержка 2 секунды чтобы webhook успел создать заказ
-
-      return () => clearTimeout(timeout)
+      } catch (error) {
+        if (attempt < MAX_RETRIES && isMounted) {
+          console.warn(`[ClientBookingWrapper] Reload attempt ${attempt + 1} failed, retrying...`);
+          setTimeout(() => {
+            if (isMounted) reloadWithRetry(attempt + 1);
+          }, RETRY_DELAY_MS);
+        } else if (isMounted) {
+          console.error('[ClientBookingWrapper] Ошибка при перезагрузке заказов (после retries):', error);
+        }
+      }
     }
+
+    console.log('[ClientBookingWrapper] Мастер закрыт, перезагружаем заказы через 2 секунды');
+    const timeout = setTimeout(() => {
+      if (isMounted) reloadWithRetry();
+    }, RELOAD_DELAY_MS); // Даём webhook'у 2 секунды на создание заказа
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timeout);
+    };
   }, [isWizardOpen, profileId, selectedDate])
 
   // Загрузка закрытых боксов при изменении даты (с кэшированием)

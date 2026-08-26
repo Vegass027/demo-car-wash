@@ -580,14 +580,16 @@ export async function createOnlineBooking(
   // Уникальный индекс idx_bookings_unique_client_slot использует (client_car_id, booking_date, start_time)
   // Одна машина не может быть записана на одно время дважды, даже на разных боксах
   if (booking.client_car_id && booking.booking_date && booking.start_time) {
-    const { data: existingBooking, error: checkError } = await supabase
+    // .maybeSingle() — no PGRST116 noise in console when no duplicate exists.
+    // Functionality unchanged: existingBooking is null in that case, code proceeds.
+    const { data: existingBooking } = await supabase
       .from('bookings')
       .select('id, box_number, status')
       .eq('client_car_id', booking.client_car_id)
       .eq('booking_date', booking.booking_date)
       .eq('start_time', booking.start_time)
       .not('status', 'in', '("ОТМЕНЕНО","ГОТОВО")')
-      .single();
+      .maybeSingle();
 
     if (existingBooking) {
       throw new Error(`Эта машина уже записана на ${booking.start_time.slice(0, 5)} на боксе ${existingBooking.box_number}`);

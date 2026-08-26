@@ -165,25 +165,47 @@ export function ClientTireBookingWrapper({
   }, [profileId, selectedDate])
 
   // ✅ Перезагружаем заказы после закрытия мастера (для СБП оплаты)
+  // Bug 2 fix: retry up to 2 times on transient network failure. isMounted
+  // guard prevents setState on unmounted component.
   useEffect(() => {
-    if (!isWizardOpen && profileId && selectedDate) {
-      console.log('[ClientTireBookingWrapper] Мастер закрыт, перезагружаем заказы через 2 секунды')
-      const timeout = setTimeout(async () => {
-        try {
-          // Перезагружаем из БД (игнорируя кэш)
-          const data = await getTireBookingsByDate(selectedDate)
-          console.log('[ClientTireBookingWrapper] Заказы перезагружены:', data.length)
+    if (!isWizardOpen || !profileId || !selectedDate) return;
+
+    let isMounted = true;
+    const MAX_RETRIES = 2;
+    const RELOAD_DELAY_MS = 2000;
+    const RETRY_DELAY_MS = 1000;
+
+    async function reloadWithRetry(attempt = 0): Promise<void> {
+      try {
+        const data = await getTireBookingsByDate(selectedDate);
+        if (isMounted) {
+          console.log('[ClientTireBookingWrapper] Заказы перезагружены:', data.length);
           setBookingsByDate(prev => cleanOldCache({
             ...prev,
-            [selectedDate]: data || []
-          }))
-        } catch (error) {
-          console.error('[ClientTireBookingWrapper] Ошибка при перезагрузке заказов:', error)
+            [selectedDate]: data || [],
+          }));
         }
-      }, 2000) // Задержка 2 секунды чтобы webhook успел создать заказ
-
-      return () => clearTimeout(timeout)
+      } catch (error) {
+        if (attempt < MAX_RETRIES && isMounted) {
+          console.warn(`[ClientTireBookingWrapper] Reload attempt ${attempt + 1} failed, retrying...`);
+          setTimeout(() => {
+            if (isMounted) reloadWithRetry(attempt + 1);
+          }, RETRY_DELAY_MS);
+        } else if (isMounted) {
+          console.error('[ClientTireBookingWrapper] Ошибка при перезагрузке заказов (после retries):', error);
+        }
+      }
     }
+
+    console.log('[ClientTireBookingWrapper] Мастер закрыт, перезагружаем заказы через 2 секунды');
+    const timeout = setTimeout(() => {
+      if (isMounted) reloadWithRetry();
+    }, RELOAD_DELAY_MS);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timeout);
+    };
   }, [isWizardOpen, profileId, selectedDate])
 
   // Функция для очистки старого кэша
