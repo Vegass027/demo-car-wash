@@ -159,6 +159,9 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 10 | Fix services: переименованы `service_id` в test-БД чтобы совпадали с категориями `lib/config/serviceCategories.ts` (продовый конфиг, не трогали) | Позже |
 | 11 | Verified: browser-логин `demo_owner/test1234` работает в demo-car-wash.vercel.app, Mini App открывается из тестового бота, бронирования создаются | Подтверждено пользователем |
 | 12 | Verified: бронирования отображаются в списке после hard reload (был баг client-side cache, не трогали) | Подтверждено |
+| 13 | **Фаза 1.2:** `/api/telegram-auth.ts` с HMAC-проверкой initData + JWT HS256 (12ч TTL) + auth_logs INSERT (каждая попытка) + саморегистрация profile+clients с `role='client'` хардкод | Коммиты `6c1f16d` → `0f33773` |
+| 14 | **Фаза 1.3:** `/api/login.ts` для staff + extract JWT helpers в `api/_lib/jwt.ts` + рефактор telegram-auth на общий модуль + ESM `.js` extension fix (Vercel bundler требует `.js` в relative-импортах, не `.ts`) | Коммиты `0ae2947` → `e7934b1` → `b3be469` |
+| 15 | **Verified end-to-end** `/api/login`: 200 + JWT (demo_owner), 401 (wrong pwd), 401 (non-existent login), 400 (oversized 300-char pwd, length guard сработал ДО bcrypt), 405 (GET). Все 4 попытки в `auth_logs` с корректным IP, error_message хранит только длину логина (не сам логин) | Подтверждено curl + psql |
 
 ---
 
@@ -166,15 +169,45 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 
 | # | Что | Статус |
 |---|---|---|
-| 1 | Vercel env-переменные для test Supabase | ⚠️ Не установлены — пользователь не прислал ключи (`SUPABASE_JWT_SECRET`, `YOOKASSA_*`) |
+| 1 | Vercel env-переменные для test Supabase | ✅ Установлены пользователем (`SUPABASE_JWT_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`, `TELEGRAM_BOT_TOKEN`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`). ⚠️ **Ротация после закрытия Фазы 1** — секреты прошли через чат с агентом. `YOOKASSA_*` пока не нужны (sandbox ещё не настроен) |
 | 2 | Фаза 0 (revoke column-level, TRUNCATE/REFERENCES) | Не начато |
-| 3 | Фаза 1 (JWT auth: `/api/telegram-auth`, `/api/login`, fetch-wrapper в `lib/supabase.ts`, переключение `Login.tsx` + client wrappers, `App.tsx` authState) | Не начато |
-| 4 | Фаза 1.5 (`/api/link-client-profile`, миграция legacy-клиентов) | Не начато |
-| 5 | Фаза 1.7 (REVOKE EXECUTE на `verify_password`) | Не начато |
-| 6 | Фаза 1.8 (`/api/upload-receipt`, закрытие Storage bucket) | Не начато |
-| 7 | Фаза 2 (RLS 5 категорий A-E) | Не начато |
-| 8 | Фаза 2.5 (REVOKE INSERT/UPDATE на `clients`) | Не начато |
-| 9 | Фаза 3 (public views для занятости слотов) | Не начато |
+| 3 | Фаза 1.1 — env-переменные | ✅ Готово (см. п.1) |
+| 4 | Фаза 1.2 — `/api/telegram-auth.ts` | ✅ Готово, задеплоен, end-to-end проверен |
+| 5 | Фаза 1.3 — `/api/login.ts` | ✅ Готово, задеплоен, end-to-end проверен (5 curl-тестов) |
+| 6 | Фаза 1.4 — `lib/supabase.ts` fetch-wrapper + `setSessionToken()` + sessionStorage restore + 401-retry | ⏭ Следующий шаг |
+| 7 | Фаза 1.5 — `/api/link-client-profile.ts` + миграция legacy-клиентов по phone | Не начато (после Фазы 1.4-1.6) |
+| 8 | Фаза 1.6 — переключение `Login.tsx` и `ClientBookingWrapper.tsx` на новые эндпоинты | Не начато |
+| 9 | Фаза 1.7 — REVOKE EXECUTE на `verify_password` для anon | Не начато (в тот же день что 1.6 для Login) |
+| 10 | Фаза 1.8 — `/api/upload-receipt.ts` + Storage lockdown | Не начато |
+| 11 | Фаза 2 — RLS 5 категорий A-E | Не начато |
+| 12 | Фаза 2.5 — REVOKE INSERT/UPDATE на `clients` | Не начато (после 1.5) |
+| 13 | Фаза 3 — public views для занятости слотов | Не начато |
+
+---
+
+## 5.5. Vercel ESM gotcha (важно для будущих `/api/*.ts` файлов)
+
+Vercel serverless functions в `api/` бандлят TypeScript → JavaScript как **чистые ES-модули** (не CommonJS). Это значит:
+
+```typescript
+// ❌ НЕ РАБОТАЕТ — модуль собирается в .js, а import без расширения не разрешается
+import { signJwt } from './_lib/jwt';
+
+// ✅ РАБОТАЕТ — указываем расширение скомпилированного файла, не исходного
+import { signJwt } from './_lib/jwt.js';
+```
+
+**Симптом:** `FUNCTION_INVOCATION_FAILED` (HTTP 500), в Vercel logs:
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/var/task/api/_lib/jwt'
+imported from /var/task/api/<your-endpoint>.js
+```
+
+**Фикс:** одна строка в каждом новом файле, который импортирует из `api/_lib/*` или любой другой relative path в `api/`. Vercel docs: "TypeScript files in the api directory are compiled to ESM JavaScript".
+
+**Уже применено в:**
+- `api/telegram-auth.ts` (commit `b3be469`)
+- `api/login.ts` (commit `e7934b1`)
 
 ---
 
