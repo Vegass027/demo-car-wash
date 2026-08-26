@@ -89,10 +89,12 @@ function hasAnyField(body: AnyObj, fields: string[]): boolean {
 
 // === action: search-client-by-phone ===
 //
-// Returns only allow-listed fields: id, full_name, phone, profile_id, is_active.
-// NEVER returns: notes, email, online_booking_blocked_until, created_at,
-// updated_at — those are sliced server-side to avoid accidental PII leaks.
-// LIMIT 5 rows so the response is bounded.
+// Universal staff search — returns SearchResult-shaped rows for both
+// individuals and organizations (matches BookingWizard's searchByPhone()
+// shape so the wizard can be switched without a frontend rewrite).
+// All fields here are allow-listed explicitly; nothing else is exposed.
+//
+// LIMIT 5 per type (client / organization) so the response is bounded.
 async function searchClientByPhone(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const rawPhone = readString(body, 'phone', { max: 32, required: true });
   if (!rawPhone) throw new ValidationError('phone_required');
@@ -100,16 +102,83 @@ async function searchClientByPhone(_claims: StaffClaims, body: AnyObj): Promise<
   const normalized = normalizePhoneNumber(rawPhone);
   const phone = normalized || rawPhone.trim();
 
-  const { data, error } = await supabaseAdmin
-    .from('clients')
-    .select('id, full_name, phone, profile_id, is_active')
-    .or(`phone.eq.${phone},phone.ilike.%${phone}%`)
-    .limit(5);
-  if (error) {
-    console.error('[staff:search-client-by-phone] db error:', error.message);
+  const [clientRes, orgRes] = await Promise.all([
+    supabaseAdmin
+      .from('clients')
+      .select('id, full_name, phone, profile_id, is_active')
+      .or(`phone.eq.${phone},phone.ilike.%${phone}%`)
+      .limit(5),
+    supabaseAdmin
+      .from('organizations')
+      .select('id, name, contact_phone, inn, is_active')
+      .or(`contact_phone.eq.${phone},contact_phone.ilike.%${phone}%`)
+      .limit(5),
+  ]);
+  if (clientRes.error) {
+    console.error('[staff:search-client-by-phone] clients error:', clientRes.error.message);
     return failAction(500, 'db_error');
   }
-  return { status: 200, body: { data: { clients: data ?? [] } } };
+  if (orgRes.error) {
+    console.error('[staff:search-client-by-phone] orgs error:', orgRes.error.message);
+    return failAction(500, 'db_error');
+  }
+
+  const clients = clientRes.data ?? [];
+  const orgs = orgRes.data ?? [];
+
+  // Pull each client's active cars in one query (LIMIT 5 clients => ≤5 rows
+  // per client, keyed by client_id).
+  let carsByClientId: Record<string, AnyObj[]> = {};
+  if (clients.length > 0) {
+    const clientIds = clients.map((c: any) => c.id);
+    const { data: cars, error: carsErr } = await supabaseAdmin
+      .from('client_cars')
+      .select('id, client_id, car_model, plate_number, car_type, is_active')
+      .in('client_id', clientIds)
+      .eq('is_active', true);
+    if (carsErr) {
+      console.error('[staff:search-client-by-phone] cars error:', carsErr.message);
+      return failAction(500, 'db_error');
+    }
+    for (const car of cars ?? []) {
+      const cid = (car as any).client_id;
+      if (!carsByClientId[cid]) carsByClientId[cid] = [];
+      carsByClientId[cid].push({
+        id: car.id,
+        car_model: car.car_model,
+        plate_number: car.plate_number,
+        car_type: car.car_type,
+      });
+    }
+  }
+
+  // Shape-compatible with SearchResult[] used by BookingWizard's
+  // searchByPhone() — same keys/types so the wizard component sees the
+  // same shape it had before. type field allows discriminating.
+  const results: AnyObj[] = [];
+  for (const c of clients) {
+    results.push({
+      type: 'client',
+      client_id: c.id,
+      client_name: c.full_name,
+      client_phone: c.phone,
+      profile_id: c.profile_id,
+      is_active: c.is_active,
+      client_cars: carsByClientId[c.id] ?? [],
+    });
+  }
+  for (const o of orgs) {
+    results.push({
+      type: 'organization',
+      organization_id: o.id,
+      organization_name: o.name,
+      contact_phone: o.contact_phone,
+      inn: o.inn,
+      is_active: o.is_active,
+    });
+  }
+
+  return { status: 200, body: { data: { results } } };
 }
 
 // =========================================================================
