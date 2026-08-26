@@ -29,10 +29,10 @@ interface ClientBookingWrapperProps {
 //   - availability (occupied slots + closed boxes) comes from public RPCs
 //     (get_public_booking_slots / get_public_closed_boxes);
 //   - own bookings (history + DayTimeline "own" cards) come from
-//     /api/client-get-bookings (server-side client_id → clients.profile_id chain);
-//   - create / cancel go through /api/client-create-booking and
-//     /api/client-cancel-booking;
-//   - profile / client / cars / blocked-state come from /api/client-get-my-cars.
+//     /api/client?action=get-bookings (server-side client_id → clients.profile_id chain);
+//   - create / cancel go through /api/client?action=create-booking and
+//     /api/client?action=cancel-booking;
+//   - profile / client / cars / blocked-state come from /api/client?action=get-my-cars.
 //
 // The combined `[client, combined_cars]` payload collapses 3 anon SELECTs into
 // one server-side roundtrip. driverOrganizationIds is derived from combined_cars
@@ -265,14 +265,14 @@ export function ClientBookingWrapper({
       // 1) Telegram auth — yields JWT via supabase-js wrapper.
       const { profile_id, full_name } = await loginViaTelegram();
 
-      // 2) Single POST /api/client-get-my-cars — replaces 3 anon SELECTs
+      // 2) Single POST /api/client?action=get-my-cars — replaces 3 anon SELECTs
       //    (clients / client_cars / organization_drivers) plus the
       //    isProfileBlockedForOnlineBooking check. server_admin (BYPASSRLS)
       //    resolves client + phone + cars + blocked_until + driver-org-ids
       //    in one roundtrip.
       let apiResult: any;
       try {
-        apiResult = await apiPost('/api/client-get-my-cars', {});
+        apiResult = await apiPost('/api/client?action=get-my-cars', {});
       } catch (e: any) {
         if (e.status === 404 && e.body?.error === 'client_profile_not_linked') {
           // Profile created without link-client-profile run; trigger it now.
@@ -289,7 +289,7 @@ export function ClientBookingWrapper({
             throw new Error(`link-client-profile failed: ${errBody.error || linkRes.status}`);
           }
           // Retry the get-my-cars call.
-          apiResult = await apiPost('/api/client-get-my-cars', {});
+          apiResult = await apiPost('/api/client?action=get-my-cars', {});
         } else {
           throw e;
         }
@@ -345,7 +345,7 @@ export function ClientBookingWrapper({
   async function loadCombinedTimeline(date: string) {
     const [slotsRes, ownRes, closedRes] = await Promise.all([
       supabase.rpc('get_public_booking_slots', { p_target_date: date }),
-      apiPost('/api/client-get-bookings', { date }),
+      apiPost('/api/client?action=get-bookings', { date }),
       supabase.rpc('get_public_closed_boxes', { p_target_date: date }),
     ]);
 
@@ -353,7 +353,7 @@ export function ClientBookingWrapper({
       console.error('[ClientBookingWrapper] get_public_booking_slots error:', slotsRes.error.message);
     }
     if (ownRes?.error) {
-      console.error('[ClientBookingWrapper] /api/client-get-bookings error:', ownRes.error);
+      console.error('[ClientBookingWrapper] /api/client?action=get-bookings error:', ownRes.error);
     }
     if (closedRes.error) {
       console.error('[ClientBookingWrapper] get_public_closed_boxes error:', closedRes.error.message);
@@ -450,7 +450,7 @@ export function ClientBookingWrapper({
 
   const handleWizardComplete = async (data: OnlineBookingWizardData) => {
     try {
-      console.log('[ClientBookingWrapper] Создание заказа через /api/client-create-booking');
+      console.log('[ClientBookingWrapper] Создание заказа через /api/client?action=create-booking');
 
       // Find driver_id if org car selected.
       let driverId: string | undefined;
@@ -478,7 +478,7 @@ export function ClientBookingWrapper({
       if (data.organizationId) payload.organization_id = data.organizationId;
       if (driverId) payload.driver_id = driverId;
 
-      const result = await apiPost('/api/client-create-booking', payload);
+      const result = await apiPost('/api/client?action=create-booking', payload);
       console.log('[ClientBookingWrapper] Бронь создана:', result?.data?.booking?.id);
 
       setSelectedSlot(null);

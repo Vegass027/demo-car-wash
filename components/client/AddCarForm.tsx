@@ -15,7 +15,7 @@ interface AddCarFormProps {
 // Phase 2 / Slice #1 of carwash-full-security-lockdown-plan.md.
 //
 // switch from lib/api/clients.ts:createClientCar (anon INSERT on client_cars)
-// to POST /api/client-create-car. Server resolves client.id from JWT — this
+// to POST /api/client?action=create-car. Server resolves client.id from JWT — this
 // component no longer passes nor knows client_id. Authoritative ownership
 // gate is on the server side.
 
@@ -53,7 +53,7 @@ export const AddCarForm: React.FC<AddCarFormProps> = ({ onSuccess, onCancel }) =
     setError(null);
 
     try {
-      const res = await fetch('/api/client-create-car', {
+      const res = await fetch('/api/client?action=create-car', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
