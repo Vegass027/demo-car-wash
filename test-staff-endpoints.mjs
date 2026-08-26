@@ -16,6 +16,36 @@
 //   node test-staff-endpoints.mjs
 //
 // Env override: DEPLOY_URL (default production alias).
+//
+// --- Assert accounting --------------------------------------------------
+// 15 E-numbers (E0..E14). Each E* section issues 1..3 assert() calls.
+// Sub-asserts use the suffix pattern `-prep` for setup without post-check
+// or `-b` for an independent property on the same fixture.
+//
+// Total assert() invocations = 19. Layout:
+//   E0:  login → staff JWT                         (1)
+//   E1:  no token → 401                            (1)
+//   E2:  client-role JWT → 403 wrong_role          (1)  [E2-prep no assert]
+//   E3:  unknown action → 404                      (1)
+//   E4:  search-cluster                            (3)
+//        E4-prep create-client seed → 200, E4 returns row,
+//        E4b response fields are allow-listed only
+//   E5:  create-client valid → 200                 (1)
+//   E6:  duplicate phone → 409                     (1)
+//   E7:  foreign client_id → 404                   (1)
+//   E8:  create-client-car → 200                   (1)
+//   E9:  update-client patch → 200 normalized      (1)
+//   E10: unblock-cluster                           (2)
+//        E10-prep plant block, E10 unblock cleared
+//   E11: org-collision-cluster                     (2)
+//        E11-prep create-organization, E11 collision 409
+//   E12: create-org-driver → 200                   (1)
+//   E13: create-org-car → 200                      (1)
+//   E14: update-driver-signature → 200             (1)
+// ----
+// 19 assertions total. Reference table is also in PROJECT_STATE.md
+// entry 38 — keep both in sync if cases are added/renamed.
+// -----------------------------------------------------------------------
 
 const BASE = process.env.DEPLOY_URL || 'https://demo-car-wash.vercel.app';
 
