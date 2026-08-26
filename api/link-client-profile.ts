@@ -30,7 +30,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { verifyJwt } from './_lib/jwt';
+import { verifyJwt } from './_lib/jwt.js';
 
 export const config = { maxDuration: 10 };
 
