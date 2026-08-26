@@ -774,7 +774,11 @@ async function createTireBooking(claims: { profile_id: string }, body: AnyObj): 
     plate_number,
     booking_date,
     start_time: startTimeSec.slice(0, 5),
-    end_time: endTimeStr,
+    // end_time is a GENERATED ALWAYS AS column on tire_bookings — Postgres
+    // computes (start_time + make_interval(mins => estimated_duration)) on
+    // every INSERT/UPDATE. We must NOT include it in the INSERT payload,
+    // else postgres raises "cannot insert a non-DEFAULT value into
+    // column end_time".
     estimated_duration,
     services,
     total_price,
