@@ -168,6 +168,14 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 19 | **Verified 1.6a:** curl-тесты `/api/login` (200/401/400/405), Supabase REST с JWT = 200, `auth_logs` имеет запись с `success=true, profile_id=44444444...`, `profiles.last_auth_method='password'`. Unit-тесты 11/11 (T9=staff handler fires, T10=client не fires, T11=anon не fires) | Подтверждено curl + psql + node:test |
 | 20 | **Фаза 1.6b:** `lib/client-auth.ts` (loginViaTelegram + TelegramAuthError union + UI mapper + reloadMiniApp) + 3 wrapper'а → `loginViaTelegram()` + recovery buttons + `api/telegram-auth:179` role-check fix | Коммиты `0492a4f` + `83b828c` |
 | 21 | **Verified 1.6b:** ✅ admin telegram_id=222222222 → **HTTP 403** «Role not permitted — Telegram Mini App is for client role only» (regression fix!). ✅ client telegram_id=333333333 → HTTP 200 + JWT (347 chars, app_role=client). ✅ bad HMAC → HTTP 401. ✅ Supabase REST с новым JWT = 200 (wrapper proof). ✅ `auth_logs` записан. ✅ `profiles.last_auth_method='telegram'`. Unit-тесты wrapper 11/11 (regression) | Подтверждено curl + psql |
+| 22 | **Фаза 2 — Slice #1: DB-миграции** `migrations/001_public_carwash_slot_rpcs.sql` (anon+authenticated EXECUTE) + `migrations/002_cancel_own_booking_rpc.sql` (service-role only, `FOR UPDATE` row-lock, идемпотентный cancel_id path, UNIQUE(booking_id), 30-day cancel-count → auto-block логика). RPC-аудит: `prosecdef=t, provolatile=s/v, owner=postgres, search_path=pg_catalog,public` | Подтверждено через `pg_proc`+`routine_privileges` |
+| 23 | **Фаза 2 — Slice #1: Atomic cancel RPC + smoke**: `test-slice1-rpcs.sh` (T1-T24) + `test-slice1-t21-concurrent-cancel.mjs` (8 параллельных `Promise.all` через supabaseAdmin.rpc). T1-T21 PASS, T15 доказал что 3-я отмена → `online_booking_blocked_until = current_date + 30` (с конкретной цифрой). T21 доказал FOR UPDATE: 8 одновременных rpc → 1 cancellation row + 7 idempotent returns, **0 ошибок**. Численные данные в отчёте, не «PASS» | Подтверждено |
+| 24 | **Фаза 2 — Slice #1: API layer** — `api/_lib/validation.ts` (server-only, class-based `ValidationError`) + `api/_lib/require-client.ts` (HS256+JWT, role check, UUID profile_id) + 7 client endpoints → **консолидированы** в один dispatcher `api/client.ts` для укладывания в Vercel Hobby limit (12 serverless functions). URLs: `POST /api/client?action={get-my-cars,get-bookings,create-booking,cancel-booking,create-car,update-car,delete-car}` | Коммиты `4fbffff`, `6bdcd89` |
+| 25 | **Фаза 2 — Slice #1: Tenant-isolation verified** — все 7 endpoints устроены так что `service_role` через `SELECT clients WHERE profile_id=jwt.profile_id` фильтрует только own; `create-booking` верифицирует ownership всех 4 external ID (client_car_id, car_id, organization_id, driver_id) через server-side SELECT `WHERE client_id = own.id AND phone = own.phone`. Box-overlap predicate `b.start_time < new_end_time AND b.end_time > new_start_time` (overlap, не exact match) | Тесты в `test-client-carwash-endpoints.mjs` 42 PASS |
+| 26 | **Фаза 2 — Slice #1: Mini App UI switch** — `ClientBookingWrapper.tsx` (timeline = `rpc/get_public_booking_slots` + `rpc/get_public_closed_boxes` + `POST /api/client?action=get-bookings` для own; create/cancel через dispatcher), `AddCarForm.tsx` → `POST /api/client?action=create-car`, `MyGarage.tsx` → `POST /api/client?action=delete-car`. `lib/api/*` нетронут | Коммиты `f3947d8`, `e346ad7` |
+| 27 | **Фаза 2 — Slice #1: Bug fixes after live Mini App verification** — (1) DayTimeline показывал пустой блок для чужих слотов из-за `undefined.slice()` синтетик-строки без `status`-поля — фикс: rpc-слоты теперь идут уже redacted-формой (`status='ОЖИДАЕТ'`, `client_name='Занято'`, пустые `car_model/plate_number/phone/services`) + `unified=[...ownBookings, ...syntheticSlots]` (own first, stable sort сохраняет порядок). (2) `useClientCars` хук показывал 27 машин (9 test pollution + 18 historic soft-deleted) — фикс: переписан на `/api/client?action=get-my-cars`, +9 тест-машин софт-делены в БД (Porsche Cayenne сохранён). (3) Own bookings в DayTimeline теперь видны (та же причина что 1) | Коммит `4a204b4` |
+| 28 | **Фаза 2 — Slice #1: Idempotent block policy C** — `migrations/003_idempotent_block_on_cancel.sql`. В UPDATE блокировки добавлен WHERE guard `(online_booking_blocked_until IS NULL OR < current_date)`, чтобы повторные отмены внутри активной блокировки **не продлевали** её каждый раз на новые 30 дней. Счётчик и INSERT в booking_cancellations не изменились — подтверждено `test-003-idempotent-block.sh` (7 PASS): cancel1/2/3 устанавливают блок на 2026-09-25, cancel4 → `blocked=false, blocked_until=2026-09-25` (echoes существующее, не продлевает). DB row после cancel4: 2026-09-25 == 2026-09-25 (unchanged) | Подтверждено |
+| 29 | **Vercel deploy** серии Slice #1: 17 serverless functions → over Vercel Hobby limit (12). Dispatcher `api/client.ts` снизил счёт до 11 (10 existing + 1 dispatcher). One-shot consolidation commit `6bdcd89`. **11 serverless functions, ≤ 12 — deploy passes.** При ручном `vercel deploy --prod` на этапе сборки Удалён второй раз (pnpm-lock.yaml, неверный package-manager detection) — откатил pnpm side-effects, `git push` прошёл через Vercel auto-deploy | Production: `https://demo-car-wash-eendx0vc5...`, потом `nlslke7jk...`, потом `393osy2ka...` |
 
 ---
 
@@ -242,6 +250,46 @@ WHERE datname = current_database()
 **Не трогать** pid из `supabase_admin` (WalSender — `START_REPLICATION SLOT`, Realtime agent, pg_cron scheduler) — это replication-инфраструктура, не блокирует `UPDATE clients`.
 
 **Если будущие миграции зависают** — сначала проверить `pg_stat_activity` на наличие zombie, потом рефакторить в plain SQL без DO block.
+
+---
+
+## 5.7. Test-data cleanup между сессиями (Phase 2 / Slice #1 артефакты)
+
+**Проблема:** после Phase 2 / Slice #1 manual Mini App тестирования в demo-БД остаются test-pollution ряды:
+
+- `client_cars` с `car_model IN ('Test Car', 'Test Slot Car', 'T7 Car')` — от моих smoke-тестов (T15, T6, T7 которые сетали множество машин). Soft-delete их (`is_active=false`) достаточно, **не удалять физически** (FK на `bookings.client_car_id`).
+- `booking_cancellations` строки с `reason='client_self_cancel'` — от множественных cancel-вызовов. Пока не удалено, `cancel_own_booking` RPC продолжает считать их в 30-day rolling window и блокировать клиента при ≥3 cancel-ах.
+- `clients.online_booking_blocked_until` — периодически взводится если пользователь вручную отменяет несколько броней. Снять = `UPDATE clients SET online_booking_blocked_until = NULL`.
+
+**Mandatory cleanup на старте каждой тестовой сессии:**
+
+```sql
+-- (1) Снять блокировку с тест-клиента.
+UPDATE clients SET online_booking_blocked_until = NULL
+  WHERE online_booking_blocked_until IS NOT NULL;
+
+-- (2) Soft-delete test-pollution cars (preserve real cars like Porsche Cayenne).
+UPDATE client_cars SET is_active = false
+  WHERE is_active = true
+    AND car_model IN ('Test Car', 'Test Slot Car', 'T7 Car');
+
+-- (3) Очистить cancellation events (ОБЯЗАТЕЛЬНО после test-runs иначе auto-block ретригерится).
+--     Легитимные cancellations (admin staff отмены с reason='admin_cancel') не трогать.
+DELETE FROM booking_cancellations
+  WHERE reason = 'client_self_cancel';
+
+-- (4) Удалить phantom 2099-* бронирования от T15 / T21 тестов.
+DELETE FROM booking_cancellations
+  WHERE booking_id IN (SELECT id FROM bookings WHERE booking_date >= '2099-01-01');
+DELETE FROM bookings WHERE booking_date >= '2099-01-01';
+DELETE FROM closed_boxes WHERE closed_date >= '2099-01-01';
+```
+
+**Script-утилиты для быстрой очистки:**
+- `test-slice1-rpcs.sh` имеет `teardown()` с удалением 2099-* bookings (cleanup step #4).
+- `test-slice1-t21-concurrent-cancel.mjs` использует admin client + удаляет тестовые ряды после run (cleanup в script).
+
+**ОБЯЗАТЕЛЬНО запустите cleanup перед каждой новой тестовой сессией** — не разовая мера, иначе test pollution накопится и тесты начнут отказывать с блокировкой-внезапно (cancel count за 30 дней накопит ≥3) и orphan-cars в DayTimeline.
 
 ---
 
