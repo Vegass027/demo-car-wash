@@ -30,7 +30,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
-import { verifyJwt, type JwtClaims } from './_lib/jwt';
+import { verifyJwt } from './_lib/jwt';
 
 export const config = { maxDuration: 10 };
 
@@ -56,7 +56,7 @@ export default async function handler(req: any, res: any) {
   if (!secret) {
     return res.status(500).json({ error: 'SUPABASE_JWT_SECRET not configured' });
   }
-  let claims: JwtClaims;
+  let claims;
   try {
     claims = verifyJwt(token, secret);
   } catch (err: any) {
