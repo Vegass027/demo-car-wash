@@ -13,7 +13,7 @@
 
 import crypto from 'crypto';
 import { createClient } from '@supabase/supabase-js';
-import { signJwt } from './_lib/jwt';
+import { signJwt } from './_lib/jwt.js';
 
 export const config = {
   maxDuration: 10, // 10 seconds — HMAC + 1-2 DB queries
