@@ -1,8 +1,22 @@
 import { useState, useEffect } from 'react';
-import { createClientCar, getClientByProfileId } from '../../lib/api/clients';
-import { getClientCombinedCars, CombinedCar } from '../../lib/api/combined-cars';
-import { supabase } from '../../lib/supabase';
-import { normalizePhoneNumber } from '../../shared/utils/phone';
+import { supabase, getSessionToken } from '../../lib/supabase';
+import { CombinedCar } from '../../lib/api/combined-cars';
+
+// Phase 2 / Slice #1 of carwash-full-security-lockdown-plan.md.
+//
+// Previous version: anon SELECTs against clients (public_all_access) and
+// organization_drivers (joined by phone) → cross-tenant leak risk. Plus
+// anon INSERT against client_cars (Category C will block).
+//
+// Replaced with a single server-side boundary:
+//   fetchCars  → POST /api/client?action=get-my-cars  (Bearer JWT, server-admin)
+//   addCar     → POST /api/client?action=create-car   (server-admin)
+// Realtime subscription on client_cars kept (filter restricts to client_id);
+// organization_cars realtime removed because the org link is server-managed.
+//
+// Phase 2 / Category C is still applied table-level; this hook is now safe
+// pre-Category because the server is the trust boundary. After Category C,
+// this hook remains correct (the endpoint does not rely on anon reads).
 
 export interface UseClientCarsResult {
   cars: CombinedCar[];
@@ -12,20 +26,35 @@ export interface UseClientCarsResult {
   refetch: () => Promise<void>;
 }
 
+const SERVER_ERRORS: Record<string, string> = {
+  client_profile_not_linked: 'Клиент не найден. Перезагрузите Mini App.',
+  car_model_required: 'Укажите марку машины.',
+  plate_number_bad_format: 'Неверный формат гос. номера.',
+  plate_number_required: 'Укажите гос. номер.',
+  car_type_invalid: 'Неверный тип автомобиля.',
+  missing_authorization: 'Сессия истекла. Перезагрузите Mini App.',
+  invalid_or_expired_token: 'Сессия истекла. Перезагрузите Mini App.',
+  wrong_role: 'Эта секция только для клиентов.',
+};
+
+function mapServerError(code: string): string {
+  return SERVER_ERRORS[code] ?? 'Не удалось обновить список машин';
+}
+
 export function useClientCars(profileId: string | null | undefined, profilePhone: string | null | undefined): UseClientCarsResult {
   const [cars, setCars] = useState<CombinedCar[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [clientId, setClientId] = useState<string | null>(null);
-  const [organizationId, setOrganizationId] = useState<string | null>(null);
-
-  console.log('[useClientCars] Инициализация хука, profileId:', profileId, 'profilePhone:', profilePhone);
 
   const fetchCars = async () => {
-    console.log('[useClientCars] fetchCars вызван, profileId:', profileId, 'profilePhone:', profilePhone);
-
-    if (!profileId || !profilePhone) {
-      console.log('[useClientCars] profileId или profilePhone отсутствуют, очищаем список');
+    if (!profileId) {
+      setCars([]);
+      setIsLoading(false);
+      return;
+    }
+    const token = getSessionToken();
+    if (!token) {
       setCars([]);
       setIsLoading(false);
       return;
@@ -35,48 +64,42 @@ export function useClientCars(profileId: string | null | undefined, profilePhone
       setIsLoading(true);
       setError(null);
 
-      // Получаем клиента по profile_id
-      console.log('[useClientCars] Получаем клиента по profileId:', profileId);
-      const client = await getClientByProfileId(profileId);
-
-      if (!client) {
-        console.log('[useClientCars] Клиент не найден');
-        setCars([]);
-        setClientId(null);
-        setIsLoading(false);
-        return;
+      const res = await fetch('/api/client?action=get-my-cars', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const code = body?.error || '';
+        if (res.status === 404 && code === 'client_profile_not_linked') {
+          // Server says no profile yet — clear the list, no error UI needed.
+          setCars([]);
+          setClientId(null);
+          return;
+        }
+        throw new Error(code || `HTTP ${res.status}`);
       }
 
-      console.log('[useClientCars] Клиент найден, clientId:', client.id);
-      setClientId(client.id);
+      const data = body?.data;
+      if (!data) throw new Error('empty response');
 
-      // Получаем комбинированный список машин (личные + организационные)
-      console.log('[useClientCars] Загружаем комбинированный список машин');
-      const data = await getClientCombinedCars(client.id, profilePhone);
-      console.log('[useClientCars] Загружено машин:', data.length, data);
-      setCars(data);
+      const ownId: string | null = data?.client?.id ?? null;
+      setClientId(ownId);
 
-      // Проверяем, является ли клиент водителем организации для подписки на organization_cars
-      const normalizedPhone = normalizePhoneNumber(profilePhone);
-      console.log('[useClientCars] Проверяем водителя организации, phone:', normalizedPhone);
-      const { data: drivers } = await supabase
-        .from('organization_drivers')
-        .select('organization_id')
-        .eq('phone', normalizedPhone)
-        .eq('is_active', true)
-        .limit(1)
-        .single();
-
-      if (drivers) {
-        console.log('[useClientCars] Водитель найден, organizationId:', drivers.organization_id);
-        setOrganizationId(drivers.organization_id);
-      } else {
-        console.log('[useClientCars] Водитель не найден');
-        setOrganizationId(null);
-      }
-    } catch (err) {
-      console.error('[useClientCars] Ошибка загрузки машин:', err);
-      setError('Не удалось загрузить список машин');
+      const serverCars: CombinedCar[] = Array.isArray(data?.combined_cars)
+        ? data.combined_cars
+        : [];
+      setCars(serverCars);
+    } catch (err: any) {
+      console.error('[useClientCars] fetchCars error:', err);
+      // Heuristic: if msg looks like a server error code, map it.
+      const code = typeof err?.message === 'string' ? err.message : '';
+      setError(mapServerError(code));
+      setCars([]);
     } finally {
       setIsLoading(false);
     }
@@ -84,16 +107,13 @@ export function useClientCars(profileId: string | null | undefined, profilePhone
 
   useEffect(() => {
     fetchCars();
-  }, [profileId, profilePhone]);
+  }, [profileId]);
 
-  // ✅ Supabase Realtime подписка на изменения в client_cars
+  // Realtime: still useful for own-cars live updates. Server-side role check
+  // limits RLS after Category C; pre-Category this publishes events but the
+  // channel filter restricts to the client_id we already captured.
   useEffect(() => {
-    if (!clientId) {
-      console.log('[useClientCars] clientId отсутствует, пропускаем создание подписки на client_cars');
-      return;
-    }
-
-    console.log('[useClientCars] Подключение к Realtime для client_cars, clientId:', clientId);
+    if (!clientId) return;
 
     const clientCarsSubscription = supabase
       .channel('client-cars:client_cars')
@@ -101,244 +121,47 @@ export function useClientCars(profileId: string | null | undefined, profilePhone
         event: '*',
         schema: 'public',
         table: 'client_cars',
-        filter: `client_id=eq.${clientId}`
-      }, async (payload: any) => {
-        console.log('[useClientCars] Изменение в client_cars:', payload);
-        console.log('[useClientCars] Текущее количество машин до обновления:', cars.length);
-
-        // ✅ Оптимистичное обновление без мигания
-        if (payload.eventType === 'INSERT' && payload.new) {
-          console.log('[useClientCars] INSERT - новая машина:', payload.new);
-          // Добавляем новую личную машину
-          setCars(prev => {
-            const newCar: CombinedCar = {
-              id: payload.new.id,
-              car_model: payload.new.car_model,
-              plate_number: payload.new.plate_number,
-              car_type: payload.new.car_type,
-              type: 'personal'
-            };
-            // Проверяем дубликаты
-            const exists = prev.some(c => c.id === newCar.id);
-            console.log('[useClientCars] Машина уже существует?', exists);
-            const result = exists ? prev : [...prev, newCar];
-            console.log('[useClientCars] Новое количество машин после INSERT:', result.length);
-            return result;
-          });
-        } else if (payload.eventType === 'UPDATE' && payload.new) {
-          console.log('[useClientCars] UPDATE - обновленная машина:', payload.new);
-          // Если машина помечена как неактивная - удаляем из списка
-          if (payload.new.is_active === false) {
-            console.log('[useClientCars] Машина помечена как неактивная, удаляем из списка');
-            setCars(prev => {
-              const result = prev.filter(car => car.id !== payload.new.id);
-              console.log('[useClientCars] Новое количество машин после UPDATE (is_active=false):', result.length);
-              return result;
-            });
-          } else {
-            // Обновляем личную машину
-            setCars(prev => prev.map(car =>
-              car.id === payload.new.id && car.type === 'personal'
-                ? {
-                    ...car,
-                    car_model: payload.new.car_model,
-                    plate_number: payload.new.plate_number,
-                    car_type: payload.new.car_type
-                  }
-                : car
-            ));
-          }
-        } else if (payload.eventType === 'DELETE') {
-          console.log('[useClientCars] DELETE - удаленная машина:', payload.old);
-          // Удаляем личную машину
-          setCars(prev => {
-            const result = prev.filter(car => car.id !== payload.old.id);
-            console.log('[useClientCars] Новое количество машин после DELETE:', result.length);
-            return result;
-          });
-        }
+        filter: `client_id=eq.${clientId}`,
+      }, () => {
+        // Refetch via server (which already includes the just-touched row
+        // with full PII). Simpler than optimistic patch.
+        void fetchCars();
       })
-      .subscribe((status) => {
-        console.log('[useClientCars] Статус подписки client-cars:client_cars:', status);
-        if (status === 'SUBSCRIBED') {
-          console.log('[useClientCars] ✅ Подписано на client-cars:client_cars');
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error('[useClientCars] ❌ Ошибка подписки на client_cars');
-        } else if (status === 'TIMED_OUT') {
-          console.error('[useClientCars] ❌ Таймаут подписки на client_cars');
-        } else if (status === 'CLOSED') {
-          console.log('[useClientCars] Подписка закрыта');
-        }
-      });
+      .subscribe();
 
     return () => {
-      console.log('[useClientCars] Отключение от Realtime (client_cars)');
-      clientCarsSubscription.unsubscribe();
+      void clientCarsSubscription.unsubscribe();
     };
   }, [clientId]);
 
-  // ✅ Supabase Realtime подписка на изменения в organization_cars
-  useEffect(() => {
-    if (!organizationId) {
-      console.log('[useClientCars] organizationId отсутствует, пропускаем создание подписки на organization_cars');
-      return;
-    }
-
-    console.log('[useClientCars] Подключение к Realtime для organization_cars, organizationId:', organizationId);
-
-    const orgCarsSubscription = supabase
-      .channel('client-cars:organization_cars')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'organization_cars',
-        filter: `organization_id=eq.${organizationId}`
-      }, async (payload: any) => {
-        console.log('[useClientCars] Изменение в organization_cars:', payload);
-
-        // ✅ Оптимистичное обновление без мигания
-        if (payload.eventType === 'INSERT' && payload.new) {
-          console.log('[useClientCars] INSERT - новая орг. машина:', payload.new);
-          // Добавляем новую организационную машину
-          setCars(prev => {
-            const newCar: CombinedCar = {
-              id: payload.new.id,
-              car_model: payload.new.car_model,
-              plate_number: payload.new.plate_number,
-              car_type: payload.new.car_type || 'SEDAN',
-              type: 'organization',
-              organization_id: organizationId,
-              organization_name: prev.find(c => c.type === 'organization')?.organization_name || ''
-            };
-            // Проверяем дубликаты
-            const exists = prev.some(c => c.id === newCar.id);
-            const result = exists ? prev : [...prev, newCar];
-            console.log('[useClientCars] Новое количество машин после INSERT:', result.length);
-            return result;
-          });
-        } else if (payload.eventType === 'UPDATE' && payload.new) {
-          console.log('[useClientCars] UPDATE - обновленная орг. машина:', payload.new);
-          // Обновляем организационную машину
-          setCars(prev => prev.map(car =>
-            car.id === payload.new.id && car.type === 'organization'
-              ? {
-                  ...car,
-                  car_model: payload.new.car_model,
-                  plate_number: payload.new.plate_number,
-                  car_type: payload.new.car_type || 'SEDAN'
-                }
-              : car
-          ));
-        } else if (payload.eventType === 'DELETE') {
-          console.log('[useClientCars] DELETE - удаленная орг. машина:', payload.old);
-          // Удаляем организационную машину
-          setCars(prev => {
-            const result = prev.filter(car => car.id !== payload.old.id);
-            console.log('[useClientCars] Новое количество машин после DELETE:', result.length);
-            return result;
-          });
-        }
-      })
-      .subscribe((status) => {
-        console.log('[useClientCars] Статус подписки client-cars:organization_cars:', status);
-        if (status === 'SUBSCRIBED') {
-          console.log('[useClientCars] ✅ Подписано на client-cars:organization_cars');
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error('[useClientCars] ❌ Ошибка подписки на organization_cars');
-        } else if (status === 'TIMED_OUT') {
-          console.error('[useClientCars] ❌ Таймаут подписки на organization_cars');
-        } else if (status === 'CLOSED') {
-          console.log('[useClientCars] Подписка закрыта');
-        }
-      });
-
-    return () => {
-      console.log('[useClientCars] Отключение от Realtime (organization_cars)');
-      orgCarsSubscription.unsubscribe();
-    };
-  }, [organizationId]);
-
-  // ✅ Supabase Realtime подписка на изменения в organization_drivers
-  useEffect(() => {
-    if (!profilePhone) {
-      console.log('[useClientCars] profilePhone отсутствует, пропускаем создание подписки на organization_drivers');
-      return;
-    }
-
-    const normalizedPhone = normalizePhoneNumber(profilePhone);
-    console.log('[useClientCars] Подключение к Realtime для organization_drivers, phone:', normalizedPhone);
-
-    const driversSubscription = supabase
-      .channel('client-cars:organization_drivers')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'organization_drivers',
-        filter: `phone=eq.${normalizedPhone}`
-      }, async (payload: any) => {
-        console.log('[useClientCars] Изменение в organization_drivers:', payload);
-
-        // При изменении статуса водителя перезагружаем список машин
-        if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE' || payload.eventType === 'DELETE') {
-          console.log('[useClientCars] Перезагружаем список машин после изменения водителя');
-          await fetchCars();
-        }
-      })
-      .subscribe((status) => {
-        console.log('[useClientCars] Статус подписки client-cars:organization_drivers:', status);
-        if (status === 'SUBSCRIBED') {
-          console.log('[useClientCars] ✅ Подписано на client-cars:organization_drivers');
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error('[useClientCars] ❌ Ошибка подписки на organization_drivers');
-        } else if (status === 'TIMED_OUT') {
-          console.error('[useClientCars] ❌ Таймаут подписки на organization_drivers');
-        } else if (status === 'CLOSED') {
-          console.log('[useClientCars] Подписка закрыта');
-        }
-      });
-
-    return () => {
-      console.log('[useClientCars] Отключение от Realtime (organization_drivers)');
-      driversSubscription.unsubscribe();
-    };
-  }, [profilePhone]);
-
   const addCar = async (carModel: string, plateNumber: string, carType: string) => {
-    console.log('[useClientCars] addCar вызван:', { carModel, plateNumber, carType });
-
-    if (!profileId) {
-      console.error('[useClientCars] profileId отсутствует');
-      throw new Error('Необходимо авторизоваться для добавления машины');
+    const token = getSessionToken();
+    if (!token) {
+      const m = mapServerError('missing_authorization');
+      setError(m);
+      throw new Error(m);
     }
-
     try {
       setError(null);
-
-      // Сначала получаем client_id по profile_id
-      console.log('[useClientCars] Получаем клиента по profileId:', profileId);
-      const client = await getClientByProfileId(profileId);
-
-      if (!client) {
-        console.error('[useClientCars] Клиент не найден');
-        throw new Error('Клиент не найден');
-      }
-
-      console.log('[useClientCars] Создаем машину в БД, clientId:', client.id);
-      // Создаем машину
-      await createClientCar({
-        client_id: client.id,
-        car_model: carModel,
-        plate_number: plateNumber,
-        car_type: carType,
+      const res = await fetch('/api/client?action=create-car', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ car_model: carModel, plate_number: plateNumber, car_type: carType }),
       });
-
-      console.log('[useClientCars] Машина создана в БД, ждем realtime обновления');
-
-      // ❌ НЕ вызываем fetchCars() - Realtime подписка сама обработает изменение
-      // await fetchCars();
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const code = body?.error || `HTTP ${res.status}`;
+        const friendly = mapServerError(code);
+        setError(friendly);
+        throw new Error(friendly);
+      }
+      // Realtime will trigger fetchCars() once the server-side insert is captured.
     } catch (err) {
-      console.error('[useClientCars] Ошибка добавления машины:', err);
-      setError('Не удалось добавить машину');
+      const friendly = err instanceof Error ? err.message : 'Не удалось добавить машину';
+      setError(friendly);
       throw err;
     }
   };

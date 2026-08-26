@@ -112,16 +112,26 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
   };
 
   // ✅ Определяем текст для отображения в блоке (для клиента)
+  // Возвращает строку статуса для отображения внутри цветного блока.
+  // Возвращает 'Занято' для занятых (не своих) слотов и короткий статус
+  // (например, «Ожидает», «Готово», «В работе») для собственных.
+  // Возвращает '' если статус неизвестен — тогда рендерим car_model/plate.
   const getBookingDisplayText = (booking: Booking): string => {
-    // Для клиента: чужие записи показываем как статус
     if (userRole === 'client') {
+      // Не-своя запись → показываем просто «Занято», без статуса (избегаем утечки
+      // чужой бизнес-информации через текст статуса в публичном таймлайне).
       if (booking.client_name === 'Занято') {
-        return booking.status; // "В работе", "Готово", "Ожидает"
+        return 'Занято';
       }
-      // Своя запись: марка и номер (как сейчас)
-      return ''; // Будет использоваться car_model и plate_number
+      // Своя запись (или запись организации-водителя): показать статус,
+      // если он есть и не равен 'ОТМЕНЕНО'.
+      if (booking.status && booking.status !== 'ОТМЕНЕНО') {
+        return booking.status;
+      }
+      // Фоллбэк: пусто (ниже рендерим car_model/plate_number).
+      return '';
     }
-    // Для админа: марка и номер (как сейчас)
+    // Админ/владелец: status показывается из booking_status_color, текст в отдельном badge.
     return '';
   };
 
@@ -335,16 +345,26 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                       >
                         <div className="text-black text-center">
                           {getBookingDisplayText(box1Booking) ? (
-                            <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
-                              {getBookingDisplayText(box1Booking)}
-                            </div>
+                            <>
+                              <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
+                                {getBookingDisplayText(box1Booking)}
+                              </div>
+                              {/* Для собственной записи показываем марку+номер под статусом,
+                                  если они есть в payload (не урезаны redacted-слоем). */}
+                              {String(box1Booking.car_model || '').slice(0, 8) ? (
+                                <div className="text-[8px] opacity-80 leading-tight truncate max-w-full">
+                                  {String(box1Booking.car_model || '').slice(0, 8)}
+                                  {box1Booking.plate_number ? ` · ${box1Booking.plate_number}` : ''}
+                                </div>
+                              ) : null}
+                            </>
                           ) : (
                             <>
                               <div className="text-[9px] font-semibold leading-tight truncate max-w-full">
-                                {box1Booking.car_model.slice(0, 8)}
+                                {String(box1Booking.car_model || '').slice(0, 8)}
                               </div>
                               <div className="text-[8px] opacity-80 truncate max-w-full">
-                                {box1Booking.plate_number}
+                                {box1Booking.plate_number || ''}
                               </div>
                             </>
                           )}
@@ -404,25 +424,33 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                        onCreateBooking?.(hour, 2);
                      }}
                   >
-                     {box2Booking ? (
+{box2Booking ? (
                        <div
                          className={`w-full h-full rounded-md ${getStatusColor(
                            box2Booking
                          )} flex items-center justify-center p-1 ${isBoxClosedForHour(2, hour) ? 'blur-sm' : ''}`}
                          title={`${box2Booking.client_name} - ${box2Booking.car_model}`}
-                       >
+                      >
                         <div className="text-black text-center">
                           {getBookingDisplayText(box2Booking) ? (
-                            <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
-                              {getBookingDisplayText(box2Booking)}
-                            </div>
+                            <>
+                              <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
+                                {getBookingDisplayText(box2Booking)}
+                              </div>
+                              {String(box2Booking.car_model || '').slice(0, 8) ? (
+                                <div className="text-[8px] opacity-80 leading-tight truncate max-w-full">
+                                  {String(box2Booking.car_model || '').slice(0, 8)}
+                                  {box2Booking.plate_number ? ` · ${box2Booking.plate_number}` : ''}
+                                </div>
+                              ) : null}
+                            </>
                           ) : (
                             <>
                               <div className="text-[9px] font-semibold leading-tight truncate max-w-full">
-                                {box2Booking.car_model.slice(0, 8)}
+                                {String(box2Booking.car_model || '').slice(0, 8)}
                               </div>
                               <div className="text-[8px] opacity-80 truncate max-w-full">
-                                {box2Booking.plate_number}
+                                {box2Booking.plate_number || ''}
                               </div>
                             </>
                           )}
@@ -482,25 +510,33 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                        onCreateBooking?.(hour, 3);
                      }}
                   >
-                     {box3Booking ? (
+{box3Booking ? (
                        <div
                          className={`w-full h-full rounded-md ${getStatusColor(
                            box3Booking
                          )} flex items-center justify-center p-1 ${isBoxClosedForHour(3, hour) ? 'blur-sm' : ''}`}
                          title={`${box3Booking.client_name} - ${box3Booking.car_model}`}
-                       >
+                      >
                         <div className="text-black text-center">
                           {getBookingDisplayText(box3Booking) ? (
-                            <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
-                              {getBookingDisplayText(box3Booking)}
-                            </div>
+                            <>
+                              <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
+                                {getBookingDisplayText(box3Booking)}
+                              </div>
+                              {String(box3Booking.car_model || '').slice(0, 8) ? (
+                                <div className="text-[8px] opacity-80 leading-tight truncate max-w-full">
+                                  {String(box3Booking.car_model || '').slice(0, 8)}
+                                  {box3Booking.plate_number ? ` · ${box3Booking.plate_number}` : ''}
+                                </div>
+                              ) : null}
+                            </>
                           ) : (
                             <>
                               <div className="text-[9px] font-semibold leading-tight truncate max-w-full">
-                                {box3Booking.car_model.slice(0, 8)}
+                                {String(box3Booking.car_model || '').slice(0, 8)}
                               </div>
                               <div className="text-[8px] opacity-80 truncate max-w-full">
-                                {box3Booking.plate_number}
+                                {box3Booking.plate_number || ''}
                               </div>
                             </>
                           )}
