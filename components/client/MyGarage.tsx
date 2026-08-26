@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Card, CardContent } from '../ui/card';
 import { Badge } from '../ui/badge';
 import { Calendar, History } from 'lucide-react';
-import { getTelegramId, initTelegramWebApp, isTelegramWebApp } from '../../shared/telegram/telegram';
 import { supabase } from '../../lib/supabase';
+import { loginViaTelegram, telegramAuthErrorUI, reloadMiniApp, TelegramAuthError } from '../../lib/client-auth';
 import { LoyaltyProgressBar } from './LoyaltyProgressBar';
 import { ActiveBookingCard } from './ActiveBookingCard';
 import { MyCarsList } from './MyCarsList';
@@ -40,6 +40,7 @@ export const MyGarage: React.FC<MyGarageProps> = ({
   const [profilePhone, setProfilePhone] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [recoveryAction, setRecoveryAction] = useState<'reload_mini_app' | 'retry' | 'none'>('none');
   const [showAddCarForm, setShowAddCarForm] = useState(false);
 
   // Хуки для данных
@@ -53,74 +54,60 @@ export const MyGarage: React.FC<MyGarageProps> = ({
   } = useBookingHistory(profileId);
 
   // Загрузка данных клиента
-  useEffect(() => {
-    const loadClientData = async () => {
-      try {
-        // Инициализация Telegram Web App
-        await initTelegramWebApp();
+  const loadClientData = async () => {
+    try {
+      // Phase 1.6b: HMAC-verified /api/telegram-auth replaces 4-step lookup.
+      // Server-side role-check ensures admin/owner with linked Telegram
+      // get 403, not a stolen client UI.
+      const { profile_id } = await loginViaTelegram();
 
-        // Проверка что открыто в Telegram
-        const isTelegram = isTelegramWebApp();
-        if (!isTelegram) {
-          setError('Откройте через Telegram бота');
-          setLoading(false);
-          return;
-        }
+      // profilePhone needed by useClientCars / useBookingHistory hooks (org-cars).
+      // /api/telegram-auth doesn't return phone (would expand payload),
+      // so we read it via wrapper-authenticated select. RLS-safe even
+      // before Phase 2 (clients table is public_all_access today).
+      const { data: profileRow, error: phoneErr } = await supabase
+        .from('profiles')
+        .select('phone')
+        .eq('id', profile_id)
+        .single();
 
-        // Получить telegram_id
-        const telegramId = getTelegramId();
-        if (!telegramId) {
-          setError('Не удалось получить данные Telegram');
-          setLoading(false);
-          return;
-        }
+      if (!phoneErr && profileRow?.phone) {
+        setProfilePhone(profileRow.phone);
+      }
 
-        // Найти profile по telegram_id
-        const { data: profile, error: profileError } = await supabase
-          .from('profiles')
-          .select('id, full_name, phone, role')
-          .eq('telegram_id', telegramId)
-          .single();
+      // Найти client по profile_id
+      const { data: client, error: clientError } = await supabase
+        .from('clients')
+        .select('id')
+        .eq('profile_id', profile_id)
+        .single();
 
-        if (profileError || !profile) {
-          setError('Профиль не найден. Авторизуйтесь через бота');
-          setLoading(false);
-          return;
-        }
+      if (clientError || !client) {
+        setError('Клиент не найден');
+        setLoading(false);
+        return;
+      }
 
-        // Проверить что профиль - клиент
-        if (profile.role !== 'client') {
-          setError('Доступ только для клиентов');
-          setLoading(false);
-          return;
-        }
-
-        // Сохраняем телефон профиля для загрузки организационных машин
-        setProfilePhone(profile.phone);
-
-        // Найти client по profile_id
-        const { data: client, error: clientError } = await supabase
-          .from('clients')
-          .select('id')
-          .eq('profile_id', profile.id)
-          .single();
-
-        if (clientError || !client) {
-          setError('Клиент не найден');
-          setLoading(false);
-          return;
-        }
-
-        setProfileId(profile.id);
-        setClientId(client.id);
-      } catch (err) {
+      setProfileId(profile_id);
+      setClientId(client.id);
+    } catch (err) {
+      // TelegramAuthError → typed UI; other errors → generic.
+      const maybeAuthErr = err as Partial<TelegramAuthError>;
+      if (maybeAuthErr && typeof maybeAuthErr.kind === 'string') {
+        const ui = telegramAuthErrorUI(maybeAuthErr.kind as TelegramAuthError['kind']);
+        setError(ui.message);
+        setRecoveryAction(ui.recovery);
+      } else {
         console.error('[MyGarage] Error loading client:', err);
         setError('Ошибка загрузки данных');
-      } finally {
-        setLoading(false);
+        setRecoveryAction('retry');
       }
-    };
+    } finally {
+      setLoading(false);
+    }
+  };
 
+  useEffect(() => {
     loadClientData();
   }, []);
 
@@ -194,6 +181,30 @@ export const MyGarage: React.FC<MyGarageProps> = ({
         <div className="bg-red-50 border border-red-200 rounded-lg p-6 max-w-md">
           <h2 className="text-xl font-bold text-red-800 mb-2">Ошибка</h2>
           <p className="text-red-600">{error}</p>
+          {recoveryAction === 'reload_mini_app' && (
+            <button
+              onClick={reloadMiniApp}
+              className="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
+            >
+              Перезагрузить Mini App
+            </button>
+          )}
+          {recoveryAction === 'retry' && (
+            <button
+              onClick={() => loadClientData()}
+              className="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
+            >
+              Повторить
+            </button>
+          )}
+          {recoveryAction === 'none' && (
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
+            >
+              Попробовать снова
+            </button>
+          )}
         </div>
       </div>
     );
