@@ -204,10 +204,11 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 12 | Фаза 1.8 — `/api/upload-receipt.ts` + Storage lockdown | Не начато |
 | 13 | Фаза 2 — Slice #1 (carwash client flow) | ✅ Done (commits 4fbffff, 6bdcd89, f3947d8, 4a204b4, e346ad7) |
 | 14 | Фаза 2 — Slice #2 (tire client flow) | ✅ Done (5 deploys, 4 contract-bugs обнаружены тестами — детали §5.9); commits 1e4e3c7, 142c646, df6a6e2, e293c07, b681190 |
-| 15 | **Фаза 2 — Slice #3 (staff booking flow — BookingWizard)** | ⚠️ Не начато — следующий шаг после Slice #1+2. 14 anon-write call sites в `BookingWizard.tsx` (createClient, createClientCar, updateClientCar, updateClient, createOrganization, createOrganizationDriver, createOrganizationCar, updates + unblockClientForOnlineBooking). Сейчас работает через anon supabase, сломается при RLS Category C. План → recon → вопросы → ОК → реализация. Сервер-функция `api/staff.ts` (dispatcher pattern, как `api/client.ts`). Доступно 1 слот Vercel Hobby из 12 (текущие 11 функций + 1 dispatcher = 12) |
-| 16 | Фаза 2 — RLS 5 категорий A-E | Не начато (ПОСЛЕ Slice #3 staff-flow, иначе RLS Category C сломает admin wizard) |
-| 17 | Фаза 2.5 — REVOKE INSERT/UPDATE на `clients` | Не начато (после Slice #3 + admin staff-client-create) |
-| 18 | Фаза 3 — public views для занятости слотов | Не начато (для оставшихся surfaces, частично закрыто Slice #1) |
+| 15 | **Фаза 2 — Slice #3a (staff client/car/org writes)** | ⚠️ Next up — recon в работе (см. PROJECT_STATE §5.10 ownership invariants + recon report ниже). 12 anon-write call sites в `BookingWizard.tsx`: createClient/createClientCar/updateClientCar/updateClient + createOrganization/+Driver/+Car + updates + signature + unblock. **Booking status mutations НЕ входят** (отдельный Slice #3b после #3a). `api/staff.ts` — единственный новый serverless dispatcher (12/12 Vercel Hobby = на пределе). Под user ОК после плана |
+| 16 | Фаза 2 — Slice #3b (staff booking status mutations) | Не начато — отдельный recon/plan после Slice #3a (assignWorkerToBooking, updateBookingStatus, addServicesToBooking, removeServiceFromBooking, cancelBooking, markAsReady, startWork, markAsPaid, updatePaymentMethod). Использует тот же `api/staff.ts` dispatcher + новые actions |
+| 17 | Фаза 2 — RLS 5 категорий A-E | Не начато — ТОЛЬКО после Slice #3a+3b, иначе RLS Category C сломает admin booking create/status anon paths |
+| 18 | Фаза 2.5 — REVOKE INSERT/UPDATE на `clients` | Не начато (после Slice #3b + admin staff-client-create) |
+| 19 | Фаза 3 — public views для занятости слотов | Не начато |
 
 ---
 
@@ -359,6 +360,43 @@ UPDATE public.clients
 3. **GENERATED columns** помечать в плане явно. Любая колонка, помеченная GENERATED ALWAYS AS, не попадает в INSERT/UPDATE — её обрабатывает Postgres.
 
 **Экономия:** 4 бага в Slice #2 = 4 дополнительных deploy × ~3 мин = ~12 мин. В Slice #3 (staff flow) применяется правило на старте.
+
+---
+
+## 5.10. Ownership invariants для staff-created bookings (Slice #3a + future #3b)
+
+**Зафиксировано в решении пользователя 2026-08-26 при recon Slice #3a.** Применяется в #3a (только read/contract) и в #3b (booking create + status mutations).
+
+### Четыре invariants:
+
+1. **`created_by_profile_id` = audit — кто физически создал запись.**
+   - Staff (CRM): `claims.profile_id` из JWT (выдан через `/api/login` admin/owner).
+   - Online (Mini App Slice #1+2): client JWT `profile_id` (выдан через `/api/telegram-auth`).
+   - Не используется для ownership-check (для этого — цепочка client_id → clients.profile_id).
+
+2. **`client_id` = business owner — чья запись.**
+   - `bookings.client_id → clients.id → clients.profile_id`. Только эта цепочка:
+     - показывает клиенту его записи (Slice #1/2 own-only RPCs);
+     - входит в client cancel path;
+     - считается в `getClientCancellationCount` для 30-day block;
+     - `online_booking_blocked_until` и его reset (`unblockClientForOnlineBooking`);
+     - будущая RLS Category C policy.
+   - Для org-driver без связанной `clients` row: `client_id = NULL`.
+
+3. **`booking_source` = channel — канал оформления.**
+   - `'admin'` для записей из CRM (BookingWizard / BookingDetailModal / etc).
+   - `'online'` для Mini App Slice #1/2.
+   - **Не заменяет audit actor**, только источник. CHECK constraint в `bookings` и `tire_bookings` уже enforces.
+
+4. **Не создаём второй `booking_owner_profile_id`** — он дублирует цепочку #2 и создаёт лишнюю миграцию + риск рассинхронизации.
+
+### Где это применяется
+
+| Slice | Применение |
+|---|---|
+| #3a | Создаёт `api/staff.ts` dispatcher для **client/сar/org management** writes. **Booking creation не входит.** В Slice #3a эти правила имеют референсный характер, не код. |
+| #3b (отдельный recon/plan/ОК) | Endpoint staff-create-booking: создаёт bookings с этими 4 инвариантами. |
+| Фаза 2.RLS Category C | RLS policies используют цепочку `bookings.client_id → clients.profile_id` (не `created_by_profile_id`). Это даёт правильную ownership семантику для client-only data. |
 
 ---
 
