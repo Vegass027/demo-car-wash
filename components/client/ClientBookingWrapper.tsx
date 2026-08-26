@@ -3,17 +3,12 @@ import { OnlineBookingWizard, OnlineBookingWizardData } from './OnlineBookingWiz
 import { DayTimeline } from '../admin/DayTimeline'
 import { supabase, getSessionToken } from '../../lib/supabase'
 import { loginViaTelegram, telegramAuthErrorUI, reloadMiniApp, TelegramAuthError } from '../../lib/client-auth'
-import { getBookingsByDate, Booking, createOnlineBooking, getClientOrganizationIds } from '../../lib/api/bookings'
+import { Booking } from '../../lib/api/bookings'
 import { formatDate, addDays } from '../../shared/utils/date'
-import { createClientCar } from '../../lib/api/clients'
-import { normalizePhoneNumber } from '../../shared/utils/phone'
 import { findDriversByPhone } from '../../lib/api/organizations'
 import { Service } from '../../lib/api/services'
 import { Organization, OrganizationDriver, OrganizationCar } from '../../entities/organization/model'
 import { Client } from '../../lib/api/clients'
-import { getClientCombinedCars } from '../../lib/api/combined-cars'
-import { isProfileBlockedForOnlineBooking } from '../../lib/api/booking-cancellations'
-import { getClosedBoxesForDate, ClosedBox } from '../../lib/api/boxes'
 import { Lock, Clock } from 'lucide-react'
 
 interface ClientBookingWrapperProps {
@@ -24,8 +19,31 @@ interface ClientBookingWrapperProps {
   clients: Client[];
   onWizardOpen?: () => void;
   onWizardClose?: () => void;
-  isWizardOpen?: boolean; // ✅ Один источник правды для состояния мастера
+  isWizardOpen?: boolean;
 }
+
+// Phase 2 / Slice #1 of carwash-full-security-lockdown-plan.md.
+//
+// After commit #3, this component does NOT make any anon SELECT/INSERT/UPDATE
+// against bookings / clients / client_cars / closed_boxes from the client flow:
+//   - availability (occupied slots + closed boxes) comes from public RPCs
+//     (get_public_booking_slots / get_public_closed_boxes);
+//   - own bookings (history + DayTimeline "own" cards) come from
+//     /api/client-get-bookings (server-side client_id → clients.profile_id chain);
+//   - create / cancel go through /api/client-create-booking and
+//     /api/client-cancel-booking;
+//   - profile / client / cars / blocked-state come from /api/client-get-my-cars.
+//
+// The combined `[client, combined_cars]` payload collapses 3 anon SELECTs into
+// one server-side roundtrip. driverOrganizationIds is derived from combined_cars
+// where type='organization' — no second anon SELECT against organization_drivers
+// at UI load time (still needed for wizard-side org-car selection; the latter
+// uses a dedicated anon helper which is acceptable for now and gets moved in a
+// later phase covering orgs Category B).
+//
+// DayTimeline's redacting logic (line 75) is preserved by passing non-own
+// bookings with `client_id: null` so the `isPersonalBooking` check fails and
+// the row gets rendered as 'Занято' with no PII.
 
 export function ClientBookingWrapper({
   services,
@@ -35,7 +53,7 @@ export function ClientBookingWrapper({
   clients,
   onWizardOpen,
   onWizardClose,
-  isWizardOpen = false // ✅ Один источник правды для состояния мастера
+  isWizardOpen = false,
 }: ClientBookingWrapperProps) {
   const [profileId, setProfileId] = useState<string | null>(null)
   const [clientId, setClientId] = useState<string | null>(null)
@@ -45,50 +63,46 @@ export function ClientBookingWrapper({
   const [error, setError] = useState<string | null>(null)
   const [recoveryAction, setRecoveryAction] = useState<'reload_mini_app' | 'retry' | 'none'>('none')
   const [combinedCars, setCombinedCars] = useState<any[]>([])
-  // ✅ NEW: ID организаций, где клиент является водителем
   const [driverOrganizationIds, setDriverOrganizationIds] = useState<string[]>([])
 
-  // Проверка блокировки
   const [isBlocked, setIsBlocked] = useState(false)
   const [isLoadingBlocked, setIsLoadingBlocked] = useState(true)
   const [blockedUntil, setBlockedUntil] = useState<string | null>(null)
 
-  // Данные для Timeline
   const [selectedDate, setSelectedDate] = useState(() => {
     const now = new Date();
     const currentHour = now.getHours();
-    const SWITCH_HOUR = 18; // 18:00 МСК - время переключения для клиентов
-
-    // После 18:00 для клиентов показываем завтра
+    const SWITCH_HOUR = 18;
     if (currentHour >= SWITCH_HOUR) {
       return formatDate(addDays(now, 1));
     }
     return formatDate(now);
   })
+  // Timeline data: combined availability (RPC slots) + own bookings (endpoint).
+  // DayTimeline receives this as `bookings` and redacts non-own rows.
   const [bookingsByDate, setBookingsByDate] = useState<Record<string, Booking[]>>({})
   const bookings = useMemo(() => bookingsByDate[selectedDate] || [], [bookingsByDate, selectedDate])
+  // Closed boxes state — per-date map of box_number -> open_hours array.
   const [closedBoxesByDate, setClosedBoxesByDate] = useState<Record<string, Map<number, number[]>>>({})
   const closedBoxes = useMemo(() => closedBoxesByDate[selectedDate] || new Map(), [closedBoxesByDate, selectedDate])
 
-  // ✅ Удален локальный showWizard state - используем isWizardOpen из props
   const [selectedSlot, setSelectedSlot] = useState<{ hour: number; boxNumber: number } | null>(null)
 
+  // --------- Telegram auth + JWT-establish at mount ---------
   useEffect(() => {
     loadClientData()
   }, [])
 
-  // Загрузка заказов при изменении даты
+  // --------- Re-load timeline + closed boxes when date or profile changes ---------
   useEffect(() => {
     if (profileId) {
-      loadBookings()
+      loadOccupancyForDate(selectedDate)
+      loadClosedBoxesForDate(selectedDate)
+      loadOwnBookingsForDate(selectedDate)
     }
   }, [selectedDate, profileId])
 
-  // ✅ Перезагружаем заказы после закрытия мастера (для СБП оплаты)
-  // Bug 2 fix: retry up to 2 times on transient network failure (Safari
-  // "Load failed" — fetch-level error, no HTTP body). isMounted guard
-  // prevents setState on unmounted component when user navigates away
-  // during retry window.
+  // --------- After wizard closes (booking success), refresh affected data ---------
   useEffect(() => {
     if (!isWizardOpen || !profileId || !selectedDate) return;
 
@@ -99,13 +113,13 @@ export function ClientBookingWrapper({
 
     async function reloadWithRetry(attempt = 0): Promise<void> {
       try {
-        const data = await getBookingsByDate(selectedDate);
+        await Promise.all([
+          loadOccupancyForDate(selectedDate),
+          loadClosedBoxesForDate(selectedDate),
+          loadOwnBookingsForDate(selectedDate),
+        ]);
         if (isMounted) {
-          console.log('[ClientBookingWrapper] Заказы перезагружены:', data.length);
-          setBookingsByDate(prev => cleanOldCache({
-            ...prev,
-            [selectedDate]: data || [],
-          }));
+          console.log('[ClientBookingWrapper] Timeline reloaded after wizard close');
         }
       } catch (error) {
         if (attempt < MAX_RETRIES && isMounted) {
@@ -114,15 +128,14 @@ export function ClientBookingWrapper({
             if (isMounted) reloadWithRetry(attempt + 1);
           }, RETRY_DELAY_MS);
         } else if (isMounted) {
-          console.error('[ClientBookingWrapper] Ошибка при перезагрузке заказов (после retries):', error);
+          console.error('[ClientBookingWrapper] Ошибка при перезагрузке (после retries):', error);
         }
       }
     }
 
-    console.log('[ClientBookingWrapper] Мастер закрыт, перезагружаем заказы через 2 секунды');
     const timeout = setTimeout(() => {
       if (isMounted) reloadWithRetry();
-    }, RELOAD_DELAY_MS); // Даём webhook'у 2 секунды на создание заказа
+    }, RELOAD_DELAY_MS);
 
     return () => {
       isMounted = false;
@@ -130,67 +143,34 @@ export function ClientBookingWrapper({
     };
   }, [isWizardOpen, profileId, selectedDate])
 
-  // Загрузка закрытых боксов при изменении даты (с кэшированием)
-  useEffect(() => {
-    const loadClosedBoxes = async () => {
-      try {
-        // Проверяем кэш
-        if (closedBoxesByDate[selectedDate]) {
-          console.log('[ClientBookingWrapper] Загрузка закрытых боксов из кэша для даты:', selectedDate)
-          return
-        }
-
-        // Загружаем из БД
-        const boxes = await getClosedBoxesForDate(selectedDate);
-        
-        // Создаем Map: box_number -> open_hours (массив часов, когда бокс открыт)
-        const boxesMap = new Map<number, number[]>();
-        boxes.forEach(box => {
-          if (box.is_closed) {
-            // Бокс закрыт, сохраняем open_hours
-            boxesMap.set(box.box_number, box.open_hours || []);
-          }
-        });
-        
-        setClosedBoxesByDate(prev => ({
-          ...prev,
-          [selectedDate]: boxesMap
-        }))
-      } catch (error) {
-        console.error('[ClientBookingWrapper] Ошибка загрузки закрытых боксов:', error)
-      }
-    }
-    loadClosedBoxes()
-  }, [selectedDate, closedBoxesByDate])
-
-  // Функция для очистки старого кэша заказов
   const MAX_CACHED_DATES = 14
+
   const cleanOldCache = (cache: Record<string, Booking[]>) => {
-    const dates = Object.keys(cache)
+    const dates = Object.keys(cache);
     if (dates.length > MAX_CACHED_DATES) {
-      const sorted = dates.sort()
-      const toKeep = sorted.slice(-MAX_CACHED_DATES)
-      return Object.fromEntries(toKeep.map(d => [d, cache[d]]))
+      const sorted = dates.sort();
+      const toKeep = sorted.slice(-MAX_CACHED_DATES);
+      return Object.fromEntries(toKeep.map(d => [d, cache[d]]));
     }
-    return cache
+    return cache;
   }
 
-  // Функция для очистки старого кэша закрытых боксов
   const cleanOldClosedBoxesCache = (cache: Record<string, Map<number, number[]>>) => {
-    const dates = Object.keys(cache)
+    const dates = Object.keys(cache);
     if (dates.length > MAX_CACHED_DATES) {
-      const sorted = dates.sort()
-      const toKeep = sorted.slice(-MAX_CACHED_DATES)
-      return Object.fromEntries(toKeep.map(d => [d, cache[d]]))
+      const sorted = dates.sort();
+      const toKeep = sorted.slice(-MAX_CACHED_DATES);
+      return Object.fromEntries(toKeep.map(d => [d, cache[d]]));
     }
-    return cache
+    return cache;
   }
 
-  // ✅ Supabase Realtime подписка на изменения в bookings для клиента (postgres_changes)
+  // --------- Realtime: bookings changes (own only via RLS) ---------
+  // Note: This still uses anon channel list (Bookings is a public schema
+  // table). When Category C RLS lands on bookings this naturally filters
+  // to own rows. Until then, refresh fires on any booking change.
   useEffect(() => {
-    if (!profileId) return
-
-    console.log('[ClientBookingWrapper] Подключение к Realtime для bookings (клиент, postgres_changes)')
+    if (!profileId) return;
 
     const subscription = supabase
       .channel(`client-booking:bookings:${profileId}`)
@@ -199,83 +179,28 @@ export function ClientBookingWrapper({
         schema: 'public',
         table: 'bookings'
       }, (payload: any) => {
-        // ✅ Оптимистичное обновление - БЕЗ ЗАПРОСОВ В БД!
-        console.log('[ClientBookingWrapper] Изменение в bookings:', payload)
+        console.log('[ClientBookingWrapper] Изменение в bookings:', payload);
 
         const bookingDate = payload.new?.booking_date || payload.old?.booking_date;
         if (!bookingDate) return;
 
-        setBookingsByDate(prev => {
-          const current = prev[bookingDate] || [];
-
-          let updated;
-          if (payload.eventType === 'INSERT') {
-            updated = [...current, payload.new];
-          } else if (payload.eventType === 'UPDATE') {
-            updated = current.map(b => b.id === payload.new.id ? payload.new : b);
-          } else if (payload.eventType === 'DELETE') {
-            updated = current.filter(b => b.id !== payload.old.id);
-          } else {
-            return prev;
-          }
-
-          return cleanOldCache({ ...prev, [bookingDate]: updated });
-        });
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('[ClientBookingWrapper] Подписано на client-booking:bookings')
+        // We can't add 'optimistic' data here since we don't know client_id
+        // chain. Defer to a full re-load for the affected date.
+        if (bookingsByDate[bookingDate]) {
+          loadOccupancyForDate(bookingDate);
+          loadOwnBookingsForDate(bookingDate);
         }
       })
+      .subscribe();
 
     return () => {
-      console.log('[ClientBookingWrapper] Отключение от Realtime (клиент)')
-      subscription.unsubscribe()
-    }
-  }, [profileId])
+      subscription.unsubscribe();
+    };
+  }, [profileId, selectedDate])
 
-  // ✅ Supabase Realtime подписка на изменения в client_cars для клиента (postgres_changes)
+  // --------- Realtime: closed_boxes (still anon-channel for now) ---------
   useEffect(() => {
-    if (!clientId || !profilePhone) return
-
-    console.log('[ClientBookingWrapper] Подключение к Realtime для client_cars (клиент, postgres_changes)')
-
-    const subscription = supabase
-      .channel('client-booking:client_cars')
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'client_cars',
-        filter: `client_id=eq.${clientId}`
-      }, async (payload: any) => {
-        console.log('[ClientBookingWrapper] Изменение в client_cars:', payload)
-
-        // Перезагружаем машины клиента
-        try {
-          const cars = await getClientCombinedCars(clientId, profilePhone)
-          console.log('[ClientBookingWrapper] Машины перезагружены:', cars.length)
-          setCombinedCars(cars)
-        } catch (error) {
-          console.error('[ClientBookingWrapper] Ошибка загрузки машин:', error);
-        }
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('[ClientBookingWrapper] Подписано на client-booking:client_cars')
-        }
-      })
-
-    return () => {
-      console.log('[ClientBookingWrapper] Отключение от Realtime (client_cars)')
-      subscription.unsubscribe()
-    }
-  }, [clientId, profilePhone])
-
-  // ✅ Supabase Realtime подписка на изменения в closed_boxes для клиента (postgres_changes)
-  useEffect(() => {
-    if (!profileId) return
-
-    console.log('[ClientBookingWrapper] Подключение к Realtime для closed_boxes (клиент, postgres_changes)')
+    if (!profileId) return;
 
     const subscription = supabase
       .channel(`client-booking:closed-boxes:${profileId}`)
@@ -284,171 +209,122 @@ export function ClientBookingWrapper({
         schema: 'public',
         table: 'closed_boxes'
       }, (payload: any) => {
-        // ✅ Оптимистичное обновление - БЕЗ ЗАПРОСОВ В БД!
-        console.log('[ClientBookingWrapper] Изменение в closed_boxes:', payload)
-
         const closedDate = payload.new?.closed_date || payload.old?.closed_date;
         if (!closedDate) return;
 
         setClosedBoxesByDate(prev => {
           const currentMap = new Map(prev[closedDate] || []);
-
           if (payload.eventType === 'DELETE') {
-            // Бокс удалён — убираем из Map
             currentMap.delete(payload.old.box_number);
           } else if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
             if (payload.new.is_closed) {
-              // Бокс закрыт — добавляем/обновляем
               currentMap.set(payload.new.box_number, payload.new.open_hours || []);
             } else {
-              // Бокс открыт — убираем из Map
               currentMap.delete(payload.new.box_number);
             }
           }
-
-          return cleanOldClosedBoxesCache({
-            ...prev,
-            [closedDate]: currentMap
-          });
+          return cleanOldClosedBoxesCache({ ...prev, [closedDate]: currentMap });
         });
       })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('[ClientBookingWrapper] Подписано на client-booking:closed-boxes')
-        }
-      })
+      .subscribe();
 
     return () => {
-      console.log('[ClientBookingWrapper] Отключение от Realtime (closed_boxes)')
-      subscription.unsubscribe()
-    }
+      subscription.unsubscribe();
+    };
   }, [profileId])
 
-  // ✅ Проверка блокировки клиента
-  useEffect(() => {
-    const checkBlock = async () => {
-      if (!profileId) return
-      
-      try {
-        const { data: client } = await supabase
-          .from('clients')
-          .select('online_booking_blocked_until')
-          .eq('profile_id', profileId)
-          .single()
-        
-        if (client?.online_booking_blocked_until) {
-          setIsBlocked(true)
-          // Форматируем дату из YYYY-MM-DD в DD.MM.YYYY
-          const [year, month, day] = client.online_booking_blocked_until.split('-');
-          const formattedDate = `${day}.${month}.${year}`;
-          setBlockedUntil(formattedDate)
-        } else {
-          setIsBlocked(false)
-          setBlockedUntil(null)
-        }
-        setIsLoadingBlocked(false)
-      } catch (error) {
-        setIsBlocked(false)
-        setIsLoadingBlocked(false)
-      }
+  // --------- API helpers ---------
+  // POST /api/client-* with Bearer client JWT.
+  async function apiPost(path: string, body: any): Promise<any> {
+    const token = getSessionToken();
+    if (!token) throw new Error('No session token');
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    let parsed: any = null;
+    try { parsed = await res.json(); } catch { /* non-JSON */ }
+    if (!res.ok) {
+      const msg = parsed?.error || `HTTP ${res.status}`;
+      const err: any = new Error(msg);
+      err.status = res.status;
+      err.body = parsed;
+      throw err;
     }
-    
-    checkBlock()
-  }, [profileId])
+    return parsed;
+  }
 
-  const loadClientData = async () => {
+  async function loadClientData() {
     try {
-      console.log('[ClientBookingWrapper] Начало загрузки данных клиента')
+      console.log('[ClientBookingWrapper] Начало загрузки данных клиента');
 
-      // Phase 1.6b: single HMAC-verified call to /api/telegram-auth replaces
-      // the old 4-step flow (initTelegram + isTelegram check + getTelegramId +
-      // supabase.from('profiles').eq('telegram_id')). JWT is injected into the
-      // supabase-js wrapper on success; subsequent supabase calls carry it.
+      // 1) Telegram auth — yields JWT via supabase-js wrapper.
       const { profile_id, full_name } = await loginViaTelegram();
 
-      // Найти client по profile_id (через wrapper с JWT — RLS Категории C пока
-      // нет, public_all_access). auto-create flow остаётся до Phase 1.5 / 2.5.
-      const { data: client, error: clientError } = await supabase
-        .from('clients')
-        .select('id, online_booking_blocked_until, phone')
-        .eq('profile_id', profile_id)
-        .single();
-
-      // Если клиент не найден — создаём автоматически (TODO: заменить на
-      // /api/link-client-profile в Фазе 1.5; anon INSERT закроется в 2.5).
-      let resolvedClientId: string;
-      let resolvedPhone: string | null = null;
-
-      if (clientError || !client) {
-        console.log('[ClientBookingWrapper] Клиент не найден, создаём автоматически');
-        try {
-          // Phase 1.5: replace anon INSERT with /api/link-client-profile
-          // (client-only, service_role-backed). JWT is the same one set by
-          // loginViaTelegram() above.
-          const token = getSessionToken();
-          if (!token) throw new Error('No session token for link-client-profile');
-
-          const res = await fetch('/api/link-client-profile', {
+      // 2) Single POST /api/client-get-my-cars — replaces 3 anon SELECTs
+      //    (clients / client_cars / organization_drivers) plus the
+      //    isProfileBlockedForOnlineBooking check. server_admin (BYPASSRLS)
+      //    resolves client + phone + cars + blocked_until + driver-org-ids
+      //    in one roundtrip.
+      let apiResult: any;
+      try {
+        apiResult = await apiPost('/api/client-get-my-cars', {});
+      } catch (e: any) {
+        if (e.status === 404 && e.body?.error === 'client_profile_not_linked') {
+          // Profile created without link-client-profile run; trigger it now.
+          const linkRes = await fetch('/api/link-client-profile', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`,
+              Authorization: `Bearer ${getSessionToken()}`,
             },
-            body: JSON.stringify({
-              full_name: full_name || '',
-              phone: '', // empty OK if row exists; endpoint returns 400 for new row
-            }),
+            body: JSON.stringify({ full_name: full_name || '', phone: '' }),
           });
-
-          if (!res.ok) {
-            const errBody = await res.json().catch(() => ({}));
-            const errMsg = errBody.error || `HTTP ${res.status}`;
-            console.error('[ClientBookingWrapper] link-client-profile failed:', res.status, errMsg);
-            throw new Error(errMsg);
+          if (!linkRes.ok) {
+            const errBody = await linkRes.json().catch(() => ({}));
+            throw new Error(`link-client-profile failed: ${errBody.error || linkRes.status}`);
           }
-
-          const { client: newClient } = await res.json();
-          resolvedClientId = newClient.id;
-        } catch (createError: any) {
-          console.error('[ClientBookingWrapper] Ошибка при создании клиента:', createError);
-          setError(createError?.message || 'Ошибка при создании клиента');
-          setLoading(false);
-          return;
+          // Retry the get-my-cars call.
+          apiResult = await apiPost('/api/client-get-my-cars', {});
+        } else {
+          throw e;
         }
-      } else {
-        resolvedClientId = client.id;
-        resolvedPhone = client.phone || null;
       }
 
-      // Всё ОК — сохраняем данные и грузим дальше
-      console.log('[ClientBookingWrapper] Данные загружены успешно');
+      const { client, combined_cars } = apiResult?.data ?? {};
+      if (!client?.id) {
+        throw new Error('client_get_my_cars returned no client.id');
+      }
+
       setProfileId(profile_id);
-      setClientId(resolvedClientId);
+      setClientId(client.id as string);
       setProfileName(full_name || '');
-      setProfilePhone(resolvedPhone || '');
+      setProfilePhone(client.phone ?? '');
+      setCombinedCars(combined_cars || []);
 
-      // Загружаем машины клиента (через phone из clients, не из profile)
-      if (resolvedClientId && resolvedPhone) {
-        const cars = await getClientCombinedCars(resolvedClientId, resolvedPhone);
-        setCombinedCars(cars);
+      // Derive driverOrganizationIds locally — no extra server roundtrip.
+      const driverIds = (combined_cars || [])
+        .filter((c: any) => c.type === 'organization' && c.organization_id)
+        .map((c: any) => c.organization_id);
+      setDriverOrganizationIds(driverIds);
+
+      // Block status comes from same payload.
+      if (client.online_booking_blocked_until) {
+        setIsBlocked(true);
+        const [year, month, day] = client.online_booking_blocked_until.split('-');
+        setBlockedUntil(`${day}.${month}.${year}`);
+      } else {
+        setIsBlocked(false);
+        setBlockedUntil(null);
       }
+      setIsLoadingBlocked(false);
 
-      // Загружаем организации, где клиент — водитель (по phone из clients)
-      if (resolvedPhone) {
-        try {
-          const orgIds = await getClientOrganizationIds(resolvedPhone);
-          setDriverOrganizationIds(orgIds);
-        } catch (error) {
-          console.error('[ClientBookingWrapper] Ошибка загрузки организаций клиента:', error);
-        }
-      }
-
-      // Загружаем заказы
-      await loadBookings()
+      console.log('[ClientBookingWrapper] Данные клиента загружены успешно');
     } catch (err) {
-      // TelegramAuthError has typed `kind` — map to user-friendly UI.
-      // Other errors (e.g. supabase.from('clients') failure) fall through
-      // to generic message.
       const maybeAuthErr = err as Partial<TelegramAuthError>;
       if (maybeAuthErr && typeof maybeAuthErr.kind === 'string') {
         const ui = telegramAuthErrorUI(maybeAuthErr.kind as TelegramAuthError['kind']);
@@ -456,80 +332,137 @@ export function ClientBookingWrapper({
         setRecoveryAction(ui.recovery);
       } else {
         console.error('[ClientBookingWrapper] Error loading client:', err);
-        setError('Ошибка загрузки данных');
+        setError(err instanceof Error ? err.message : 'Ошибка загрузки данных');
         setRecoveryAction('retry');
       }
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
-  const loadBookings = async () => {
-    if (!profileId) return
+  // Combined timeline load: RPC slots (anon, public) + own bookings (Bearer).
+  // Returns a unified Booking[] sorted by start_time for DayTimeline.
+  async function loadCombinedTimeline(date: string) {
+    const [slotsRes, ownRes, closedRes] = await Promise.all([
+      supabase.rpc('get_public_booking_slots', { p_target_date: date }),
+      apiPost('/api/client-get-bookings', { date }),
+      supabase.rpc('get_public_closed_boxes', { p_target_date: date }),
+    ]);
 
+    if (slotsRes.error) {
+      console.error('[ClientBookingWrapper] get_public_booking_slots error:', slotsRes.error.message);
+    }
+    if (ownRes?.error) {
+      console.error('[ClientBookingWrapper] /api/client-get-bookings error:', ownRes.error);
+    }
+    if (closedRes.error) {
+      console.error('[ClientBookingWrapper] get_public_closed_boxes error:', closedRes.error.message);
+    }
+
+    const slots = (slotsRes.data ?? []) as Array<{
+      start_time: string;
+      end_time: string;
+      box_number: number;
+    }>;
+    const ownBookings = (ownRes?.data?.bookings ?? []) as Booking[];
+
+    // Map RPC slots to minimal Booking-like rows.
+    // DayTimeline's redacting logic keys on client_id: synthetic rows have
+    // client_id: null → redact path → renders as 'Занято'.
+    const syntheticSlots: Booking[] = slots.map((s, i) => ({
+      id: `__rpc_slot_${date}_${i}`,
+      client_id: null,
+      booking_date: date,
+      start_time: s.start_time,
+      end_time: s.end_time,
+      box_number: s.box_number,
+      is_quick_booking: false,
+      // Tags are 'rpc' so we never accidentally treat a synthetic slot as
+      // own in any downstream logic; DayTimeline's redact path is what we
+      // rely on.
+      _synthetic: true,
+    } as any));
+
+    const unified = [...syntheticSlots, ...ownBookings].sort((a, b) => {
+      const sa = String(a.start_time ?? '');
+      const sb = String(b.start_time ?? '');
+      return sa.localeCompare(sb);
+    });
+
+    // Closed boxes map.
+    const cbRows = (closedRes.data ?? []) as Array<{
+      box_number: number;
+      closed_date: string;
+      open_hours: number[];
+    }>;
+    const boxMap = new Map<number, number[]>();
+    for (const row of cbRows) {
+      boxMap.set(row.box_number, row.open_hours ?? []);
+    }
+
+    return { unified, closedBoxes: boxMap };
+  }
+
+  async function loadOccupancyForDate(date: string) {
+    // Public RPCs only — no PII. Combined with loadOwnBookingsForDate.
     try {
-      // Проверяем кэш
-      if (bookingsByDate[selectedDate]) {
-        console.log('[ClientBookingWrapper] Загрузка заказов из кэша для даты:', selectedDate)
-        return bookingsByDate[selectedDate]
-      }
-
-      // Загружаем из БД
-      const data = await getBookingsByDate(selectedDate)
-      console.log('[ClientBookingWrapper] Заказы загружены из БД:', data.length)
-      setBookingsByDate(prev => cleanOldCache({
-        ...prev,
-        [selectedDate]: data || []
-      }))
+      const { unified } = await loadCombinedTimeline(date);
+      setBookingsByDate(prev => cleanOldCache({ ...prev, [date]: unified }));
     } catch (error) {
-      console.error('[ClientBookingWrapper] Error loading bookings:', error)
+      console.error('[ClientBookingWrapper] Error loading occupancy:', error);
+    }
+  }
+
+  async function loadOwnBookingsForDate(date: string) {
+    // No-op here — loadOccupancyForDate handles combined load atomically.
+    // Kept for symmetry with prior RealTime handler. Future: incremental
+    // own-only reload after cancel.
+  }
+
+  async function loadClosedBoxesForDate(date: string) {
+    // Closed boxes are loaded together with loadCombinedTimeline, so this
+    // is a thin pass-through. Kept to preserve the previously-existing
+    // per-date cache key.
+    try {
+      const { closedBoxes: boxMap } = await loadCombinedTimeline(date);
+      setClosedBoxesByDate(prev => cleanOldClosedBoxesCache({ ...prev, [date]: boxMap }));
+    } catch (error) {
+      console.error('[ClientBookingWrapper] Error loading closed boxes:', error);
     }
   }
 
   const handleSlotClick = (hour: number, boxNumber: number) => {
-    console.log('[ClientBookingWrapper] Выбран слот:', hour, 'Бокс:', boxNumber)
+    console.log('[ClientBookingWrapper] Выбран слот:', hour, 'Бокс:', boxNumber);
 
-    // Проверяем наличие машин у клиента
     if (combinedCars.length === 0) {
-      alert('Чтобы создать запись нужно добавить свое авто в разделе "Мой гараж"')
-      return
+      alert('Чтобы создать запись нужно добавить свое авто в разделе "Мой гараж"');
+      return;
     }
 
-    setSelectedSlot({ hour, boxNumber })
-    // ✅ Вызываем onWizardOpen для установки isWizardOpen = true в App.tsx
-    onWizardOpen?.()
-  }
+    setSelectedSlot({ hour, boxNumber });
+    onWizardOpen?.();
+  };
 
   const handleWizardBack = () => {
-    setSelectedSlot(null)
-    // ✅ Вызываем onWizardClose для установки isWizardOpen = false в App.tsx
-    onWizardClose?.()
-  }
+    setSelectedSlot(null);
+    onWizardClose?.();
+  };
 
   const handleWizardComplete = async (data: OnlineBookingWizardData) => {
     try {
-      console.log('[ClientBookingWrapper] Создание заказа:', data)
+      console.log('[ClientBookingWrapper] Создание заказа через /api/client-create-booking');
 
-      // ✅ Определяем тип машины и готовим данные
-      let driverId: string | undefined
-      let orgName: string | undefined
-
-      // Если это организационная машина, находим водителя
+      // Find driver_id if org car selected.
+      let driverId: string | undefined;
       if (data.isOrganizationCar && data.organizationId && profilePhone) {
-        const drivers = await findDriversByPhone(profilePhone)
+        const drivers = await findDriversByPhone(profilePhone);
         if (drivers && drivers.length > 0) {
-          const driver = drivers.find(d => d.organization.id === data.organizationId)
-          if (driver) {
-            driverId = driver.driver.id
-            orgName = driver.organization.name
-          }
+          const driver = drivers.find(d => d.organization.id === data.organizationId);
+          if (driver) driverId = driver.driver.id;
         }
       }
 
-      // ✅ Создаем запись через API функцию
-      await createOnlineBooking({
-        client_name: profileName,
-        phone: normalizePhoneNumber(profilePhone),
+      const payload: Record<string, unknown> = {
         car_model: data.carModel,
         plate_number: data.plateNumber,
         car_type: data.carType,
@@ -538,34 +471,32 @@ export function ClientBookingWrapper({
         payment_method: data.paymentMethod,
         booking_date: data.bookingDate,
         start_time: data.startTime,
-        end_time: `${(parseInt(data.startTime.split(':')[0]) + 1).toString().padStart(2, '0')}:00`, // end_time = start_time + 1 час
         box_number: data.boxNumber,
-        status: 'ОЖИДАЕТ',
-        booking_source: 'online',
-        created_by_profile_id: profileId,
-        client_id: clientId,
-        client_car_id: data.clientCarId,          // Личная машина
-        car_id: data.organizationCarId,            // Организационная машина
-        is_org: data.isOrganizationCar || false,
-        organization_id: data.organizationId,
-        org_name: orgName,
-        driver_id: driverId,
-        signature_obtained: false,
-        is_quick_booking: false,
-        is_paid: false,
-      })
+      };
+      if (data.clientCarId) payload.client_car_id = data.clientCarId;
+      if (data.organizationCarId) payload.car_id = data.organizationCarId;
+      if (data.organizationId) payload.organization_id = data.organizationId;
+      if (driverId) payload.driver_id = driverId;
 
-      console.log('[ClientBookingWrapper] Заказ создан успешно')
-      // Успешно - закрываем мастер и перезагружаем заказы
-      setSelectedSlot(null)
-      onWizardClose?.() // ✅ Вызываем callback для скрытия подвала
-      await loadBookings()
-      alert('Запись успешно создана!')
-    } catch (err) {
-      console.error('[ClientBookingWrapper] Error completing booking:', err)
-      setError('Ошибка при создании записи')
+      const result = await apiPost('/api/client-create-booking', payload);
+      console.log('[ClientBookingWrapper] Бронь создана:', result?.data?.booking?.id);
+
+      setSelectedSlot(null);
+      onWizardClose?.();
+      alert('Запись успешно создана!');
+    } catch (err: any) {
+      console.error('[ClientBookingWrapper] Ошибка создания:', err);
+      // Map server error code to a friendly user message.
+      const code = err?.body?.error || err?.message;
+      let friendly = 'Ошибка при создании записи';
+      if (code === 'box_occupied') friendly = 'Этот слот уже занят — выберите другое время.';
+      else if (code === 'box_closed') friendly = 'Этот бокс закрыт на выбранное время.';
+      else if (code === 'duplicate_booking_for_car') friendly = 'У вас уже есть запись на эту машину в это время.';
+      else if (code === 'client_car_id_not_owned') friendly = 'Выбранная машина вам не принадлежит.';
+      else if (code === 'car_id_not_owned') friendly = 'Выбранная машина организации вам не принадлежит.';
+      setError(friendly);
     }
-  }
+  };
 
   if (loading) {
     return (
@@ -575,7 +506,7 @@ export function ClientBookingWrapper({
           <p>Загрузка...</p>
         </div>
       </div>
-    )
+    );
   }
 
   if (error) {
@@ -594,7 +525,7 @@ export function ClientBookingWrapper({
           )}
           {recoveryAction === 'retry' && (
             <button
-              onClick={() => loadClientData()}
+              onClick={() => { setError(null); loadClientData(); }}
               className="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600"
             >
               Повторить
@@ -610,10 +541,9 @@ export function ClientBookingWrapper({
           )}
         </div>
       </div>
-    )
+    );
   }
 
-  // Блокировка клиента
   if (isBlocked && !isLoadingBlocked) {
     return (
       <div className="flex-1 flex items-center justify-center bg-gray-100 min-h-screen">
@@ -633,14 +563,13 @@ export function ClientBookingWrapper({
           </div>
         </div>
       </div>
-    )
+    );
   }
 
   if (!profileId || !clientId) {
-    return null
+    return null;
   }
 
-  // Если открыт мастер - показываем его
   if (isWizardOpen && selectedSlot) {
     return (
       <OnlineBookingWizard
@@ -656,26 +585,22 @@ export function ClientBookingWrapper({
         selectedSlot={{
           date: selectedDate,
           startTime: `${selectedSlot.hour.toString().padStart(2, '0')}:00`,
-          boxNumber: selectedSlot.boxNumber
+          boxNumber: selectedSlot.boxNumber,
         }}
         selectedDate={selectedDate}
         isFromTimeline={true}
       />
-    )
+    );
   }
 
-  // Иначе показываем Timeline
   return (
     <>
       <div className="bg-white rounded-lg shadow-sm p-4 mb-6 pt-safe telegram-safe-area-top">
         <h1 className="text-2xl font-bold text-gray-900 mb-2">Запись на мойку</h1>
-        
-        {/* Бейдж с режимом работы */}
         <div className="inline-flex items-center gap-2 border-2 border-black bg-white px-4 py-2 rounded-full mb-3">
           <Clock className="w-4 h-4 text-black" />
           <span className="text-base font-medium text-black">Режим работы с 8:00 до 18:00</span>
         </div>
-        
         <p className="text-gray-600">Выберите свободное время для записи</p>
       </div>
 
@@ -692,5 +617,5 @@ export function ClientBookingWrapper({
         />
       </div>
     </>
-  )
+  );
 }
