@@ -367,8 +367,11 @@ export function ClientBookingWrapper({
     const ownBookings = (ownRes?.data?.bookings ?? []) as Booking[];
 
     // Map RPC slots to minimal Booking-like rows.
-    // DayTimeline's redacting logic keys on client_id: synthetic rows have
-    // client_id: null → redact path → renders as 'Занято'.
+    // RPC slots are occupancy-only — no PII. They get redacted by DayTimeline
+    // (client_id !== currentClientId ⇒ redact to 'Занято'). We pre-populate
+    // the redact fields AND set status='ОЖИДАЕТ' so DayTimeline's text path
+    // always has something meaningful to render (was previously undefined ⇒
+    // fell to undefined.car_model.slice and rendered an empty div).
     const syntheticSlots: Booking[] = slots.map((s, i) => ({
       id: `__rpc_slot_${date}_${i}`,
       client_id: null,
@@ -377,13 +380,21 @@ export function ClientBookingWrapper({
       end_time: s.end_time,
       box_number: s.box_number,
       is_quick_booking: false,
-      // Tags are 'rpc' so we never accidentally treat a synthetic slot as
-      // own in any downstream logic; DayTimeline's redact path is what we
-      // rely on.
+      is_org: false,
+      status: 'ОЖИДАЕТ',          // active statuses only returned by RPC
+      client_name: 'Занято',       // matches DayTimeline's redact label
+      car_model: '',
+      plate_number: '',
+      phone: '',
+      services: [],
+      price: 0,
       _synthetic: true,
     } as any));
 
-    const unified = [...syntheticSlots, ...ownBookings].sort((a, b) => {
+    // ownBookings FIRST so DayTimeline's `displayBookings.find(...)` returns
+    // own row (with full PII) when both exist at the same (hour, box) —
+    // stable sort preserves array order on equal keys.
+    const unified = [...ownBookings, ...syntheticSlots].sort((a, b) => {
       const sa = String(a.start_time ?? '');
       const sb = String(b.start_time ?? '');
       return sa.localeCompare(sb);
