@@ -176,6 +176,12 @@ Telegram-логин через Mini App: реальный Telegram-аккаун�
 | 27 | **Фаза 2 — Slice #1: Bug fixes after live Mini App verification** — (1) DayTimeline показывал пустой блок для чужих слотов из-за `undefined.slice()` синтетик-строки без `status`-поля — фикс: rpc-слоты теперь идут уже redacted-формой (`status='ОЖИДАЕТ'`, `client_name='Занято'`, пустые `car_model/plate_number/phone/services`) + `unified=[...ownBookings, ...syntheticSlots]` (own first, stable sort сохраняет порядок). (2) `useClientCars` хук показывал 27 машин (9 test pollution + 18 historic soft-deleted) — фикс: переписан на `/api/client?action=get-my-cars`, +9 тест-машин софт-делены в БД (Porsche Cayenne сохранён). (3) Own bookings в DayTimeline теперь видны (та же причина что 1) | Коммит `4a204b4` |
 | 28 | **Фаза 2 — Slice #1: Idempotent block policy C** — `migrations/003_idempotent_block_on_cancel.sql`. В UPDATE блокировки добавлен WHERE guard `(online_booking_blocked_until IS NULL OR < current_date)`, чтобы повторные отмены внутри активной блокировки **не продлевали** её каждый раз на новые 30 дней. Счётчик и INSERT в booking_cancellations не изменились — подтверждено `test-003-idempotent-block.sh` (7 PASS): cancel1/2/3 устанавливают блок на 2026-09-25, cancel4 → `blocked=false, blocked_until=2026-09-25` (echoes существующее, не продлевает). DB row после cancel4: 2026-09-25 == 2026-09-25 (unchanged) | Подтверждено |
 | 29 | **Vercel deploy** серии Slice #1: 17 serverless functions → over Vercel Hobby limit (12). Dispatcher `api/client.ts` снизил счёт до 11 (10 existing + 1 dispatcher). One-shot consolidation commit `6bdcd89`. **11 serverless functions, ≤ 12 — deploy passes.** При ручном `vercel deploy --prod` на этапе сборки Удалён второй раз (pnpm-lock.yaml, неверный package-manager detection) — откатил pnpm side-effects, `git push` прошёл через Vercel auto-deploy | Production: `https://demo-car-wash-eendx0vc5...`, потом `nlslke7jk...`, потом `393osy2ka...` |
+| 30 | **Фаза 2 — Slice #2 (tire client flow): RECON** — read-only pgsql/migration-review подтвердил: ownership path только `tire_bookings.client_id → clients.profile_id` (НЕ через `created_by_profile_id`!); `booking_cancellations` уже имеет колонку `tire_booking_id` но без UNIQUE; `tire_service_days` anon-direct SELECT работает без RPC; `estimated_duration` фактически всегда 60 мин (1 distinct value); 4-ID ownership chain (client_car_id/car_id/organization_id/driver_id) идентичен carwash. RPC list: `get_public_booking_slots/closed_boxes/cancel_own_booking` (carwash) + **миграции 004/005/006 ещё не существовали**. GRANTs по tire-related таблицам = ALL для anon+authenticated | recon записан |
+| 31 | **Фаза 2 — Slice #2: DB-миграции** `migrations/004_public_tire_slot_rpcs.sql` — `get_public_tire_booking_slots(p_target_date date)` RETURNS TABLE(id, booking_date, start_time, end_time, status) — **только slot metadata, БЕЗ PII** (no client_name, phone, car_model, plate_number, services, signature_data); end_time вычисляется SQL-выражением `(start_time + (estimated_duration \|\| ' minute')::interval)::time`. + companion `find_tire_booking_overlap(date, start_min, dur_min)` для create-tire-booking dispatcher-overlap-check. ACL: первая — anon+authenticated+service_role; вторая — service_role only (явный REVOKE FROM anon, authenticated) | Применено в demo-DB отдельными `psql -c`, preflight на дубликаты = 0, anon-smoke | 
+| 32 | **Фаза 2 — Slice #2: DB-migrations 005+006** `migrations/005_cancel_own_tire_booking_rpc.sql` — функция `cancel_own_tire_booking(p_tire_booking_id uuid, p_profile_id uuid, p_reason text)` SECURITY DEFINER. Шаги: (1) FOR UPDATE row-lock на tire_bookings; (2) ownership через `tire_bookings.client_id → clients.profile_id`; (3) idempotency primary (existing booking_cancellations row) + fallback (status='ОТМЕНЕНО'); (4) status guard — только ОЖИДАЕТ; (5) UPDATE status='ОТМЕНЕНО'; (6) INSERT booking_cancellations; (7) shared 30-day counter (carwash+tire via `client_id`, без разделения); (8) **idempotent block guard Policy C** сразу встроен (повторные отмены не продлевают block). ACL: service_role only (anon+authenticated explicit REVOKE). `migrations/006_idempotent_block_on_tire_cancel.sql` — companion `CREATE UNIQUE INDEX CONCURRENTLY idx_booking_cancellations_tire_booking_unique ON booking_cancellations(tire_booking_id) WHERE tire_booking_id IS NOT NULL` (UNIQUE guard для race). Деплой-порядок: 006 ПЕРЕД 005 (без UNIQUE INDEX INSERT в RPC имеет race window) | Применено в demo-DB отдельными psql -c | 
+| 33 | **Фаза 2 — Slice #2: Seed test client** `migrations/007_seed_test_tire_client.sql` — изолированный профиль + клиент (`profile_id=de8998b6-0725-46de-89e5-a89061daa2b5`, `client_id=2c89868f-e85b-44cb-825b-896c3f77c474`, `telegram_id=444444444`, phone `+79991234501`) для tire smoke / RPC / endpoint тестов. Идемпотентно (`WHERE NOT EXISTS`). Cleanup ограничен только этим client + 2099-* датами. Никогда не общий DELETE/UPDATE | Применено в demo-DB, профиль verified SELECT-ом | 
+| 34 | **Фаза 2 — Slice #2: API dispatcher + components** — `api/client.ts` +3 handler'а inline (`getTireBookings` — server-resolved own по `client_id IN (SELECT id FROM clients WHERE profile_id=jwt)`; `createTireBooking` — 4-ID ownership + overlap через `find_tire_booking_overlap` RPC + server-computed `end_time = start_time + estimated_duration minutes`; `cancelTireBooking` — thin adapter, 404/409/500 mapping). ALLOWED_ACTIONS теперь **10** (7 carwash + 3 tire). `components/client/ClientTireBookingWrapper.tsx` — 4 replacement points: `getTireBookingsByDate` → `fetchOwnTireBookings` (3×), `createOnlineTireBooking` → `postTireBookingToDispatcher` (1×). `components/client/ActiveBookingCard.tsx` — tire cancel через fetch dispatcher (было anon `cancelOnlineTireBooking`). TypeScript `npx tsc --noEmit` чистый | Коммиты pending |
+| 35 | **Фаза 2 — Slice #2: Tests** — `test-slice2-tire-rpcs.sh` (T1-T15, **16 PASS / 0 FAIL**): anon public RPC (T1-T4), `cancel_own_tire_booking` NOT_FOUND_OR_NOT_OWNED (T5), own cancel (T6), idempotency (T7), anon permission denied (T8), status guard (T9), UNIQUE INDEX race guard 23505 (T10), 30-day block на 3-й отмене (T11-T12), idempotent block guard (T13-T14), foreign ownership (T15). `test-slice2-tire-concurrent-cancel.sh` (8× параллельных RPC → 1 success + 7 idempotent + 0 errors + 1 cancellation row, ОТМЕНЕНО status). `test-slice2-cleanup.sh` standalone. Pre-test cleanup inline в обоих скриптах (`WHERE client_id=tire_test_client` + 2099-* dates только, никогда broad DELETE/UPDATE) | Commits pending, Vercel deploy triggered |
 
 ---
 
@@ -290,6 +296,37 @@ DELETE FROM closed_boxes WHERE closed_date >= '2099-01-01';
 - `test-slice1-t21-concurrent-cancel.mjs` использует admin client + удаляет тестовые ряды после run (cleanup в script).
 
 **ОБЯЗАТЕЛЬНО запустите cleanup перед каждой новой тестовой сессией** — не разовая мера, иначе test pollution накопится и тесты начнут отказывать с блокировкой-внезапно (cancel count за 30 дней накопит ≥3) и orphan-cars в DayTimeline.
+
+---
+
+## 5.8. Test client fixture (Phase 2 / Slice #2 — tire client flow)
+
+**Изолированный demo-клиент только для tire smoke / RPC / endpoint тестов. Не использовать ни в каком другом сценарии.**
+
+| Поле | Значение | Где |
+|---|---|---|
+| `telegram_id` | `444444444` | `profiles.telegram_id` |
+| `role` | `'client'` | `profiles.role` |
+| `full_name` | `'[TEST ONLY] Tire Test Client'` | profiles + clients |
+| `profile_id` | `de8998b6-0725-46de-89e5-a89061daa2b5` | `profiles.id`, `clients.profile_id` |
+| `client_id` | `2c89868f-e85b-44cb-825b-896c3f77c474` | `clients.id` |
+| `phone` | `'+79991234501'` | `clients.phone` |
+
+Применяется миграцией `migrations/007_seed_test_tire_client.sql` с `INSERT ... WHERE NOT EXISTS` (идемпотентно).
+
+**Cleanup** — ровно этот клиент + 2099-* даты. **Никогда** общий `DELETE` по всем bookings/cancellations или общий `UPDATE` всех блокировок:
+
+```sql
+DELETE FROM public.booking_cancellations
+  WHERE client_id = '2c89868f-e85b-44cb-825b-896c3f77c474';
+DELETE FROM public.tire_bookings
+  WHERE client_id = '2c89868f-e85b-44cb-825b-896c3f77c474';
+UPDATE public.clients
+  SET online_booking_blocked_until = NULL
+  WHERE id = '2c89868f-e85b-44cb-825b-896c3f77c474';
+```
+
+Также включено в `test-slice2-cleanup.sh` (для ручного reset между сессиями) и inline в `test-slice2-tire-rpcs.sh` и `test-slice2-tire-concurrent-cancel.sh` (pre-test reset перед каждым тестом).
 
 ---
 

@@ -3,7 +3,7 @@ import { OnlineTireBookingWizard, OnlineTireBookingWizardData } from './OnlineTi
 import { TireTimeline } from '../admin/TireTimeline'
 import { supabase, getSessionToken } from '../../lib/supabase'
 import { loginViaTelegram, telegramAuthErrorUI, reloadMiniApp, TelegramAuthError } from '../../lib/client-auth'
-import { getTireBookingsByProfileId, getTireBookingsByDate, createOnlineTireBooking } from '../../lib/api/tire-bookings'
+import { getTireBookingsByProfileId } from '../../lib/api/tire-bookings'
 import { findDriversByPhone } from '../../lib/api/organizations'
 import { getClientOrganizationIds } from '../../lib/api/bookings'
 import { normalizePhoneNumber } from '../../shared/utils/phone'
@@ -14,6 +14,83 @@ import { Client } from '../../lib/api/clients'
 import { isProfileBlockedForOnlineBooking } from '../../lib/api/booking-cancellations'
 import { getTireServiceDayStatus, getNextOpenTireServiceDate } from '../../lib/api/tire-service-days'
 import { Lock, Clock } from 'lucide-react'
+
+// =========================================================================
+// Phase 2 / Slice #2: tire client flow.
+//
+// All OWN-booking reads and writes for the tire client path now go through
+// the /api/client dispatcher (service_role-only writes) instead of the
+// legacy anon paths in lib/api/tire-bookings.ts.
+//
+// * getTireBookingsByDate  → /api/client?action=get-tire-bookings
+// * createOnlineTireBooking → /api/client?action=create-tire-booking
+//
+// Public availability (slot metadata for the timeline) still goes through
+// `get_public_tire_booking_slots` (anon-callable RPC) — but the wrapper
+// itself does not consume it directly; `TireTimeline` does via
+// supabase-js subscriptions (out of scope for Slice #2, see TODO at end).
+//
+// Cancellation now lives in components/client/ActiveBookingCard.tsx via
+// /api/client?action=cancel-tire-booking — this wrapper has no internal
+// cancel handler (it renders TireTimeline which delegates the cancel UI
+// to ActiveBookingCard through `onDelete`).
+// =========================================================================
+
+async function fetchOwnTireBookings(date: string): Promise<TireBooking[]> {
+  const token = getSessionToken();
+  if (!token) throw new Error('Missing session token (reopen Mini App)');
+  const res = await fetch(`/api/client?action=get-tire-bookings`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ date }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(`get-tire-bookings HTTP ${res.status}: ${body?.error || 'unknown'}`);
+    (err as any).status = res.status;
+    (err as any).body = body;
+    throw err;
+  }
+  const body = await res.json();
+  return (body?.data?.bookings ?? []) as TireBooking[];
+}
+
+async function postTireBookingToDispatcher(payload: AnyObj): Promise<TireBooking> {
+  const token = getSessionToken();
+  if (!token) throw new Error('Missing session token (reopen Mini App)');
+  const res = await fetch(`/api/client?action=create-tire-booking`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const status = res.status;
+    const errCode = body?.error || 'http_error';
+    let message = `create-tire-booking HTTP ${status}: ${errCode}`;
+    if (status === 409 && errCode === 'slot_occupied') {
+      message = `Слот уже занят${body?.conflicting_count ? ` (конфликтов: ${body.conflicting_count})` : ''}`;
+    } else if (status === 409 && errCode === 'duplicate_booking_for_car') {
+      message = 'У этой машины уже есть запись на это время';
+    } else if (status === 403) {
+      message = `Доступ запрещён: ${errCode}`;
+    }
+    const err = new Error(message);
+    (err as any).status = status;
+    (err as any).body = body;
+    throw err;
+  }
+  const body = await res.json();
+  return body?.data?.booking as TireBooking;
+}
+
+type AnyObj = Record<string, any>;
 
 interface ClientTireBookingWrapperProps {
   tireServices: any[];
@@ -131,21 +208,21 @@ export function ClientTireBookingWrapper({
         table: 'tire_service_days'
       }, async (payload: any) => {
         console.log('[ClientTireBookingWrapper] Изменение в tire_service_days:', payload)
-        
+
         const changedDate = payload.new?.service_date || payload.old?.service_date
-        
+
         // Если изменилась выбранная дата - перезагружаем статус
         if (changedDate === selectedDate) {
           const status = await getTireServiceDayStatus(selectedDate)
           setIsDayOpen(status)
-          
+
           if (!status) {
             const nextOpenDate = await getNextOpenTireServiceDate(selectedDate)
             if (nextOpenDate) {
               const date = new Date(nextOpenDate)
-              setNextOpenDateText(date.toLocaleDateString('ru-RU', { 
-                day: 'numeric', 
-                month: 'long' 
+              setNextOpenDateText(date.toLocaleDateString('ru-RU', {
+                day: 'numeric',
+                month: 'long'
               }))
             }
           }
@@ -176,7 +253,7 @@ export function ClientTireBookingWrapper({
 
     async function reloadWithRetry(attempt = 0): Promise<void> {
       try {
-        const data = await getTireBookingsByDate(selectedDate);
+        const data = await fetchOwnTireBookings(selectedDate);
         if (isMounted) {
           console.log('[ClientTireBookingWrapper] Заказы перезагружены:', data.length);
           setBookingsByDate(prev => cleanOldCache({
@@ -239,7 +316,7 @@ export function ClientTireBookingWrapper({
         if (bookingDate) {
           // Перезагружаем данные из БД для конкретной даты (игнорируя кэш)
           try {
-            const data = await getTireBookingsByDate(bookingDate);
+            const data = await fetchOwnTireBookings(bookingDate);
             setBookingsByDate(prev => cleanOldCache({
               ...prev,
               [bookingDate]: data || []
@@ -400,7 +477,7 @@ export function ClientTireBookingWrapper({
       }
 
       // Загружаем из БД
-      const data = await getTireBookingsByDate(selectedDate)
+      const data = await fetchOwnTireBookings(selectedDate)
       console.log('[ClientTireBookingWrapper] Заказы загружены из БД:', data.length)
       setBookingsByDate(prev => cleanOldCache({
         ...prev,
@@ -451,10 +528,11 @@ export function ClientTireBookingWrapper({
         }
       }
 
-      // Создаем запись через API функцию
-      await createOnlineTireBooking({
-        client_name: profileName,
-        phone: normalizePhoneNumber(profilePhone),
+      // Создаем запись через dispatcher /api/client?action=create-tire-booking
+      // (Phase 2 / Slice #2 — service_role INSERT, server-resolves
+      // client_id + created_by_profile_id, validates 4-ID ownership,
+      // overlap-checked via find_tire_booking_overlap RPC).
+      await postTireBookingToDispatcher({
         car_model: data.carModel,
         plate_number: data.plateNumber,
         services: data.services,
@@ -463,18 +541,10 @@ export function ClientTireBookingWrapper({
         booking_date: data.bookingDate,
         start_time: data.startTime,
         estimated_duration: data.estimatedDuration,
-        status: 'ОЖИДАЕТ',
-        booking_source: 'online',
-        created_by_profile_id: data.profileId,
-        client_id: clientId,
-        is_org: isOrg,
-        organization_id: data.organization_id,
-        org_name: data.org_name,
-        driver_id: driverId,
-        car_id: data.car_id,
-        client_car_id: data.client_car_id,
-        signature_data: data.signature_data,
-        is_paid: false
+        organization_id: data.organization_id || undefined,
+        driver_id: driverId || undefined,
+        car_id: data.car_id || undefined,
+        client_car_id: data.client_car_id || undefined,
       });
 
       console.log('[ClientTireBookingWrapper] Заказ создан успешно')
@@ -485,7 +555,8 @@ export function ClientTireBookingWrapper({
       alert('Запись успешно создана!')
     } catch (err) {
       console.error('[ClientTireBookingWrapper] Error completing tire booking:', err)
-      setError('Ошибка при создании записи')
+      const errMsg = (err as Error)?.message || 'Ошибка при создании записи'
+      setError(errMsg)
     }
   }
 
