@@ -21,7 +21,11 @@ FAIL=0
 report() {
   local label="$1" status="$2"
   echo "[$label] $status"
-  if [ "$status" = "PASS" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
+  case "$status" in
+    PASS*)        PASS=$((PASS+1)) ;;
+    SKIP*)        : ;;            # neither pass nor fail
+    *)            FAIL=$((FAIL+1)) ;;
+  esac
 }
 
 # ----------------------------------------------------------------------------
@@ -215,7 +219,64 @@ RESULT=$(psql "$DB" --no-psqlrc -P pager=off -At -c "
 SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='booking_cancellations_booking_unique' AND conrelid='public.booking_cancellations'::regclass);")
 [ "$RESULT" = "t" ] && report "T22" "PASS" || report "T22" "FAIL ($RESULT)"
 
+# ----------------------------------------------------------------------------
+# T15: 3 sequential cancels → blocked=true, online_booking_blocked_until=current_date+30
+# Requires a client with 3+ ОЖИДАЕТ bookings owned by same profile.
+# ----------------------------------------------------------------------------
+echo "[T15] 3 sequential cancels → blocked=true on 3rd"
+T15_CLIENT='f2799b3d-37aa-4976-a23a-df5cba10e463'
+T15_PROFILE='b33e4171-7ba4-44b3-bf7a-babe766cb338'
+
+T15_B1=$(psql "$DB" --no-psqlrc -P pager=off -At -c "
+SELECT id FROM bookings WHERE client_id='$T15_CLIENT' AND status='ОЖИДАЕТ' ORDER BY booking_date, start_time LIMIT 1;")
+T15_B2=$(psql "$DB" --no-psqlrc -P pager=off -At -c "
+SELECT id FROM bookings WHERE client_id='$T15_CLIENT' AND status='ОЖИДАЕТ'
+  AND id <> '$T15_B1' ORDER BY booking_date, start_time LIMIT 1;")
+T15_B3=$(psql "$DB" --no-psqlrc -P pager=off -At -c "
+SELECT id FROM bookings WHERE client_id='$T15_CLIENT' AND status='ОЖИДАЕТ'
+  AND id NOT IN ('$T15_B1','$T15_B2') ORDER BY booking_date, start_time LIMIT 1;")
+
+if [ -z "$T15_B1" ] || [ -z "$T15_B2" ] || [ -z "$T15_B3" ]; then
+  report "T15" "SKIP (insufficient ОЖИДАЕТ bookings on test client)"
+else
+  RESULT=$(psql "$DB" --no-psqlrc -P pager=off -At -v ON_ERROR_STOP=1 <<EOF
+BEGIN;
+SET ROLE service_role;
+UPDATE clients SET online_booking_blocked_until = NULL WHERE id='$T15_CLIENT'::uuid;
+SELECT cancel_own_booking('$T15_B1'::uuid, '$T15_PROFILE'::uuid)::text;
+SELECT cancel_own_booking('$T15_B2'::uuid, '$T15_PROFILE'::uuid)::text;
+SELECT 'r3=' || (cancel_own_booking('$T15_B3'::uuid, '$T15_PROFILE'::uuid)::text);
+SELECT 'final_blocked_until=' || online_booking_blocked_until::text
+FROM clients WHERE id='$T15_CLIENT'::uuid;
+SELECT 'today=' || current_date::text;
+SELECT 'events=' || (SELECT COUNT(*)::text FROM booking_cancellations WHERE client_id='$T15_CLIENT'::uuid);
+ROLLBACK;
+EOF
+)
+  if echo "$RESULT" | grep '"blocked": true' >/dev/null \
+     && echo "$RESULT" | grep -q 'final_blocked_until=' \
+     && echo "$RESULT" | grep -q 'events=3'; then
+    TODAY_LINE=$(echo "$RESULT" | grep '^today=')
+    BLOCKED_LINE=$(echo "$RESULT" | grep '^final_blocked_until=')
+    TODAY_DATE=$(echo "$TODAY_LINE" | sed 's/^today=//')
+    ACTUAL_BLOCKED=$(echo "$BLOCKED_LINE" | sed 's/^final_blocked_until=//')
+    EXPECTED_BLOCKED=$(date -j -f "%Y-%m-%d" -v+30d "$TODAY_DATE" +"%Y-%m-%d" 2>/dev/null || echo "$TODAY_DATE")
+    if [ "$ACTUAL_BLOCKED" = "$EXPECTED_BLOCKED" ]; then
+      report "T15" "PASS (blocked: true; online_booking_blocked_until=$ACTUAL_BLOCKED = today+30; 3 events)"
+    else
+      report "T15" "FAIL (blocked: true; online_booking_blocked_until=$ACTUAL_BLOCKED, expected $EXPECTED_BLOCKED)"
+    fi
+  else
+    report "T15" "FAIL"
+    echo "  ---- raw output ----"
+    echo "$RESULT" | head -c 500
+    echo "..."
+  fi
+fi
+
+# ----------------------------------------------------------------------------
 # T23 already covered by T9
+# ----------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------
 # T24: duplicate insert → 23505 unique_violation
