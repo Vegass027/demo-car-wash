@@ -152,7 +152,7 @@ async function teardown() {
   // -------------------------------------------------------------------------
   console.log('# T1: client-get-my-cars');
   {
-    const r = await call('/api/client-get-my-cars', { token: tokens.client });
+    const r = await call('/api/client?action=get-my-cars', { token: tokens.client });
     ok('200 with combined shape',
        r.status === 200 && r.body?.data?.client?.id === TEST_CLIENT_ID && Array.isArray(r.body?.data?.combined_cars),
        JSON.stringify(r.body).slice(0, 200));
@@ -161,17 +161,17 @@ async function teardown() {
   }
   {
     // no JWT
-    const r = await call('/api/client-get-my-cars');
+    const r = await call('/api/client?action=get-my-cars');
     ok('no-token → 401', r.status === 401);
   }
   {
     // bad JWT
-    const r = await call('/api/client-get-my-cars', { token: tokens.bad });
+    const r = await call('/api/client?action=get-my-cars', { token: tokens.bad });
     ok('bad-token → 401', r.status === 401);
   }
   {
     // admin role → 403
-    const r = await call('/api/client-get-my-cars', { token: clientJwt('admin', TEST_PROFILE) });
+    const r = await call('/api/client?action=get-my-cars', { token: clientJwt('admin', TEST_PROFILE) });
     ok('admin-role → 403', r.status === 403);
   }
 
@@ -180,7 +180,7 @@ async function teardown() {
   // -------------------------------------------------------------------------
   console.log('\n# T2: client-get-bookings');
   {
-    const r = await call('/api/client-get-bookings', {
+    const r = await call('/api/client?action=get-bookings', {
       token: tokens.client,
       body: { date: '2026-08-26' },
     });
@@ -192,7 +192,7 @@ async function teardown() {
     ok('every booking client_id === TEST_CLIENT_ID', all_own);
   }
   {
-    const r = await call('/api/client-get-bookings', {
+    const r = await call('/api/client?action=get-bookings', {
       token: tokens.client,
       body: { date: 'not-a-date' },
     });
@@ -204,7 +204,7 @@ async function teardown() {
   // -------------------------------------------------------------------------
   console.log('\n# T3: client-create-car');
   {
-    const r = await call('/api/client-create-car', {
+    const r = await call('/api/client?action=create-car', {
       token: tokens.client,
       body: { car_model: 'Test Car', plate_number: TEST_PLATE_A, car_type: 'SEDAN' },
     });
@@ -215,21 +215,21 @@ async function teardown() {
     trackCar(test_car_id);
   }
   {
-    const r = await call('/api/client-create-car', {
+    const r = await call('/api/client?action=create-car', {
       token: tokens.client,
       body: { car_model: '', plate_number: TEST_PLATE_B, car_type: 'SEDAN' },
     });
     ok('400 empty car_model', r.status === 400);
   }
   {
-    const r = await call('/api/client-create-car', {
+    const r = await call('/api/client?action=create-car', {
       token: tokens.client,
       body: { car_model: 'X', plate_number: 'invalid', car_type: 'SEDAN' },
     });
     ok('400 invalid plate', r.status === 400);
   }
   {
-    const r = await call('/api/client-create-car', {
+    const r = await call('/api/client?action=create-car', {
       token: tokens.client,
       body: { car_model: 'X', plate_number: 'А111АА77', car_type: 'SPACESHIP' },
     });
@@ -241,7 +241,7 @@ async function teardown() {
   // -------------------------------------------------------------------------
   console.log('\n# T4: client-update-car');
   {
-    const r = await call('/api/client-update-car', {
+    const r = await call('/api/client?action=update-car', {
       token: tokens.client,
       body: { car_id: test_car_id, car_model: 'Updated Test Car' },
     });
@@ -250,21 +250,21 @@ async function teardown() {
   }
   {
     // other client's token → 403 car_id_not_owned
-    const r = await call('/api/client-update-car', {
+    const r = await call('/api/client?action=update-car', {
       token: tokens.other,
       body: { car_id: test_car_id, car_model: 'Should Fail' },
     });
     ok('403 foreign car', r.status === 403 && r.body?.error === 'car_id_not_owned');
   }
   {
-    const r = await call('/api/client-update-car', {
+    const r = await call('/api/client?action=update-car', {
       token: tokens.client,
       body: { car_id: test_car_id },
     });
     ok('400 no_fields_to_update', r.status === 400);
   }
   {
-    const r = await call('/api/client-update-car', {
+    const r = await call('/api/client?action=update-car', {
       token: tokens.client,
       body: { car_id: 'not-a-uuid' },
     });
@@ -276,7 +276,7 @@ async function teardown() {
   // -------------------------------------------------------------------------
   console.log('\n# T5: client-delete-car');
   {
-    const r = await call('/api/client-delete-car', {
+    const r = await call('/api/client?action=delete-car', {
       token: tokens.client,
       body: { car_id: test_car_id },
     });
@@ -286,7 +286,7 @@ async function teardown() {
     ok('is_active = false in DB', data?.is_active === false);
   }
   {
-    const r = await call('/api/client-delete-car', {
+    const r = await call('/api/client?action=delete-car', {
       token: tokens.other,
       body: { car_id: test_car_id },
     });
@@ -308,7 +308,7 @@ async function teardown() {
   // Try to claim the slot for an existing client car. We use a test car first.
   {
     // First create a fresh car since previous was soft-deleted.
-    const createRes = await call('/api/client-create-car', {
+    const createRes = await call('/api/client?action=create-car', {
       token: tokens.client,
       body: { car_model: 'Test Slot Car', plate_number: TEST_PLATE_C, car_type: 'SEDAN' },
     });
@@ -317,7 +317,7 @@ async function teardown() {
     ok('helper: created fresh test car', typeof test_car_id === 'string',
        JSON.stringify(createRes.body).slice(0, 200));
 
-    const r1 = await call('/api/client-create-booking', {
+    const r1 = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         car_model: 'Test Slot Car',
@@ -337,7 +337,7 @@ async function teardown() {
     const booking_id = r1.body?.data?.booking?.id;
 
     // second call should hit overlap check on same box+time
-    const r2 = await call('/api/client-create-booking', {
+    const r2 = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         car_model: 'Test Slot Car',
@@ -357,7 +357,7 @@ async function teardown() {
        JSON.stringify(r2.body).slice(0, 200));
 
     // Foreign client_car_id → 403
-    const r3 = await call('/api/client-create-booking', {
+    const r3 = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         car_model: 'X',
@@ -395,7 +395,7 @@ async function teardown() {
     ok('closed_boxes row inserted and visible',
        cbCheck?.is_closed === true,
        JSON.stringify(cbCheck));
-    const rBoxClosed = await call('/api/client-create-booking', {
+    const rBoxClosed = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         car_model: 'X',
@@ -415,7 +415,7 @@ async function teardown() {
     ok('foreign client_car_id (setup) → 403', rBoxClosed.status === 403);
 
     // Real client_car_id with that closed box → box_closed
-    const rBoxClosed2 = await call('/api/client-create-booking', {
+    const rBoxClosed2 = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         car_model: 'X',
@@ -463,7 +463,7 @@ async function teardown() {
       if (drvErr) console.error('tmpDrv upsert:', drvErr.message);
 
       // organization_id foreign (alone) → 403
-      const rForeignOrg = await call('/api/client-create-booking', {
+      const rForeignOrg = await call('/api/client?action=create-booking', {
         token: tokens.client,
         body: {
           car_model: 'X', plate_number: 'А444АА77', car_type: 'SEDAN',
@@ -476,7 +476,7 @@ async function teardown() {
          rForeignOrg.status === 403 && rForeignOrg.body?.error === 'organization_id_not_owned');
 
       // driver_id foreign (with valid organization_id) → 403
-      const rForeignDriver = await call('/api/client-create-booking', {
+      const rForeignDriver = await call('/api/client?action=create-booking', {
         token: tokens.client,
         body: {
           car_model: 'X', plate_number: 'А555АА77', car_type: 'SEDAN',
@@ -490,7 +490,7 @@ async function teardown() {
          rForeignDriver.status === 403 && rForeignDriver.body?.error === 'driver_id_not_owned');
 
       // car_id foreign (with valid org + valid driver) → 403
-      const rForeignCar = await call('/api/client-create-booking', {
+      const rForeignCar = await call('/api/client?action=create-booking', {
         token: tokens.client,
         body: {
           car_model: 'X', plate_number: 'А666АА77', car_type: 'SEDAN',
@@ -508,7 +508,7 @@ async function teardown() {
     }
 
     // Cleanup: cancel and soft-delete test car
-    const cancelRes = await call('/api/client-cancel-booking', {
+    const cancelRes = await call('/api/client?action=cancel-booking', {
       token: tokens.client,
       body: { booking_id },
     });
@@ -516,7 +516,7 @@ async function teardown() {
 
     // Idempotency at HTTP layer (separate from RPC smoke test T10-T11).
     // Second call must return 200 + already_cancelled=true, NOT 409 mapping.
-    const cancelRes2 = await call('/api/client-cancel-booking', {
+    const cancelRes2 = await call('/api/client?action=cancel-booking', {
       token: tokens.client,
       body: { booking_id },
     });
@@ -532,14 +532,14 @@ async function teardown() {
   console.log('\n# T7: client-cancel-booking');
   // Create a booking then flip its status to ГОТОВО so cancel must raise 409.
   {
-    const createRes = await call('/api/client-create-car', {
+    const createRes = await call('/api/client?action=create-car', {
       token: tokens.client,
       body: { car_model: 'T7 Car', plate_number: TEST_PLATE_C, car_type: 'SEDAN' },
     });
     test_car_id = createRes.body?.data?.car?.id;
     trackCar(test_car_id);
 
-    const mk = await call('/api/client-create-booking', {
+    const mk = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         car_model: 'T7 Car',
@@ -560,7 +560,7 @@ async function teardown() {
     await admin.from('bookings').update({ status: 'ГОТОВО' }).eq('id', booking_id);
 
     // Cancel attempt should 409 with cannot_cancel + current_status.
-    const r = await call('/api/client-cancel-booking', {
+    const r = await call('/api/client?action=cancel-booking', {
       token: tokens.client,
       body: { booking_id },
     });
@@ -570,14 +570,14 @@ async function teardown() {
   }
   {
     // random uuid
-    const r = await call('/api/client-cancel-booking', {
+    const r = await call('/api/client?action=cancel-booking', {
       token: tokens.client,
       body: { booking_id: '00000000-0000-0000-0000-000000000999' },
     });
     ok('cancel foreign uuid → 404', r.status === 404);
   }
   {
-    const r = await call('/api/client-cancel-booking', {
+    const r = await call('/api/client?action=cancel-booking', {
       token: tokens.client,
       body: { booking_id: 'not-a-uuid' },
     });
@@ -596,7 +596,7 @@ async function teardown() {
   console.log('\n# T8: client-create-booking validation');
   {
     // Empty body — endpoint reads car_model first → 'car_model_required'.
-    const r = await call('/api/client-create-booking', {
+    const r = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {},
     });
@@ -606,7 +606,7 @@ async function teardown() {
   }
   {
     // Missing car_model — explicit field missing rather than empty string.
-    const r = await call('/api/client-create-booking', {
+    const r = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         plate_number: TEST_PLATE_C,
@@ -627,7 +627,7 @@ async function teardown() {
   {
     // Bad booking_date — validator should reach date and fail with
     // 'booking_date_bad_format' (NOT plate regex, NOT car_model etc).
-    const r = await call('/api/client-create-booking', {
+    const r = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         car_model: 'X',
@@ -646,10 +646,25 @@ async function teardown() {
        r.status === 400 && r.body?.error === 'booking_date_bad_format',
        JSON.stringify(r.body).slice(0, 200));
   }
+
+  // -------------------------------------------------------------------------
+  // T-dispatch: dispatcher-level checks (unknown / missing action)
+  // -------------------------------------------------------------------------
+  console.log('\n# T-dispatch: dispatcher allow-list');
+  {
+    const rUnknown = await call('/api/client?action=does-not-exist', { token: tokens.client });
+    ok('unknown action → 404', rUnknown.status === 404 && rUnknown.body?.error === 'unknown_action');
+  }
+  {
+    // Missing action entirely (no ?action=).
+    const rMissing = await call('/api/client', { token: tokens.client });
+    ok('missing action → 404', rMissing.status === 404 && rMissing.body?.error === 'unknown_action');
+  }
+
   {
     // Bad service UUID — validator should reach services and fail with
     // 'services_item_not_uuid'.
-    const r = await call('/api/client-create-booking', {
+    const r = await call('/api/client?action=create-booking', {
       token: tokens.client,
       body: {
         car_model: 'X',

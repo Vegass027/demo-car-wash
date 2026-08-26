@@ -16,7 +16,7 @@ import { useBookingHistory } from '../../shared/hooks/useBookingHistory';
 import { Service } from '../../lib/api/services';
 import { Organization, OrganizationDriver, OrganizationCar } from '../../lib/api/organizations';
 import { Client } from '../../lib/api/clients';
-// deleteClientCar removed: soft-delete routes through POST /api/client-delete-car
+// deleteClientCar removed: soft-delete routes through POST /api/client?action=delete-car
 // (server-admin BACKEND enforced ownership gate, JWT-verified).
 
 interface MyGarageProps {
@@ -160,7 +160,7 @@ export const MyGarage: React.FC<MyGarageProps> = ({
     }
 
     try {
-      const res = await fetch('/api/client-delete-car', {
+      const res = await fetch('/api/client?action=delete-car', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -175,7 +175,7 @@ export const MyGarage: React.FC<MyGarageProps> = ({
         if (code === 'car_id_not_owned') friendly = 'Машина вам не принадлежит.';
         throw new Error(friendly);
       }
-      console.log('[MyGarage] car soft-deleted via /api/client-delete-car');
+      console.log('[MyGarage] car soft-deleted via /api/client?action=delete-car');
       // ❌ НЕ вызываем refetchCars() - Realtime подписка сама обработает изменение
       // await refetchCars();
     } catch (err: any) {
