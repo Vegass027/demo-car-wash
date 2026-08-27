@@ -1,5 +1,7 @@
 import type { Booking } from './bookings';
 import type { TireBooking } from './tire-bookings';
+import type { Worker } from './workers';
+import type { TireWorker } from './tire-workers';
 
 type BookingResponse<T> = { data?: { booking?: T; idempotent?: boolean } };
 
@@ -657,4 +659,156 @@ export async function changeStaffPassword(
       p_new_password: newPassword,
     },
   );
+}
+
+// =========================================================================
+// Slice #3d Step 0 — staff-direct RPC dispatcher proxies (9 wrappers).
+//
+// Each wrapper delegates to a JWT-protected /api/staff action. Browser
+// can no longer reach the underlying RPCs directly; the REVOKE migration
+// (021) lands AFTER this slice is deployed.
+// =========================================================================
+
+// === start-worker-shift ===
+// Server-stamps p_today and p_salary (worker_solo_base) from salary_settings.
+export async function startStaffWorkerShift(workerId: string): Promise<Worker> {
+  const res = await dispatchStaffCall<{
+    data?: { worker: Worker };
+    error?: string;
+  }>('start-worker-shift', { worker_id: workerId });
+  if (!res.data?.worker) throw new Error('staff_no_worker_in_response');
+  return res.data.worker;
+}
+
+// === start-tire-worker-shift ===
+export async function startStaffTireWorkerShift(workerId: string): Promise<TireWorker> {
+  const res = await dispatchStaffCall<{
+    data?: { tire_worker: TireWorker };
+    error?: string;
+  }>('start-tire-worker-shift', { worker_id: workerId });
+  if (!res.data?.tire_worker) throw new Error('staff_no_tire_worker_in_response');
+  return res.data.tire_worker;
+}
+
+// === add-tire-worker-earnings — SECURITY CRITICAL ===
+// Body: ONLY {booking_id}. Server reads tire_bookings + salary_settings
+// + tire_workers and uses addTireWorkerEarningAndLedger to compute earnings.
+export interface AddTireWorkerEarningsResult {
+  success: boolean;
+  idempotent: boolean;
+  rpc_message?: string;
+  ledger_inserted?: boolean;
+}
+
+export async function addStaffTireWorkerEarnings(
+  bookingId: string
+): Promise<AddTireWorkerEarningsResult> {
+  const res = await dispatchStaffCall<{
+    data?: AddTireWorkerEarningsResult;
+    error?: string;
+  }>('add-tire-worker-earnings', { booking_id: bookingId });
+  if (!res.data) throw new Error('staff_no_response');
+  return res.data;
+}
+
+// === inventory-usage ===
+// Server-stamps p_created_by from claims.profile_id.
+export async function deductFromInventoryViaStaff(
+  itemId: string,
+  quantity: number,
+  notes: string | null
+): Promise<unknown> {
+  const res = await dispatchStaffCall<{
+    data?: { result: unknown };
+    error?: string;
+  }>('inventory-usage', { item_id: itemId, quantity, notes });
+  if (!res.data) throw new Error('staff_no_response');
+  return res.data.result;
+}
+
+// === inventory-restock ===
+export async function restockInventoryViaStaff(
+  itemId: string,
+  quantity: number,
+  notes: string | null
+): Promise<unknown> {
+  const res = await dispatchStaffCall<{
+    data?: { result: unknown };
+    error?: string;
+  }>('inventory-restock', { item_id: itemId, quantity, notes });
+  if (!res.data) throw new Error('staff_no_response');
+  return res.data.result;
+}
+
+// === add-inventory-category ===
+export async function addInventoryCategoryViaStaff(
+  name: string,
+  unit: string
+): Promise<unknown> {
+  const res = await dispatchStaffCall<{
+    data?: { result: unknown };
+    error?: string;
+  }>('add-inventory-category', { name, unit });
+  if (!res.data) throw new Error('staff_no_response');
+  return res.data.result;
+}
+
+// === delete-inventory-category ===
+export async function deleteInventoryCategoryViaStaff(
+  categoryId: string
+): Promise<unknown> {
+  const res = await dispatchStaffCall<{
+    data?: { result: unknown };
+    error?: string;
+  }>('delete-inventory-category', { category_id: categoryId });
+  if (!res.data) throw new Error('staff_no_response');
+  return res.data.result;
+}
+
+// === inventory-arrival ===
+// Storage photo upload stays browser-direct (Phase 1.8 OUT OF SCOPE).
+// Pass photos as URL array metadata only.
+export async function recordInventoryArrivalViaStaff(params: {
+  itemId: string;
+  quantity: number;
+  totalPrice: number;
+  deliveryDate: string;
+  photos: string[] | null;
+  notes: string | null;
+  operationId: string;
+}): Promise<{ arrival: unknown; idempotent?: boolean }> {
+  const res = await dispatchStaffCall<{
+    data?: { arrival: unknown; idempotent?: boolean };
+    error?: string;
+  }>('inventory-arrival', {
+    item_id: params.itemId,
+    quantity: params.quantity,
+    total_price: params.totalPrice,
+    delivery_date: params.deliveryDate,
+    photos: params.photos,
+    notes: params.notes,
+    operation_id: params.operationId,
+  });
+  if (!res.data) throw new Error('staff_no_response');
+  return res.data;
+}
+
+// === get-next-document-number ===
+export async function getNextDocumentNumberViaStaff(
+  documentType: 'invoice' | 'act',
+  month: number,
+  year: number
+): Promise<number> {
+  const res = await dispatchStaffCall<{
+    data?: { number: number };
+    error?: string;
+  }>('get-next-document-number', {
+    document_type: documentType,
+    month,
+    year,
+  });
+  if (res.data?.number === undefined || res.data?.number === null) {
+    throw new Error('staff_no_number_in_response');
+  }
+  return res.data.number;
 }

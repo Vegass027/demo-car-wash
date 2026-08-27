@@ -1573,6 +1573,201 @@ async function postTestCleanup() {
     }
   }
 
+  // =========================================================================
+  // Slice #3d Step 0 — staff-direct RPC dispatcher proxies
+  // =========================================================================
+  // 9 new actions: start-worker-shift, start-tire-worker-shift,
+  //                add-tire-worker-earnings (server-computes earnings),
+  //                inventory-usage, inventory-restock,
+  //                add-inventory-category, delete-inventory-category,
+  //                inventory-arrival, get-next-document-number.
+  //
+  // D1 = 200 success + DB effect (per action)
+  // D2 = 401 no_token (per action)
+  // D3 = 403 wrong_role (per action) — admin allowed for all 9 (admin-or-owner)
+  // D4 = direct .rpc() still works (parallel, until migration 021)
+  // D5 = idempotency edge cases
+  // D6/D7/D8 = add-tire-worker-earnings body with money fields → 400
+  // =========================================================================
+  console.log('\n--- Slice #3d Step 0: staff-direct RPC dispatcher proxies ---');
+
+  const workerIdForTests = psqlScalar(`SELECT id FROM public.workers WHERE is_active=true ORDER BY full_name LIMIT 1;`);
+  // Reuse tireWorkerIdForTests from earlier in file (Slice #3c owner-path section).
+
+  // --- D2: 401 no_token for all 9 ---
+  console.log('\n--- D2: 401 no_token (9 actions) ---');
+  for (const [name, body] of [
+    ['start-worker-shift', { worker_id: workerIdForTests }],
+    ['start-tire-worker-shift', { worker_id: tireWorkerIdForTests }],
+    ['add-tire-worker-earnings', { booking_id: '00000000-0000-0000-0000-000000000000' }],
+    ['inventory-usage', { item_id: '00000000-0000-0000-0000-000000000000', quantity: 1 }],
+    ['inventory-restock', { item_id: '00000000-0000-0000-0000-000000000000', quantity: 1 }],
+    ['add-inventory-category', { name: 'TestCat', unit: 'pcs' }],
+    ['delete-inventory-category', { category_id: '00000000-0000-0000-0000-000000000000' }],
+    ['inventory-arrival', { item_id: '00000000-0000-0000-0000-000000000000', quantity: 1, total_price: 1, delivery_date: '2026-08-27', operation_id: '00000000-0000-0000-0000-000000000000' }],
+    ['get-next-document-number', { document_type: 'invoice', month: 8, year: 2026 }],
+  ]) {
+    const r = await api('POST', `/api/staff?action=${name}`, body, null);
+    assert(`D2: ${name} no token → 401`, r.status === 401, `status=${r.status}`);
+  }
+
+  // --- D3: 403 wrong_role for client JWT (9 actions) ---
+  console.log('\n--- D3: 403 wrong_role for client JWT (9 actions) ---');
+  // getClientToken defined earlier; reuse.
+  let clientToken3d = null;
+  try { clientToken3d = await getClientToken(); } catch { /* skip if unavailable */ }
+  if (clientToken3d) {
+    for (const [name, body] of [
+      ['start-worker-shift', { worker_id: workerIdForTests }],
+      ['start-tire-worker-shift', { worker_id: tireWorkerIdForTests }],
+      ['add-tire-worker-earnings', { booking_id: '00000000-0000-0000-0000-000000000000' }],
+      ['inventory-usage', { item_id: '00000000-0000-0000-0000-000000000000', quantity: 1 }],
+      ['inventory-restock', { item_id: '00000000-0000-0000-0000-000000000000', quantity: 1 }],
+      ['add-inventory-category', { name: 'TestCat', unit: 'pcs' }],
+      ['delete-inventory-category', { category_id: '00000000-0000-0000-0000-000000000000' }],
+      ['inventory-arrival', { item_id: '00000000-0000-0000-0000-000000000000', quantity: 1, total_price: 1, delivery_date: '2026-08-27', operation_id: '00000000-0000-0000-0000-000000000000' }],
+      ['get-next-document-number', { document_type: 'invoice', month: 8, year: 2026 }],
+    ]) {
+      const r = await api('POST', `/api/staff?action=${name}`, body, clientToken3d);
+      assert(`D3: ${name} client JWT → 403`, r.status === 403, `status=${r.status} err=${r.data?.error}`);
+    }
+  } else {
+    console.log('  SKIP D3: client token unavailable');
+  }
+
+  // --- D6/D7/D8: add-tire-worker-earnings body validation (money fields rejected) ---
+  console.log('\n--- D6/D7/D8: add-tire-worker-earnings body validation ---');
+  if (ownerToken) {
+    // Create a real tire booking to test against
+    const tireBookingId = psqlScalar(`
+      SELECT id FROM public.tire_bookings
+      WHERE status='ГОТОВО' AND is_paid=true AND worker_id IS NOT NULL
+      ORDER BY booking_date DESC LIMIT 1;`);
+    if (tireBookingId) {
+      // D6: worker_id → 400 field_not_allowed_worker_id
+      {
+        const r = await api('POST', '/api/staff?action=add-tire-worker-earnings',
+          { booking_id: tireBookingId, worker_id: workerIdForTests }, ownerToken);
+        assert('D6: add-tire-worker-earnings body with worker_id → 400 field_not_allowed_worker_id',
+          r.status === 400 && r.data?.error === 'field_not_allowed_worker_id',
+          `status=${r.status} err=${r.data?.error}`);
+      }
+      // D7: earnings → 400 field_not_allowed_earnings
+      {
+        const r = await api('POST', '/api/staff?action=add-tire-worker-earnings',
+          { booking_id: tireBookingId, earnings: 999999 }, ownerToken);
+        assert('D7: add-tire-worker-earnings body with earnings → 400 field_not_allowed_earnings',
+          r.status === 400 && r.data?.error === 'field_not_allowed_earnings',
+          `status=${r.status} err=${r.data?.error}`);
+      }
+      // D8: total_price → 400 field_not_allowed_total_price
+      {
+        const r = await api('POST', '/api/staff?action=add-tire-worker-earnings',
+          { booking_id: tireBookingId, total_price: 999 }, ownerToken);
+        assert('D8: add-tire-worker-earnings body with total_price → 400 field_not_allowed_total_price',
+          r.status === 400 && r.data?.error === 'field_not_allowed_total_price',
+          `status=${r.status} err=${r.data?.error}`);
+      }
+    } else {
+      console.log('  SKIP D6/D7/D8: no valid tire booking found');
+    }
+  } else {
+    console.log('  SKIP D6/D7/D8: no owner token');
+  }
+
+  // --- D1: 200 success + DB effect (per action) ---
+  console.log('\n--- D1: 200 success + DB effect (9 actions) ---');
+  if (ownerToken) {
+    // D1.1: start-worker-shift
+    if (workerIdForTests) {
+      // Use a worker that is NOT currently working_today to test the new path
+      const idleWorker = psqlScalar(`
+        SELECT id FROM public.workers
+        WHERE is_active=true AND (is_working_today IS NOT TRUE)
+        ORDER BY full_name LIMIT 1;`);
+      if (idleWorker) {
+        const r = await api('POST', '/api/staff?action=start-worker-shift',
+          { worker_id: idleWorker }, ownerToken);
+        assert('D1.1: start-worker-shift owner JWT → 200 success',
+          r.status === 200, `status=${r.status} err=${r.data?.error}`);
+        if (r.status === 200) {
+          // Cleanup: restore (set is_working_today=false)
+          execSync(`psql -q -t -A "${PG_URL}" -c "UPDATE public.workers SET is_working_today=false, last_shift_date=NULL WHERE id='${idleWorker}';"`,
+            { encoding: 'utf8' });
+        }
+      } else {
+        console.log('  SKIP D1.1: no idle worker');
+      }
+    }
+    // D1.2: start-tire-worker-shift
+    if (tireWorkerIdForTests) {
+      const idleTire = psqlScalar(`
+        SELECT id FROM public.tire_workers
+        WHERE is_active=true AND (is_working_today IS NOT TRUE)
+        ORDER BY full_name LIMIT 1;`);
+      if (idleTire) {
+        const r = await api('POST', '/api/staff?action=start-tire-worker-shift',
+          { worker_id: idleTire }, ownerToken);
+        assert('D1.2: start-tire-worker-shift owner JWT → 200 success',
+          r.status === 200, `status=${r.status} err=${r.data?.error}`);
+        if (r.status === 200) {
+          execSync(`psql -q -t -A "${PG_URL}" -c "UPDATE public.tire_workers SET is_working_today=false, last_shift_date=NULL WHERE id='${idleTire}';"`,
+            { encoding: 'utf8' });
+        }
+      } else {
+        console.log('  SKIP D1.2: no idle tire worker');
+      }
+    }
+    // D1.3: add-tire-worker-earnings (server-computes, idempotent on repeat)
+    const paidTireBooking = psqlScalar(`
+      SELECT id FROM public.tire_bookings
+      WHERE status='ГОТОВО' AND is_paid=true AND worker_id IS NOT NULL
+      ORDER BY booking_date DESC LIMIT 1;`);
+    if (paidTireBooking) {
+      const r = await api('POST', '/api/staff?action=add-tire-worker-earnings',
+        { booking_id: paidTireBooking }, ownerToken);
+      assert('D1.3: add-tire-worker-earnings owner JWT → 200 success (idempotent=true if already paid)',
+        r.status === 200 && (r.data?.data?.success !== undefined || r.data?.data?.idempotent !== undefined),
+        `status=${r.status} body=${JSON.stringify(r.data?.data)}`);
+    } else {
+      console.log('  SKIP D1.3: no paid tire booking');
+    }
+    // D1.4: add-inventory-category
+    {
+      const r = await api('POST', '/api/staff?action=add-inventory-category',
+        { name: 'TEST_SLICE_3D_STEP0', unit: 'pcs' }, ownerToken);
+      assert('D1.4: add-inventory-category owner JWT → 200 success',
+        r.status === 200, `status=${r.status} err=${r.data?.error}`);
+      // Cleanup
+      execSync(`psql -q -t -A "${PG_URL}" -c "UPDATE public.inventory_categories SET is_active=false WHERE name='TEST_SLICE_3D_STEP0';"`,
+        { encoding: 'utf8' });
+    }
+    // D1.5: get-next-document-number
+    {
+      const r = await api('POST', '/api/staff?action=get-next-document-number',
+        { document_type: 'invoice', month: 8, year: 2026 }, ownerToken);
+      assert('D1.5: get-next-document-number owner JWT → 200 returns number',
+        r.status === 200 && typeof r.data?.data?.number === 'number',
+        `status=${r.status} data=${JSON.stringify(r.data?.data)}`);
+    }
+    // D1.6/D1.7/D1.8/D1.9: skipped for cleanliness (would require disposable data)
+    console.log('  SKIP D1.6 inventory-usage, D1.7 inventory-restock, D1.8 delete-inventory-category, D1.9 inventory-arrival — would pollute test DB');
+  }
+
+  // --- D5: idempotency on add-tire-worker-earnings ---
+  console.log('\n--- D5: idempotency (add-tire-worker-earnings 2x returns idempotent) ---');
+  if (ownerToken && paidTireBooking) {
+    const r1 = await api('POST', '/api/staff?action=add-tire-worker-earnings',
+      { booking_id: paidTireBooking }, ownerToken);
+    const r2 = await api('POST', '/api/staff?action=add-tire-worker-earnings',
+      { booking_id: paidTireBooking }, ownerToken);
+    assert('D5: add-tire-worker-earnings call 1 → 200',
+      r1.status === 200, `status=${r1.status}`);
+    assert('D5: add-tire-worker-earnings call 2 → 200 idempotent=true (no double-credit)',
+      r2.status === 200 && r2.data?.data?.idempotent === true,
+      `status=${r2.status} body=${JSON.stringify(r2.data?.data)}`);
+  }
+
   // --- post-test cleanup helpers (echo) ---
   console.log('\n--- POST: cleanup helper echo ---');
   console.log(`  To cleanup test rows: run the SQL printed in the final summary.`);

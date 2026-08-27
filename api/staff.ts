@@ -123,6 +123,22 @@ const ALLOWED_ACTIONS = new Set([
   'update-salary-settings',
   'create-company-settings',
   'update-company-settings',
+
+  // Slice #3d Step 0 — staff-direct RPC dispatcher proxies (9 actions):
+  //   All admin-or-owner. Server-stamps derived fields (p_today, p_salary,
+  //   p_created_by). Browser can no longer call these RPCs directly because
+  //   the corresponding REVOKE EXECUTE migration lands AFTER frontend ports
+  //   are deployed (migration 021). Until then the old anon RPC grant still
+  //   works in parallel — frontend switch is the only functional change.
+  'start-worker-shift',
+  'start-tire-worker-shift',
+  'add-tire-worker-earnings',  // SECURITY: server-computes earnings from booking_id only
+  'inventory-usage',
+  'inventory-restock',
+  'add-inventory-category',
+  'delete-inventory-category',
+  'inventory-arrival',
+  'get-next-document-number',
 ]);
 
 const supabaseAdmin = createClient(
@@ -1852,6 +1868,316 @@ async function startAdminShiftAction(_claims: StaffClaims, body: AnyObj): Promis
 }
 
 // =========================================================================
+// Slice #3d Step 0 — staff-direct RPC dispatcher proxies (9 actions).
+//
+// All actions are admin-or-owner (no requireOwner). Server-stamps derived
+// fields so the browser can never spoof audit/financial values:
+//   - p_today    = today's date (YYYY-MM-DD)
+//   - p_salary   = from salary_settings (start-worker-shift) or 0 (tire)
+//   - p_created_by = claims.profile_id (inventory_*)
+//   - earnings   = server-computed from booking_id (add-tire-worker-earnings)
+//
+// Each action calls the same-named RPC via supabaseAdmin (service_role
+// bypasses RLS, so the parallel anon-direct grant doesn't change the
+// permission gate). Migration 021 REVOKE EXECUTE on the corresponding
+// RPC will land AFTER this frontend switch is deployed, in keeping with
+// Slice #3c's "dispatcher first, REVOKE second" pattern.
+// =========================================================================
+
+// === start-worker-shift (admin/owner) ===
+async function startWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  // p_today server-stamped.
+  const today = new Date().toISOString().slice(0, 10);
+  // p_salary server-stamped from salary_settings.
+  const { data: settings, error: sErr } = await supabaseAdmin
+    .from('salary_settings').select('worker_solo_base').limit(1).maybeSingle();
+  if (sErr) {
+    console.error('[staff:start-worker-shift] salary_settings fetch error:', sErr.message);
+    return failAction(500, 'salary_settings_query_failed');
+  }
+  if (!settings) {
+    return failAction(500, 'salary_settings_missing');
+  }
+  const { data, error } = await supabaseAdmin.rpc('start_worker_shift', {
+    p_worker_id: worker_id,
+    p_salary: Number(settings.worker_solo_base) || 0,
+    p_today: today,
+  });
+  if (error) {
+    console.error('[staff:start-worker-shift] rpc error:', error.message);
+    return failAction(500, 'start_worker_shift_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { worker: data } } };
+}
+
+// === start-tire-worker-shift (admin/owner) ===
+async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  // p_today server-stamped; p_salary = 0 (tire workers have no base rate).
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await supabaseAdmin.rpc('start_tire_worker_shift', {
+    p_worker_id: worker_id,
+    p_salary: 0,
+    p_today: today,
+  });
+  if (error) {
+    console.error('[staff:start-tire-worker-shift] rpc error:', error.message);
+    return failAction(500, 'start_tire_worker_shift_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { tire_worker: data } } };
+}
+
+// === add-tire-worker-earnings (admin/owner) — SECURITY CRITICAL ===
+//
+// Body accepts ONLY { booking_id }. Any other body key (worker_id, earnings,
+// order_price, total_price, services, worker_name) is rejected with 400
+// field_not_allowed_<name> — server-computes EVERYTHING money-related.
+//
+// Flow:
+//   1. validate body shape (only booking_id allowed)
+//   2. SELECT tire_bookings WHERE id = booking_id (service_role bypass RLS)
+//      validate: status='ГОТОВО', worker_id NOT NULL, is_paid=true
+//   3. SELECT tire_workers for worker.full_name (ledger NOT NULL)
+//   4. SELECT salary_settings for tire_worker_commission + tire_worker_storage_fee
+//   5. calculateTireEarnings (api/_lib/earnings.ts) — uses STORAGE_SERVICE_NAMES
+//   6. addTireWorkerEarningAndLedger (existing two-step pipeline) — RPC FOR UPDATE
+//      + INSERT salary_transactions ledger row, idempotent-aware
+async function addTireWorkerEarningsAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  // 1. Allow-list body shape: ONLY booking_id.
+  const allowedKeys = new Set(['booking_id']);
+  for (const k of Object.keys(body)) {
+    if (!allowedKeys.has(k)) {
+      return failAction(400, `field_not_allowed_${k}`);
+    }
+  }
+  const booking_id = readUuidRequired(body, 'booking_id');
+
+  // 2. Load booking (service_role bypass RLS).
+  const { data: booking, error: bErr } = await supabaseAdmin
+    .from('tire_bookings')
+    .select('id, status, is_paid, worker_id, total_price, services')
+    .eq('id', booking_id)
+    .maybeSingle();
+  if (bErr) {
+    console.error('[staff:add-tire-worker-earnings] booking fetch error:', bErr.message);
+    return failAction(500, 'tire_booking_lookup_failed');
+  }
+  if (!booking) {
+    return failAction(404, 'tire_booking_not_found');
+  }
+  if (!booking.worker_id) {
+    return failAction(400, 'tire_booking_no_worker_assigned');
+  }
+  if (booking.status !== 'ГОТОВО') {
+    return failAction(400, 'tire_booking_not_ready', { status: booking.status });
+  }
+  if (!booking.is_paid) {
+    return failAction(400, 'tire_booking_not_paid');
+  }
+
+  // services is JSONB; supabase-js may return as parsed array or raw string.
+  let services: any[] = [];
+  if (Array.isArray(booking.services)) services = booking.services;
+  else if (typeof booking.services === 'string') {
+    try { services = JSON.parse(booking.services); }
+    catch { services = []; }
+  }
+
+  // 3. Load worker for full_name (salary_transactions.worker_name NOT NULL).
+  const { data: worker, error: wErr } = await supabaseAdmin
+    .from('tire_workers')
+    .select('id, full_name')
+    .eq('id', booking.worker_id)
+    .maybeSingle();
+  if (wErr || !worker) {
+    console.error('[staff:add-tire-worker-earnings] worker fetch error:', wErr?.message);
+    return failAction(404, 'tire_worker_not_found');
+  }
+
+  // 4-6. Two-step pipeline (api/_lib/earnings.ts addTireWorkerEarningAndLedger).
+  const result = await addTireWorkerEarningAndLedger(supabaseAdmin, {
+    worker_id: booking.worker_id,
+    worker_name: worker.full_name,
+    booking_id: booking.id,
+    total_price: Number(booking.total_price) || 0,
+    services,
+  });
+
+  if (!result.rpc_success) {
+    // Idempotent — booking already credited.
+    return {
+      status: 200,
+      body: {
+        data: {
+          success: false,
+          idempotent: true,
+          rpc_message: result.rpc_message,
+        },
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      data: {
+        success: true,
+        idempotent: false,
+        ledger_inserted: result.ledger_inserted,
+        rpc_message: result.rpc_message,
+      },
+    },
+  };
+}
+
+// === inventory-usage (admin/owner) ===
+// SECURITY: p_created_by server-stamped from claims.profile_id.
+async function inventoryUsageAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const item_id = readUuidRequired(body, 'item_id');
+  const quantity = Number(body.quantity);
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new ValidationError('quantity_invalid');
+  }
+  const notes = body.notes ?? null;
+  const { data, error } = await supabaseAdmin.rpc('inventory_usage', {
+    p_item_id: item_id,
+    p_quantity: quantity,
+    p_notes: notes,
+    p_created_by: claims.profile_id,
+  });
+  if (error) {
+    console.error('[staff:inventory-usage] rpc error:', error.message);
+    return failAction(500, 'inventory_usage_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { result: data } } };
+}
+
+// === inventory-restock (admin/owner) ===
+async function inventoryRestockAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const item_id = readUuidRequired(body, 'item_id');
+  const quantity = Number(body.quantity);
+  if (!Number.isFinite(quantity)) {
+    throw new ValidationError('quantity_invalid');
+  }
+  const notes = body.notes ?? null;
+  const { data, error } = await supabaseAdmin.rpc('inventory_restock', {
+    p_item_id: item_id,
+    p_quantity: quantity,
+    p_notes: notes,
+    p_created_by: claims.profile_id,
+  });
+  if (error) {
+    console.error('[staff:inventory-restock] rpc error:', error.message);
+    return failAction(500, 'inventory_restock_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { result: data } } };
+}
+
+// === add-inventory-category (admin/owner) ===
+async function addInventoryCategoryAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const name = readString(body, 'name', { required: true, max: 100 });
+  const unit = readString(body, 'unit', { required: true, max: 50 });
+  const { data, error } = await supabaseAdmin.rpc('add_inventory_category', {
+    p_name: name,
+    p_unit: unit,
+  });
+  if (error) {
+    console.error('[staff:add-inventory-category] rpc error:', error.message);
+    return failAction(500, 'add_inventory_category_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { result: data } } };
+}
+
+// === delete-inventory-category (admin/owner) ===
+async function deleteInventoryCategoryAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const category_id = readUuidRequired(body, 'category_id');
+  const { data, error } = await supabaseAdmin.rpc('delete_inventory_category', {
+    p_category_id: category_id,
+  });
+  if (error) {
+    console.error('[staff:delete-inventory-category] rpc error:', error.message);
+    return failAction(500, 'delete_inventory_category_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { result: data } } };
+}
+
+// === inventory-arrival (admin/owner) ===
+//
+// Storage photo upload remains browser-direct (supabase.storage) — Phase 1.8
+// bucket RLS/policies are OUT OF SCOPE for Slice #3d. This dispatcher only
+// writes the inventory_arrivals row + photos metadata (array of URLs).
+//
+// Uses the 8-arg overload uniquely (passes p_operation_id).
+async function inventoryArrivalAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const item_id = readUuidRequired(body, 'item_id');
+  const quantity = Number(body.quantity);
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new ValidationError('quantity_invalid');
+  }
+  const total_price = Number(body.total_price);
+  if (!Number.isFinite(total_price) || total_price < 0) {
+    throw new ValidationError('total_price_invalid');
+  }
+  const delivery_date = readString(body, 'delivery_date', { required: true, max: 10 });
+  const photos = Array.isArray(body.photos) ? body.photos : null;
+  const notes = body.notes ?? null;
+  const operation_id = readUuidRequired(body, 'operation_id');
+  const { data, error } = await supabaseAdmin.rpc('inventory_arrival', {
+    p_item_id: item_id,
+    p_quantity: quantity,
+    p_total_price: total_price,
+    p_delivery_date: delivery_date,
+    p_photos: photos,
+    p_notes: notes,
+    p_created_by: claims.profile_id,
+    p_operation_id: operation_id,
+  });
+  if (error?.code === '23505') {
+    // Race: duplicate operation_id (idempotency key).
+    const { data: existing } = await supabaseAdmin
+      .from('inventory_arrivals')
+      .select('*')
+      .eq('operation_id', operation_id)
+      .maybeSingle();
+    return {
+      status: 200,
+      body: { data: { arrival: existing, idempotent: true } },
+    };
+  }
+  if (error) {
+    console.error('[staff:inventory-arrival] rpc error:', error.message);
+    return failAction(500, 'inventory_arrival_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { arrival: data } } };
+}
+
+// === get-next-document-number (admin/owner) ===
+//
+// 3-arg overload uniquely resolved on test DB (verified empirical). Body
+// always sends all 3 args; PostgREST resolves by arg count.
+async function getNextDocumentNumberAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const document_type = readString(body, 'document_type', { required: true, max: 20 });
+  const month = Number(body.month);
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    throw new ValidationError('month_invalid');
+  }
+  const year = Number(body.year);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    throw new ValidationError('year_invalid');
+  }
+  const { data, error } = await supabaseAdmin.rpc('get_next_document_number', {
+    doc_type: document_type,
+    doc_month: month,
+    doc_year: year,
+  });
+  if (error) {
+    console.error('[staff:get-next-document-number] rpc error:', error.message);
+    return failAction(500, 'get_next_document_number_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { number: data } } };
+}
+
+// =========================================================================
 // admin-give-advance / admin-payout-salary / admin-transfer-balance
 // (all owner-only — admin shouldn't manage their own money out)
 // =========================================================================
@@ -2376,6 +2702,17 @@ export default async function handler(req: any, res: any) {
       case 'update-salary-settings':            result = await updateSalarySettingsAction(guard.claims, body); break;
       case 'create-company-settings':           result = await createCompanySettingsAction(guard.claims, body); break;
       case 'update-company-settings':           result = await updateCompanySettingsAction(guard.claims, body); break;
+
+      // Slice #3d Step 0 — staff-direct RPC dispatcher proxies:
+      case 'start-worker-shift':                result = await startWorkerShiftAction(guard.claims, body); break;
+      case 'start-tire-worker-shift':           result = await startTireWorkerShiftAction(guard.claims, body); break;
+      case 'add-tire-worker-earnings':          result = await addTireWorkerEarningsAction(guard.claims, body); break;
+      case 'inventory-usage':                   result = await inventoryUsageAction(guard.claims, body); break;
+      case 'inventory-restock':                 result = await inventoryRestockAction(guard.claims, body); break;
+      case 'add-inventory-category':            result = await addInventoryCategoryAction(guard.claims, body); break;
+      case 'delete-inventory-category':         result = await deleteInventoryCategoryAction(guard.claims, body); break;
+      case 'inventory-arrival':                 result = await inventoryArrivalAction(guard.claims, body); break;
+      case 'get-next-document-number':          result = await getNextDocumentNumberAction(guard.claims, body); break;
 
       default:
         return res.status(404).json({ error: 'unknown_action' });

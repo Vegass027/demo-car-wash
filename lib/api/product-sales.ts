@@ -3,6 +3,10 @@
  */
 
 import { supabase } from '@/lib/supabase';
+import {
+  deductFromInventoryViaStaff,
+  restockInventoryViaStaff,
+} from './staff-actions';
 
 // ============================================
 // ТИПЫ
@@ -193,34 +197,27 @@ export async function getInventoryItems(): Promise<InventoryItem[]> {
 
 /**
  * Списать товар со склада
+ *
+ * Slice #3d Step 0: dispatcher proxy. Server-stamps p_created_by from JWT;
+ * browser no longer passes userId.
  * @param itemId - ID товара
  * @param quantity - Количество для списания
- * @param userId - ID пользователя
+ * @param _userId - DEPRECATED (server-stamped from JWT); kept for signature compat
  */
 async function deductFromInventory(
   itemId: string,
   quantity: number,
-  userId: string
+  _userId: string
 ): Promise<void> {
   console.log('[deductFromInventory] Deducting from inventory:', itemId, 'quantity:', quantity);
-
-  const { error } = await supabase.rpc('inventory_usage', {
-    p_item_id: itemId,
-    p_quantity: quantity,
-    p_notes: 'Продажа товара',
-    p_created_by: userId
-  });
-
-  if (error) {
-    console.error('[deductFromInventory] Error:', error);
-    throw error;
-  }
-
+  await deductFromInventoryViaStaff(itemId, quantity, 'Продажа товара');
   console.log('[deductFromInventory] Inventory updated');
 }
 
 /**
  * Вернуть товар на склад (при удалении продажи)
+ *
+ * Slice #3d Step 0: dispatcher proxy.
  * @param itemId - ID товара
  * @param quantity - Количество для возврата
  */
@@ -229,17 +226,6 @@ async function addToInventory(
   quantity: number
 ): Promise<void> {
   console.log('[addToInventory] Adding to inventory:', itemId, 'quantity:', quantity);
-
-  const { error } = await supabase.rpc('inventory_restock', {
-    p_item_id: itemId,
-    p_quantity: quantity,
-    p_notes: 'Отмена продажи товара'
-  });
-
-  if (error) {
-    console.error('[addToInventory] Error:', error);
-    throw error;
-  }
-
+  await restockInventoryViaStaff(itemId, quantity, 'Отмена продажи товара');
   console.log('[addToInventory] Inventory updated');
 }
