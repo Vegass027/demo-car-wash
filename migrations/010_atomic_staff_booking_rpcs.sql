@@ -271,8 +271,12 @@ BEGIN
     ARRAY[]::text[]
   );
   IF p_action = 'add' THEN
-    v_merged := v_current_services
-            || ARRAY(SELECT jsonb_array_elements_text(p_service_ids));
+    -- DISTINCT removes duplicates that arise when a parallel handler
+    -- already added one of the new service_ids (race-safe via FOR UPDATE).
+    v_merged := array(
+      SELECT DISTINCT unnest(v_current_services
+                              || ARRAY(SELECT jsonb_array_elements_text(p_service_ids)))
+    );
   ELSIF p_action = 'remove' THEN
     v_merged := array(
       SELECT unnest(v_current_services)
