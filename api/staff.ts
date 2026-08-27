@@ -154,6 +154,14 @@ async function lockCarwashBooking(id: string): Promise<AnyObj> {
     .maybeSingle();
   if (error) throw new Error(`booking_lookup_failed: ${error.message}`);
   if (!data) throw new ValidationError('booking_not_found');
+  // supabase-js returns JSONB columns as text (raw JSON-encoded string).
+  // Normalize `services` and `services_with_quantities` to JS arrays.
+  if (typeof data.services === 'string') {
+    try { data.services = JSON.parse(data.services); } catch { data.services = []; }
+  }
+  if (typeof data.services_with_quantities === 'string') {
+    try { data.services_with_quantities = JSON.parse(data.services_with_quantities); } catch { data.services_with_quantities = []; }
+  }
   return data;
 }
 
@@ -165,6 +173,9 @@ async function lockTireBooking(id: string): Promise<AnyObj> {
     .maybeSingle();
   if (error) throw new Error(`tire_booking_lookup_failed: ${error.message}`);
   if (!data) throw new ValidationError('tire_booking_not_found');
+  if (typeof data.services === 'string') {
+    try { data.services = JSON.parse(data.services); } catch { data.services = []; }
+  }
   return data;
 }
 
@@ -1232,7 +1243,8 @@ async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): 
     return failAction(400, `unknown_tire_service_${missing[0]}`);
   }
 
-  const servicesOut: AnyObj[] = tireRows.map((r: any) => ({
+  // Supabase-js returns tire_services.price as string; coerce to number.
+  const servicesOut: AnyObj[] = (tireRows as any[]).map((r: any) => ({
     id: r.id,
     name: r.name,
     price: Number(r.price),

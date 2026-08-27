@@ -437,7 +437,6 @@ async function postTestCleanup() {
       car_model: 'Michelin 195/65R15',
       plate_number: 'T001TT',
       services: ['72000000-0000-0000-0000-000000000001'],
-      total_price: 0, // server computes
       payment_method: 'Наличные',
       is_org: false,
       is_paid: false,
@@ -649,7 +648,7 @@ async function postTestCleanup() {
   if (carwashBookingId) {
     {
       const r = await api('POST', '/api/staff?action=assign-staff-worker',
-        { booking_id: carwashBookingId, worker_id: '00000000-0000-0000-0000-000000000000', worker_name: 'Fake' }, staffToken);
+        { booking_id: carwashBookingId, worker_id: '00000000-0000-0000-0000-000000000000', worker_name: 'Fake', working_mode: 'solo' }, staffToken);
       assert('T9: assign-staff-worker with worker_name → 400',
         r.status === 400 && r.data?.error === 'field_not_allowed_worker_name',
         `status=${r.status} error=${r.data?.error}`);
