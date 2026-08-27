@@ -130,6 +130,20 @@ function hasAnyField(body: AnyObj, fields: string[]): boolean {
 const CARWASH_STATUSES = ['ОЖИДАЕТ', 'В РАБОТЕ', 'ГОТОВО', 'ОТМЕНЕНО'] as const;
 const TIRE_STATUSES = ['ОЖИДАЕТ', 'В РАБОТЕ', 'ГОТОВО', 'ОТМЕНЕНО', 'ПРОСРОЧЕН'] as const;
 
+// Tire bookings DB CHECK constraint allows both 'Наличные' (with 'е') and
+// 'Наличный' (carwash form), plus 'Яндекс' (not in carwash API surface).
+// See plan OD#2b — keep carwash validation.ts narrow (no 'Яндекс'); mirror
+// the tire DB enum locally for tire-only actions.
+const TIRE_PAYMENT_METHODS = ['Наличные', 'Наличный', 'Безналичный', 'Перевод', 'СБП', 'Ведомость', 'Яндекс', 'QR-code'] as const;
+
+function readTirePaymentMethod(body: AnyObj, field: string): string {
+  const v = body[field];
+  if (typeof v !== 'string' || !(TIRE_PAYMENT_METHODS as readonly string[]).includes(v)) {
+    throw new ValidationError(`${field}_invalid`);
+  }
+  return v;
+}
+
 function readBookingStatus(body: AnyObj, field: string): string {
   const v = body[field];
   if (typeof v !== 'string' || !CARWASH_STATUSES.includes(v as any)) {
@@ -1252,7 +1266,7 @@ async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): 
   const total_price = servicesOut.reduce((s, r) => s + Number(r.price), 0);
 
   const payment_method = body.payment_method !== undefined && body.payment_method !== null
-    ? readPaymentMethod(body, 'payment_method')
+    ? readTirePaymentMethod(body, 'payment_method')
     : null;
 
   const is_paid = readBoolean(body, 'is_paid');
@@ -1343,7 +1357,7 @@ async function updateStaffTireBookingAction(_claims: StaffClaims, body: AnyObj):
   if (body.booking_date !== undefined) patch.booking_date = readISODate(body, 'booking_date');
   if (body.start_time !== undefined)   patch.start_time = readTimeHHMM(body, 'start_time');
   if (body.estimated_duration !== undefined) patch.estimated_duration = readNumberInRange(body, 'estimated_duration', 5, 1440, true);
-  if (body.payment_method !== undefined) patch.payment_method = readPaymentMethod(body, 'payment_method');
+  if (body.payment_method !== undefined) patch.payment_method = readTirePaymentMethod(body, 'payment_method');
   if (body.notes !== undefined)        patch.notes = body.notes === null ? null : readString(body, 'notes', { max: 4000, required: true });
   if (body.is_org !== undefined)       patch.is_org = !!body.is_org;
 
@@ -1534,7 +1548,7 @@ async function markStaffTireReadyAction(_claims: StaffClaims, body: AnyObj): Pro
 // === T9: update-staff-tire-payment-method ===
 async function updateStaffTirePaymentMethodAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
-  const payment_method = readPaymentMethod(body, 'payment_method');
+  const payment_method = readTirePaymentMethod(body, 'payment_method');
   const { data, error } = await supabaseAdmin
     .from('tire_bookings')
     .update({ payment_method, updated_at: new Date().toISOString() })
