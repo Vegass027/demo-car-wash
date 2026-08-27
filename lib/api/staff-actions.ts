@@ -311,3 +311,33 @@ export async function staffCancelTireBooking(
   const res = await dispatchStaffCall<BookingResponse<TireBooking>>('staff-cancel-tire-booking', body);
   return unwrapBooking(res);
 }
+
+// =========================================================================
+// Phase 2.1a — staff self-service password change
+// =========================================================================
+//
+// Server-stamps p_user_id from claims.profile_id (admin/owner changes
+// THEIR OWN password only). For admin-to-admin or owner-to-admin password
+// reset, a separate admin action is required (out of scope for Phase 2.1a).
+//
+// Throws on:
+//   • 'field_not_allowed_p_user_id' (HTTP 400) — caller tried to specify user_id
+//   • 'password_required' (HTTP 400) — old or new missing
+//   • 'password_same_as_old' (HTTP 400) — server-side same-as-old check
+//   • 'invalid_credentials' (HTTP 400) — RPC returned false (wrong old or no profile)
+//   • 'change_password_failed' (HTTP 500) — RPC transport error
+//   • generic 500/404 dispatcher errors
+//
+// Returns void on success.
+export async function changeStaffPassword(
+  oldPassword: string,
+  newPassword: string,
+): Promise<void> {
+  await dispatchStaffCall<{ data?: { success: boolean }; error?: string }>(
+    'change-password',
+    {
+      p_old_password: oldPassword,
+      p_new_password: newPassword,
+    },
+  );
+}
