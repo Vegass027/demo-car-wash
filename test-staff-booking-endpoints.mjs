@@ -1800,7 +1800,7 @@ async function postTestCleanup() {
   ).trim();
   console.log(`  fixture test tire worker_id: ${testTireWorkerId}`);
 
-  // Reuse adminToken from earlier PRE auth section.
+  // Reuse staffToken from earlier PRE auth section.
   // E1: start-tire-worker-shift admin → 200, is_working_today=true, work_shift_id present
   const r1 = await api('POST', '/api/staff?action=start-tire-worker-shift',
     { worker_id: testTireWorkerId }, staffToken);
@@ -1909,6 +1909,238 @@ async function postTestCleanup() {
     DELETE FROM public.work_shifts WHERE worker_id='${testTireWorkerId}';
     DELETE FROM public.tire_workers WHERE id='${testTireWorkerId}';"`, { encoding: 'utf8' });
   console.log(`  cleanup: deleted fixture test_tire_worker_id=${testTireWorkerId}`);
+
+  // ==========================================================================
+  // Slice #3e Phase A: admin-side Category C client/car read dispatcher ports
+  // ==========================================================================
+  // 3 new actions: list-clients, list-clients-with-cars,
+  // get-client-cars-by-client-id. Replaces anon-side lib/api/clients.ts
+  // reads in App.tsx, ClientDatabaseAccordion.tsx, BookingWizard.tsx,
+  // TireBookingWizard.tsx. service_role bypasses RLS — no DB writes,
+  // no fixtures needed.
+  console.log('\n--- Slice #3e Phase A: admin-side Category C client/car read dispatcher ports ---');
+
+  // --- A0: 401 no_token (3 actions) ---
+  for (const action of ['list-clients', 'list-clients-with-cars', 'get-client-cars-by-client-id']) {
+    try {
+      const r = await fetch(`${BASE}/api/staff?action=${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: action === 'get-client-cars-by-client-id' ? JSON.stringify({ client_id: 'b1000000-0000-0000-0000-000000000001' }) : '{}',
+      });
+      const json = await r.json();
+      assert(
+        `A0: ${action} no token → 401`,
+        r.status === 401 && (typeof json.error === 'string' && (json.error.includes('token') || json.error.includes('unauthorized') || json.error.includes('authorization'))),
+        `got ${r.status} ${JSON.stringify(json)}`
+      );
+    } catch (e) {
+      assert(`A0: ${action} no token → threw`, false, e.message);
+    }
+  }
+
+  // --- A1: list-clients admin JWT → 200 with shape ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=list-clients`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: '{}',
+    });
+    const json = await r.json();
+    if (r.status !== 200) {
+      assert('A1: list-clients admin → 200', false, `got ${r.status}`);
+    } else if (!Array.isArray(json?.data?.clients)) {
+      assert('A1: list-clients → data.clients is array', false, `got ${JSON.stringify(json).slice(0,200)}`);
+    } else if (json.data.clients.length === 0) {
+      assert('A1: list-clients → non-empty', false, 'returned empty (demo has 33 clients)');
+    } else {
+      const sample = json.data.clients[0];
+      const expectedKeys = ['id', 'full_name', 'phone', 'profile_id', 'is_active'];
+      const hasKeys = expectedKeys.every(k => k in sample);
+      assert(
+        `A1: list-clients admin → 200, ${json.data.clients.length} clients, shape OK`,
+        hasKeys,
+        hasKeys ? '' : `shape mismatch: ${JSON.stringify(sample)}`
+      );
+    }
+  } catch (e) {
+    assert('A1: list-clients admin → threw', false, e.message);
+  }
+
+  // --- A2: list-clients owner JWT → 200 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=list-clients`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ownerToken}` },
+      body: '{}',
+    });
+    const json = await r.json();
+    assert(
+      `A2: list-clients owner → 200, ${json.data?.clients?.length || 0} clients`,
+      r.status === 200 && Array.isArray(json?.data?.clients),
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('A2: list-clients owner → threw', false, e.message);
+  }
+
+  // --- A3: list-clients-with-cars admin → 200 with nested cars ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=list-clients-with-cars`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: '{}',
+    });
+    const json = await r.json();
+    if (r.status !== 200) {
+      assert('A3: list-clients-with-cars admin → 200', false, `got ${r.status}`);
+    } else if (!Array.isArray(json?.data?.clientsWithCars)) {
+      assert('A3: data.clientsWithCars is array', false, JSON.stringify(json).slice(0,200));
+    } else if (json.data.clientsWithCars.length === 0) {
+      assert('A3: list-clients-with-cars → non-empty', false, 'returned empty');
+    } else {
+      const row = json.data.clientsWithCars[0];
+      assert(
+        `A3: list-clients-with-cars admin → 200, ${json.data.clientsWithCars.length} rows, shape OK`,
+        !!(row.client && Array.isArray(row.cars)),
+        `row shape: ${JSON.stringify(row)}`
+      );
+    }
+  } catch (e) {
+    assert('A3: list-clients-with-cars admin → threw', false, e.message);
+  }
+
+  // --- A4: get-client-cars-by-client-id valid client → 200 ---
+  let validClientId = null;
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=list-clients`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: '{}',
+    });
+    const json = await r.json();
+    validClientId = json.data.clients[0]?.id;
+  } catch {}
+  if (!validClientId) {
+    assert('A4: cannot pick test client_id from list-clients (empty result)', false);
+  } else {
+    try {
+      const r = await fetch(`${BASE}/api/staff?action=get-client-cars-by-client-id`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+        body: JSON.stringify({ client_id: validClientId }),
+      });
+      const json = await r.json();
+      assert(
+        `A4: get-client-cars-by-client-id admin (${validClientId.slice(0, 8)}…) → 200, ${json.data?.cars?.length || 0} active cars`,
+        r.status === 200 && Array.isArray(json?.data?.cars),
+        `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+      );
+    } catch (e) {
+      assert('A4: get-client-cars-by-client-id admin → threw', false, e.message);
+    }
+  }
+
+  // --- A5: get-client-cars-by-client-id missing client_id → 400 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=get-client-cars-by-client-id`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: '{}',
+    });
+    const json = await r.json();
+    assert(
+      'A5: get-client-cars-by-client-id missing client_id → 400 client_id_required',
+      r.status === 400 && json.error === 'client_id_required',
+      `got ${r.status} ${JSON.stringify(json)}`
+    );
+  } catch (e) {
+    assert('A5: missing client_id → threw', false, e.message);
+  }
+
+  // --- A6: get-client-cars-by-client-id malformed uuid → 400 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=get-client-cars-by-client-id`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ client_id: 'not-a-uuid' }),
+    });
+    const json = await r.json();
+    assert(
+      'A6: get-client-cars-by-client-id malformed uuid → 400',
+      r.status === 400,
+      `got ${r.status} ${JSON.stringify(json)}`
+    );
+  } catch (e) {
+    assert('A6: malformed uuid → threw', false, e.message);
+  }
+
+  // --- A7: get-client-cars-by-client-id unknown uuid → 200 empty cars[] ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=get-client-cars-by-client-id`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ client_id: '00000000-0000-0000-0000-000000000099' }),
+    });
+    const json = await r.json();
+    assert(
+      'A7: get-client-cars-by-client-id unknown client_id → 200 empty cars[]',
+      r.status === 200 && Array.isArray(json?.data?.cars) && json.data.cars.length === 0,
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('A7: unknown client_id → threw', false, e.message);
+  }
+
+  // --- A8: list-clients with corrupted bearer token → 401 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=list-clients`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer not.a.valid.jwt' },
+      body: '{}',
+    });
+    assert('A8: list-clients corrupted bearer → 401', r.status === 401, `got ${r.status}`);
+  } catch (e) {
+    assert('A8: corrupted bearer → threw', false, e.message);
+  }
+
+  // --- A9: list-clients is_active=true filter — verify ALL rows have is_active=true ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=list-clients`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: '{}',
+    });
+    const json = await r.json();
+    const clients = json.data?.clients || [];
+    const inactive = clients.filter(c => !c.is_active);
+    assert(
+      `A9: list-clients filter is_active=true → 0 inactive rows in ${clients.length}`,
+      clients.length > 0 && inactive.length === 0,
+      `inactive=${inactive.length}/${clients.length}`
+    );
+  } catch (e) {
+    assert('A9: list-clients is_active filter → threw', false, e.message);
+  }
+
+  // --- A10: get-client-cars-by-client-id returns only is_active=true cars ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=get-client-cars-by-client-id`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ client_id: validClientId }),
+    });
+    const json = await r.json();
+    const cars = json.data?.cars || [];
+    const inactive = cars.filter(c => !c.is_active);
+    assert(
+      `A10: get-client-cars-by-client-id filter is_active=true → 0 inactive cars in ${cars.length}`,
+      inactive.length === 0,
+      `inactive=${inactive.length}/${cars.length}`
+    );
+  } catch (e) {
+    assert('A10: get-client-cars filter → threw', false, e.message);
+  }
 
   // --- post-test cleanup helpers (echo) ---
   console.log('\n--- POST: cleanup helper echo ---');

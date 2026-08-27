@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ChevronDown, ChevronUp, User, Building, Car, Phone, Search, Copy, Check } from 'lucide-react';
 import { Input } from '../ui/input';
-import { getClientsWithCars } from '../../lib/api/clients';
+import { listClientsWithCarsAction } from '../../lib/api/staff-actions';
 import { getOrganizationsWithDriversAndCars } from '../../lib/api/organizations';
 import type { Client, ClientCar } from '../../lib/api/clients';
 import type { Organization, OrganizationCar, OrganizationDriver } from '../../lib/api/organizations';
@@ -53,7 +53,7 @@ export const ClientDatabaseAccordion: React.FC<ClientDatabaseAccordionProps> = (
       setError(null);
       try {
         const [clients, organizations] = await Promise.all([
-          getClientsWithCars(),
+          listClientsWithCarsAction(),
           getOrganizationsWithDriversAndCars()
         ]);
         setClientsWithCars(clients);

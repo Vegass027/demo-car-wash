@@ -23,8 +23,8 @@ import { SearchResult } from '../../lib/api/search';
 import {
   Client,
   ClientCar,
-  getClientCars,
 } from '../../lib/api/clients';
+import { getClientCarsByClientIdAction } from '../../lib/api/staff-actions';
 // ✅ Новые импорты для рефакторинга
 import { validatePhone, validateCarNumber } from '../booking/validation';
 import { CarCard } from '../booking/CarCard';
@@ -735,7 +735,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
 
       // Загрузить автомобили клиента
       try {
-        const cars = await getClientCars(result.client_id!);
+        const cars = await getClientCarsByClientIdAction(result.client_id!);
         setClientCars(cars);
         setSelectedClientCarId(null);
       } catch (error) {
@@ -1103,7 +1103,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                                           setIsCreatingNewClient(false);
 
                                            try {
-                                             const cars = await getClientCars(result.client_id!);
+                                             const cars = await getClientCarsByClientIdAction(result.client_id!);
                                              setClientCars(cars);
                                            } catch (error) {
                                              console.error('Ошибка при загрузке автомобилей клиента:', error);
@@ -1354,7 +1354,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                                           setIsCreatingNewClient(false);
 
                                            try {
-                                             const cars = await getClientCars(result.client_id!);
+                                             const cars = await getClientCarsByClientIdAction(result.client_id!);
                                              setClientCars(cars);
                                            } catch (error) {
                                              console.error('Ошибка при загрузке автомобилей клиента:', error);
@@ -1534,7 +1534,7 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                     setIsCreatingNewClient(false);
 
                     try {
-                      const cars = await getClientCars(clientId);
+                      const cars = await getClientCarsByClientIdAction(clientId);
                       setClientCars(cars);
                     } catch (error) {
                       console.error('Ошибка при загрузке автомобилей клиента:', error);

@@ -841,3 +841,49 @@ export async function getNextDocumentNumberViaStaff(
   }
   return res.data.number;
 }
+
+// =========================================================================
+// Phase A Slice #3e — admin-side Category C client/car reads
+// =========================================================================
+// Replaces anon-side lib/api/clients.ts browser reads in App.tsx,
+// ClientDatabaseAccordion.tsx, BookingWizard.tsx, TireBookingWizard.tsx.
+// All calls go through api/staff dispatcher with service_role bypass —
+// no Category C anon-key reads on demo (and same hardening will be
+// brought to prod after 7-day demo stability).
+
+import type { Client, ClientCar } from './clients';
+
+// === list-clients ===
+// Replaces getClients() in App.tsx (3 callsites).
+export async function listClientsAction(): Promise<Client[]> {
+  const res = await dispatchStaffCall<{
+    data?: { clients: Client[] };
+    error?: string;
+  }>('list-clients', {});
+  return res.data?.clients || [];
+}
+
+// === list-clients-with-cars ===
+// Replaces getClientsWithCars() in ClientDatabaseAccordion.tsx (1 callsite).
+export interface ClientWithCars {
+  client: Client;
+  cars: ClientCar[];
+}
+export async function listClientsWithCarsAction(): Promise<ClientWithCars[]> {
+  const res = await dispatchStaffCall<{
+    data?: { clientsWithCars: ClientWithCars[] };
+    error?: string;
+  }>('list-clients-with-cars', {});
+  return res.data?.clientsWithCars || [];
+}
+
+// === get-client-cars-by-client-id ===
+// Replaces getClientCars(clientId) in BookingWizard.tsx (3 callsites)
+// and TireBookingWizard.tsx (3 callsites). Admin path — any client's cars.
+export async function getClientCarsByClientIdAction(clientId: string): Promise<ClientCar[]> {
+  const res = await dispatchStaffCall<{
+    data?: { cars: ClientCar[] };
+    error?: string;
+  }>('get-client-cars-by-client-id', { client_id: clientId });
+  return res.data?.cars || [];
+}
