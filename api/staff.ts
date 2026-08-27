@@ -1922,10 +1922,13 @@ async function startWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promi
 async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const worker_id = readUuidRequired(body, 'worker_id');
 
-  // Pre-flight: worker must exist (RPC returns no-row silently otherwise).
+  // Pre-flight: worker must exist + capture pre-RPC is_working_today state
+  // for idempotent detection.
   const { data: pre } = await supabaseAdmin
-    .from('tire_workers').select('id').eq('id', worker_id).maybeSingle();
+    .from('tire_workers').select('id, is_working_today')
+    .eq('id', worker_id).maybeSingle();
   if (!pre) return failAction(404, 'tire_worker_not_found');
+  const wasAlreadyWorking = pre.is_working_today === true;
 
   const today = new Date().toISOString().slice(0, 10);
   const { data: worker, error } = await supabaseAdmin.rpc('start_tire_worker_shift', {
@@ -1938,9 +1941,8 @@ async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): P
     return failAction(500, 'start_tire_worker_shift_failed', { detail: error.message });
   }
 
-  // Server-side SELECT of the just-created (or pre-existing active) shift row.
-  // If RPC returned idempotent (is_working_today was already true), shift may
-  // be a pre-existing row from earlier today — still return its id.
+  // Server-side SELECT of the active shift row (created by RPC, or pre-existing
+  // from earlier today if wasAlreadyWorking).
   const { data: shift } = await supabaseAdmin
     .from('work_shifts')
     .select('id, started_at, status')
@@ -1951,22 +1953,13 @@ async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): P
     .limit(1)
     .maybeSingle();
 
-  // Idempotent detection: if RPC call was on a worker that was already working
-  // today, shift row may still exist from an earlier today-call. We can't
-  // distinguish first-vs-repeat from the RPC alone; dispatcher marks idempotent
-  // based on whether shift.started_at predates today's call window.
-  // Conservative: only flag idempotent if no shift exists at all (which shouldn't
-  // happen given the RPC always creates one on first ON — this branch exists
-  // for paranoia only).
-  const idempotent = !shift;
-
   return {
     status: 200,
     body: {
       data: {
         worker,
         work_shift_id: shift?.id ?? null,
-        idempotent,
+        idempotent: wasAlreadyWorking,  // RPC no-ops if is_working_today was already true
       },
     },
   };
@@ -1983,10 +1976,13 @@ async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): P
 async function stopTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const worker_id = readUuidRequired(body, 'worker_id');
 
-  // Pre-flight: worker must exist (RPC returns no-row silently otherwise).
+  // Pre-flight: worker must exist + capture pre-RPC is_working_today state
+  // for idempotent detection.
   const { data: pre } = await supabaseAdmin
-    .from('tire_workers').select('id').eq('id', worker_id).maybeSingle();
+    .from('tire_workers').select('id, is_working_today')
+    .eq('id', worker_id).maybeSingle();
   if (!pre) return failAction(404, 'tire_worker_not_found');
+  const wasAlreadyOff = pre.is_working_today === false;
 
   const { data: worker, error } = await supabaseAdmin.rpc('stop_tire_worker_shift', {
     p_worker_id: worker_id,
@@ -1997,7 +1993,6 @@ async function stopTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Pr
   }
 
   // Server-side SELECT of the just-closed shift row (status='finished').
-  // Order by finished_at DESC to get the most recent closed shift.
   const { data: shift } = await supabaseAdmin
     .from('work_shifts')
     .select('id, started_at, finished_at, status')
@@ -2008,14 +2003,6 @@ async function stopTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Pr
     .limit(1)
     .maybeSingle();
 
-  // Idempotent detection: if RPC returned idempotent (worker was already NOT
-  // working), there is no just-closed shift. Shift may exist from an earlier
-  // OFF today — we still return it but flag idempotent=true.
-  // Heuristic: if shift.finished_at is older than ~1 minute from now → idempotent
-  // (i.e. the OFF was not the one that just closed it).
-  const idempotent = !shift
-    || (Date.now() - new Date(shift.finished_at).getTime() > 60_000);
-
   return {
     status: 200,
     body: {
@@ -2023,7 +2010,7 @@ async function stopTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Pr
         worker,
         work_shift_id: shift?.id ?? null,
         finished_at: shift?.finished_at ?? null,
-        idempotent,
+        idempotent: wasAlreadyOff,  // RPC no-ops if is_working_today was already false
       },
     },
   };
