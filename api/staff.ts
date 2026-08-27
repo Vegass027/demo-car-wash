@@ -1966,8 +1966,11 @@ async function adminTransferBalanceAction(_claims: StaffClaims, body: AnyObj): P
     return failAction(404, 'admin_not_found');
   }
   const earned = Number(admin.earned_today);
+  // Idempotent: if earned_today = 0 (admin hasn't earned anything yet),
+  // this is a valid business state — return success with idempotent=true
+  // instead of 400 error. UI shows no transfer happened.
   if (earned <= 0) {
-    return failAction(400, 'nothing_to_transfer');
+    return { status: 200, body: { data: { admin, idempotent: true, transferred: 0 } } };
   }
   const newBalance = Number(admin.current_balance) + earned;
   const { data, error } = await supabaseAdmin
@@ -2174,9 +2177,17 @@ async function updateSalarySettingsAction(_claims: StaffClaims, body: AnyObj): P
   if (body.tire_worker_commission !== undefined) patch.tire_worker_commission = NUM_0_1(body.tire_worker_commission, 'tire_worker_commission');
   if (body.tire_worker_storage_fee !== undefined) patch.tire_worker_storage_fee = NUM_0(body.tire_worker_storage_fee, 'tire_worker_storage_fee');
   if (body.admin_fixed_salary !== undefined)   patch.admin_fixed_salary   = NUM_0(body.admin_fixed_salary, 'admin_fixed_salary');
-  // Singleton: there is exactly one salary_settings row. Update all.
+  // Singleton: there is exactly one salary_settings row. Read id first,
+  // then UPDATE with WHERE (PostgreSQL rejects UPDATE without WHERE).
+  const { data: existing, error: fetchErr } = await supabaseAdmin
+    .from('salary_settings').select('id').limit(1).maybeSingle();
+  if (fetchErr) {
+    console.error('[staff:update-salary-settings] fetch error:', fetchErr.message);
+    return failAction(500, 'db_error', { detail: fetchErr.message });
+  }
+  if (!existing) return failAction(404, 'salary_settings_not_found');
   const { data, error } = await supabaseAdmin
-    .from('salary_settings').update(patch).select().maybeSingle();
+    .from('salary_settings').update(patch).eq('id', existing.id).select().maybeSingle();
   if (error) {
     console.error('[staff:update-salary-settings] update error:', error.message);
     return failAction(500, 'db_error', { detail: error.message });

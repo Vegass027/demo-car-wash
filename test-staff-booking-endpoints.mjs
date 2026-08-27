@@ -68,6 +68,12 @@ async function loginAdmin() {
   return r.data.token;
 }
 
+async function loginOwner() {
+  const r = await api('POST', '/api/login', { login: 'demo_owner', password: 'test1234' });
+  if (r.status !== 200) throw new Error(`owner login failed: ${r.status} ${JSON.stringify(r.data)}`);
+  return r.data.token;
+}
+
 async function getClientToken() {
   const fakeId = fakeTelegramId(CLIENT_TELEGRAM_ID);
   // For test purposes only — uses a non-HMAC initData; server may reject.
@@ -98,8 +104,9 @@ async function postTestCleanup() {
 (async () => {
   console.log(`\nSlice #3b test against ${BASE}\n`);
   console.log('--- PRE: auth setup ---');
-  let staffToken = null, clientToken = null;
+  let staffToken = null, ownerToken = null, clientToken = null;
   try { staffToken = await loginAdmin(); assert('admin login → staff JWT', !!staffToken); } catch (e) { assert('admin login → staff JWT', false, e.message); process.exit(1); }
+  try { ownerToken = await loginOwner(); assert('owner login → owner JWT', !!ownerToken); } catch (e) { assert('owner login → owner JWT', false, e.message); /* continue without owner tests */ }
   clientToken = await getClientToken();
 
   // -----------------------------------------------------------------------
@@ -1351,6 +1358,219 @@ async function postTestCleanup() {
     assert('E3: update-company-settings admin JWT → 403 owner_only_required',
       r2.status === 403 && r2.data?.error === 'owner_only_required',
       `status=${r2.status} error=${r2.data?.error}`);
+  }
+
+  // -----------------------------------------------------------------------
+  // OWNER-PATH happy-path tests for all 11 owner-only actions.
+  // Each: E4 (valid request → 200 success) + E5 (DB state verified).
+  // Uses owner JWT (login demo_owner/test1234). Skipped if owner login failed.
+  // -----------------------------------------------------------------------
+  if (!ownerToken) {
+    console.log('\n--- OWNER-PATH (skipped: owner login unavailable) ---');
+  } else {
+    console.log('\n--- OWNER-PATH (11 owner-only actions happy path) ---');
+
+    // --- create-admin (owner-only) ---
+    let ownerCreatedAdminId;
+    {
+      const r = await api('POST', '/api/staff?action=create-admin',
+        { full_name: 'Owner Test Admin' }, ownerToken);
+      assert('E4: create-admin owner JWT → 200 success',
+        r.status === 200 && r.data?.data?.admin?.id, `status=${r.status} body=${JSON.stringify(r.data).slice(0, 200)}`);
+      ownerCreatedAdminId = r.data?.data?.admin?.id;
+    }
+    if (ownerCreatedAdminId) {
+      const exists = psqlScalar(`SELECT count(*) FROM public.admins WHERE id='${ownerCreatedAdminId}';`) > 0;
+      assert('E5: create-admin DB row exists', exists);
+    }
+    // Cleanup: delete the test admin via dispatcher
+    if (ownerCreatedAdminId) {
+      await api('POST', '/api/staff?action=delete-admin',
+        { admin_id: ownerCreatedAdminId }, ownerToken);
+    }
+
+    // --- update-admin (owner-only) ---
+    if (adminIdForTests) {
+      const r = await api('POST', '/api/staff?action=update-admin',
+        { admin_id: adminIdForTests, salary_comment: 'OWNER_E5_TEST' }, ownerToken);
+      assert('E4: update-admin owner JWT → 200 success',
+        r.status === 200, `status=${r.status}`);
+      const dbComment = psqlScalar(`SELECT salary_comment FROM public.admins WHERE id='${adminIdForTests}';`);
+      assert('E5: update-admin DB salary_comment persisted', dbComment === 'OWNER_E5_TEST',
+        `db=${dbComment}`);
+      // Cleanup: restore (set to empty)
+      await api('POST', '/api/staff?action=update-admin',
+        { admin_id: adminIdForTests, salary_comment: '' }, ownerToken);
+    }
+
+    // --- admin-give-advance (owner-only, financial) ---
+    let balanceBeforeGive;
+    if (adminIdForTests) {
+      // Seed earned_today so give-advance has funds. Use direct DB write
+      // (service_role bypass RLS) — owner would do this via dispatcher
+      // mark-staff-ready or admin-transfer-balance chain.
+      execSync(
+        `psql -q -t -A "${PG_URL}" -c "UPDATE public.admins SET earned_today = 10 WHERE id='${adminIdForTests}';"`,
+        { encoding: 'utf8' }
+      );
+      balanceBeforeGive = Number(psqlScalar(`SELECT current_balance FROM public.admins WHERE id='${adminIdForTests}';`));
+      const r = await api('POST', '/api/staff?action=admin-give-advance',
+        { admin_id: adminIdForTests, amount: 1 }, ownerToken);
+      assert('E4: admin-give-advance owner JWT → 200 success',
+        r.status === 200, `status=${r.status} body=${JSON.stringify(r.data).slice(0, 200)}`);
+      const balanceAfter = Number(psqlScalar(`SELECT current_balance FROM public.admins WHERE id='${adminIdForTests}';`));
+      assert('E5: admin-give-advance DB balance increased by 1',
+        Math.abs(balanceAfter - (balanceBeforeGive + 1)) < 0.01,
+        `before=${balanceBeforeGive} after=${balanceAfter}`);
+      // Cleanup: restore earned_today to 0
+      execSync(
+        `psql -q -t -A "${PG_URL}" -c "UPDATE public.admins SET earned_today = 0 WHERE id='${adminIdForTests}';"`,
+        { encoding: 'utf8' }
+      );
+    }
+
+    // --- admin-payout-salary (owner-only, financial) ---
+    if (adminIdForTests) {
+      const balanceBeforePayout = Number(psqlScalar(`SELECT current_balance FROM public.admins WHERE id='${adminIdForTests}';`));
+      if (balanceBeforePayout >= 1) {
+        const r = await api('POST', '/api/staff?action=admin-payout-salary',
+          { admin_id: adminIdForTests, amount: 1 }, ownerToken);
+        assert('E4: admin-payout-salary owner JWT → 200 success',
+          r.status === 200, `status=${r.status}`);
+        const balanceAfter = Number(psqlScalar(`SELECT current_balance FROM public.admins WHERE id='${adminIdForTests}';`));
+        assert('E5: admin-payout-salary DB balance decreased by 1',
+          Math.abs(balanceAfter - (balanceBeforePayout - 1)) < 0.01,
+          `before=${balanceBeforePayout} after=${balanceAfter}`);
+      } else {
+        console.log('  SKIP admin-payout-salary: insufficient balance');
+      }
+    }
+
+    // --- admin-transfer-balance (owner-only, financial) ---
+    if (adminIdForTests) {
+      // Test idempotent path: earned_today=0 → idempotent=true.
+      execSync(
+        `psql -q -t -A "${PG_URL}" -c "UPDATE public.admins SET earned_today = 0, current_balance = 100 WHERE id='${adminIdForTests}';"`,
+        { encoding: 'utf8' }
+      );
+      const r1 = await api('POST', '/api/staff?action=admin-transfer-balance',
+        { admin_id: adminIdForTests }, ownerToken);
+      assert('E4a: admin-transfer-balance owner JWT (earned=0) → 200 idempotent',
+        r1.status === 200 && r1.data?.data?.idempotent === true,
+        `status=${r1.status} body=${JSON.stringify(r1.data).slice(0, 200)}`);
+
+      // Test normal path: seed earned=50, transfer to balance.
+      execSync(
+        `psql -q -t -A "${PG_URL}" -c "UPDATE public.admins SET earned_today = 50, current_balance = 100 WHERE id='${adminIdForTests}';"`,
+        { encoding: 'utf8' }
+      );
+      const balanceBefore = Number(psqlScalar(`SELECT current_balance FROM public.admins WHERE id='${adminIdForTests}';`));
+      const earnedBefore = Number(psqlScalar(`SELECT earned_today FROM public.admins WHERE id='${adminIdForTests}';`));
+      const r2 = await api('POST', '/api/staff?action=admin-transfer-balance',
+        { admin_id: adminIdForTests }, ownerToken);
+      assert('E4b: admin-transfer-balance owner JWT (earned>0) → 200 success',
+        r2.status === 200 && !r2.data?.data?.idempotent,
+        `status=${r2.status}`);
+      const balanceAfter = Number(psqlScalar(`SELECT current_balance FROM public.admins WHERE id='${adminIdForTests}';`));
+      const earnedAfter = Number(psqlScalar(`SELECT earned_today FROM public.admins WHERE id='${adminIdForTests}';`));
+      assert('E5: admin-transfer-balance DB earned→balance moved correctly',
+        Math.abs(balanceAfter - (balanceBefore + earnedBefore)) < 0.01 && earnedAfter === 0,
+        `balance_before=${balanceBefore} earned_before=${earnedBefore} balance_after=${balanceAfter} earned_after=${earnedAfter}`);
+      // Cleanup
+      execSync(
+        `psql -q -t -A "${PG_URL}" -c "UPDATE public.admins SET earned_today = 0, current_balance = 0 WHERE id='${adminIdForTests}';"`,
+        { encoding: 'utf8' }
+      );
+    }
+
+    // --- create-payout-transaction (owner-only, financial) ---
+    {
+      const balanceBefore = Number(psqlScalar(`SELECT current_balance FROM public.admins WHERE id='${adminIdForTests}';`));
+      const r = await api('POST', '/api/staff?action=create-payout-transaction',
+        { worker_type: 'admin', worker_id: adminIdForTests, worker_name: 'Owner Test',
+          amount: 1, balance_after: balanceBefore - 1 }, ownerToken);
+      assert('E4: create-payout-transaction owner JWT → 200 success',
+        r.status === 200 && r.data?.data?.transaction?.id, `status=${r.status}`);
+      const txId = r.data?.data?.transaction?.id;
+      if (txId) {
+        const dbType = psqlScalar(`SELECT transaction_type FROM public.salary_transactions WHERE id='${txId}';`);
+        assert('E5: create-payout-transaction DB row is PAYOUT',
+          dbType === 'PAYOUT', `db_type=${dbType}`);
+      }
+    }
+
+    // --- delete-salary-transaction (owner-only, financial) ---
+    {
+      // First create a disposable transaction, then delete it.
+      const balanceBefore = Number(psqlScalar(`SELECT current_balance FROM public.admins WHERE id='${adminIdForTests}';`));
+      const cr = await api('POST', '/api/staff?action=create-payout-transaction',
+        { worker_type: 'admin', worker_id: adminIdForTests, worker_name: 'Disposable',
+          amount: 1, balance_after: balanceBefore - 1 }, ownerToken);
+      const txId = cr.data?.data?.transaction?.id;
+      if (txId) {
+        const beforeCount = Number(psqlScalar(`SELECT count(*) FROM public.salary_transactions WHERE id='${txId}';`));
+        const r = await api('POST', '/api/staff?action=delete-salary-transaction',
+          { transaction_id: txId }, ownerToken);
+        assert('E4: delete-salary-transaction owner JWT → 200 success',
+          r.status === 200, `status=${r.status}`);
+        const afterCount = Number(psqlScalar(`SELECT count(*) FROM public.salary_transactions WHERE id='${txId}';`));
+        assert('E5: delete-salary-transaction DB row removed',
+          beforeCount === 1 && afterCount === 0,
+          `before=${beforeCount} after=${afterCount}`);
+      }
+    }
+
+    // --- update-salary-settings (owner-only, global config) ---
+    {
+      const commissionBefore = Number(psqlScalar(`SELECT worker_solo_commission FROM public.salary_settings LIMIT 1;`));
+      const newCommission = commissionBefore === 0.4 ? 0.41 : 0.4;
+      const r = await api('POST', '/api/staff?action=update-salary-settings',
+        { worker_solo_commission: newCommission }, ownerToken);
+      assert('E4: update-salary-settings owner JWT → 200 success',
+        r.status === 200, `status=${r.status}`);
+      const dbCommission = Number(psqlScalar(`SELECT worker_solo_commission FROM public.salary_settings LIMIT 1;`));
+      assert('E5: update-salary-settings DB commission updated',
+        Math.abs(dbCommission - newCommission) < 0.001,
+        `before=${commissionBefore} expected=${newCommission} db=${dbCommission}`);
+      // Cleanup: restore original value
+      await api('POST', '/api/staff?action=update-salary-settings',
+        { worker_solo_commission: commissionBefore }, ownerToken);
+    }
+
+    // --- create-company-settings (owner-only) ---
+    {
+      const r = await api('POST', '/api/staff?action=create-company-settings',
+        { legal_form: 'ИП', full_legal_name: 'Owner Test ИП', inn: '9999999999', ogrn: '9999999999999',
+          legal_address: 'Test', bank_name: 'Test', bik: '999999999',
+          correspondent_account: '99999999999999999999', payment_account: '99999999999999999999',
+          director_name: 'Test Director' }, ownerToken);
+      assert('E4: create-company-settings owner JWT → 200 success',
+        r.status === 200 && r.data?.data?.settings?.id, `status=${r.status}`);
+      const newId = r.data?.data?.settings?.id;
+      if (newId) {
+        const inn = psqlScalar(`SELECT inn FROM public.company_settings WHERE id='${newId}';`);
+        assert('E5: create-company-settings DB row with correct inn', inn === '9999999999', `inn=${inn}`);
+        // Cleanup: delete the test company_settings row
+        execSync(
+          `psql -q -t -A "${PG_URL}" -c "DELETE FROM public.company_settings WHERE id='${newId}';"`,
+          { encoding: 'utf8' }
+        );
+      }
+    }
+
+    // --- update-company-settings (owner-only) ---
+    if (companySettingsId) {
+      const r = await api('POST', '/api/staff?action=update-company-settings',
+        { settings_id: companySettingsId, phone: '+79998887766' }, ownerToken);
+      assert('E4: update-company-settings owner JWT → 200 success',
+        r.status === 200, `status=${r.status}`);
+      const dbPhone = psqlScalar(`SELECT phone FROM public.company_settings WHERE id='${companySettingsId}';`);
+      assert('E5: update-company-settings DB phone updated',
+        dbPhone === '+79998887766', `db=${dbPhone}`);
+      // Cleanup: restore
+      await api('POST', '/api/staff?action=update-company-settings',
+        { settings_id: companySettingsId, phone: '+79991234567' }, ownerToken);
+    }
   }
 
   // --- post-test cleanup helpers (echo) ---
