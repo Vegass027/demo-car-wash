@@ -132,6 +132,7 @@ const ALLOWED_ACTIONS = new Set([
   //   works in parallel — frontend switch is the only functional change.
   'start-worker-shift',
   'start-tire-worker-shift',
+  'stop-tire-worker-shift',     // NEW: OFF path — atomic, last_shift_date preserved
   'add-tire-worker-earnings',  // SECURITY: server-computes earnings from booking_id only
   'inventory-usage',
   'inventory-restock',
@@ -1912,11 +1913,16 @@ async function startWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promi
 }
 
 // === start-tire-worker-shift (admin/owner) ===
+//
+// Migration 019a: RPC body no longer references v_worker.base_rate_taken_today
+// (carwash-only column). 3-param signature preserved for backward compat;
+// p_salary server-stamped to 0 (tire workers have no base rate).
+// RPC returns tire_workers; dispatcher enriches with work_shift_id via
+// server-side SELECT of the active shift row (no promise in RPC response).
 async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const worker_id = readUuidRequired(body, 'worker_id');
-  // p_today server-stamped; p_salary = 0 (tire workers have no base rate).
   const today = new Date().toISOString().slice(0, 10);
-  const { data, error } = await supabaseAdmin.rpc('start_tire_worker_shift', {
+  const { data: worker, error } = await supabaseAdmin.rpc('start_tire_worker_shift', {
     p_worker_id: worker_id,
     p_salary: 0,
     p_today: today,
@@ -1925,7 +1931,90 @@ async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): P
     console.error('[staff:start-tire-worker-shift] rpc error:', error.message);
     return failAction(500, 'start_tire_worker_shift_failed', { detail: error.message });
   }
-  return { status: 200, body: { data: { tire_worker: data } } };
+
+  // Server-side SELECT of the just-created (or pre-existing active) shift row.
+  // If RPC returned idempotent (is_working_today was already true), shift may
+  // be a pre-existing row from earlier today — still return its id.
+  const { data: shift } = await supabaseAdmin
+    .from('work_shifts')
+    .select('id, started_at, status')
+    .eq('worker_id', worker_id)
+    .eq('worker_type', 'tire_worker')
+    .eq('status', 'working')
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // Idempotent detection: if RPC call was on a worker that was already working
+  // today, shift row may still exist from an earlier today-call. We can't
+  // distinguish first-vs-repeat from the RPC alone; dispatcher marks idempotent
+  // based on whether shift.started_at predates today's call window.
+  // Conservative: only flag idempotent if no shift exists at all (which shouldn't
+  // happen given the RPC always creates one on first ON — this branch exists
+  // for paranoia only).
+  const idempotent = !shift;
+
+  return {
+    status: 200,
+    body: {
+      data: {
+        worker,
+        work_shift_id: shift?.id ?? null,
+        idempotent,
+      },
+    },
+  };
+}
+
+// === stop-tire-worker-shift (admin/owner) ===
+//
+// Migration 019a NEW RPC. Atomic OFF path:
+//   - is_working_today toggle
+//   - last_shift_date PRESERVED (history semantics)
+//   - closes ONLY the active work_shift row (status='working', ORDER BY started_at DESC)
+//   - finished_at = NOW() inside the RPC
+// RPC returns tire_workers; dispatcher enriches with the just-closed shift row.
+async function stopTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const { data: worker, error } = await supabaseAdmin.rpc('stop_tire_worker_shift', {
+    p_worker_id: worker_id,
+  });
+  if (error) {
+    console.error('[staff:stop-tire-worker-shift] rpc error:', error.message);
+    return failAction(500, 'stop_tire_worker_shift_failed', { detail: error.message });
+  }
+
+  // Server-side SELECT of the just-closed shift row (status='finished').
+  // Order by finished_at DESC to get the most recent closed shift.
+  const { data: shift } = await supabaseAdmin
+    .from('work_shifts')
+    .select('id, started_at, finished_at, status')
+    .eq('worker_id', worker_id)
+    .eq('worker_type', 'tire_worker')
+    .eq('status', 'finished')
+    .order('finished_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // Idempotent detection: if RPC returned idempotent (worker was already NOT
+  // working), there is no just-closed shift. Shift may exist from an earlier
+  // OFF today — we still return it but flag idempotent=true.
+  // Heuristic: if shift.finished_at is older than ~1 minute from now → idempotent
+  // (i.e. the OFF was not the one that just closed it).
+  const idempotent = !shift
+    || (Date.now() - new Date(shift.finished_at).getTime() > 60_000);
+
+  return {
+    status: 200,
+    body: {
+      data: {
+        worker,
+        work_shift_id: shift?.id ?? null,
+        finished_at: shift?.finished_at ?? null,
+        idempotent,
+      },
+    },
+  };
 }
 
 // === add-tire-worker-earnings (admin/owner) — SECURITY CRITICAL ===
@@ -2706,6 +2795,7 @@ export default async function handler(req: any, res: any) {
       // Slice #3d Step 0 — staff-direct RPC dispatcher proxies:
       case 'start-worker-shift':                result = await startWorkerShiftAction(guard.claims, body); break;
       case 'start-tire-worker-shift':           result = await startTireWorkerShiftAction(guard.claims, body); break;
+      case 'stop-tire-worker-shift':            result = await stopTireWorkerShiftAction(guard.claims, body); break;
       case 'add-tire-worker-earnings':          result = await addTireWorkerEarningsAction(guard.claims, body); break;
       case 'inventory-usage':                   result = await inventoryUsageAction(guard.claims, body); break;
       case 'inventory-restock':                 result = await inventoryRestockAction(guard.claims, body); break;

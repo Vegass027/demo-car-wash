@@ -1781,6 +1781,133 @@ async function postTestCleanup() {
       `status=${r2.status} body=${JSON.stringify(r2.data?.data)}`);
   }
 
+  // =========================================================================
+  // Slice #3d Step 0 fix — tire shift ON/OFF cycle with isolated fixture
+  // =========================================================================
+  // Migration 019a:
+  //   start_tire_worker_shift: 3-param kept, base_rate removed, idempotent.
+  //   stop_tire_worker_shift: NEW, atomic OFF, last_shift_date preserved.
+  // Test creates a disposable test tire worker via psql (service_role),
+  // exercises the full ON→ON→OFF→OFF cycle, verifies zero salary side-effects,
+  // then cleans up by worker_id (NO created_at filter).
+  // =========================================================================
+  console.log('\n--- Slice #3d Step 0 fix: tire shift ON/OFF cycle (isolated fixture) ---');
+
+  const TEST_TIRE_PHONE = '+7999SLICE3DTEST' + Math.floor(Math.random() * 1e6);
+  const testTireWorkerId = execSync(
+    `psql -q -t -A "${PG_URL}" -c "INSERT INTO public.tire_workers (full_name, phone, is_active) VALUES ('TEST_SLICE_3D_TECH', '${TEST_TIRE_PHONE}', true) RETURNING id;"`,
+    { encoding: 'utf8' }
+  ).trim();
+  console.log(`  fixture test tire worker_id: ${testTireWorkerId}`);
+
+  // E1: start-tire-worker-shift admin → 200, is_working_today=true, work_shift_id present
+  const r1 = await api('POST', '/api/staff?action=start-tire-worker-shift',
+    { worker_id: testTireWorkerId }, adminToken);
+  assert('E1: start-tire-worker-shift admin → 200 success',
+    r1.status === 200, `status=${r1.status} err=${r1.data?.error}`);
+  if (r1.status === 200) {
+    assert('E1: response data.worker.is_working_today=true',
+      r1.data?.data?.worker?.is_working_today === true,
+      `got=${JSON.stringify(r1.data?.data?.worker?.is_working_today)}`);
+    assert('E1: response data.work_shift_id is uuid',
+      typeof r1.data?.data?.work_shift_id === 'string' && r1.data.data.work_shift_id.length === 36,
+      `got=${r1.data?.data?.work_shift_id}`);
+    assert('E1: response data.idempotent=false (first call)',
+      r1.data?.data?.idempotent === false,
+      `got=${r1.data?.data?.idempotent}`);
+  }
+
+  // DB: tire_worker.is_working_today=true, last_shift_date=today
+  const todayDate = new Date().toISOString().slice(0, 10);
+  const afterStartState = psqlScalar(`SELECT is_working_today::text || '|' || COALESCE(last_shift_date::text, 'NULL') FROM public.tire_workers WHERE id='${testTireWorkerId}';`);
+  assert('E1: DB tire_worker.is_working_today=true, last_shift_date=today',
+    afterStartState === `t|${todayDate}`,
+    `got=${afterStartState}`);
+  // DB: 1 work_shifts row with status='working'
+  const startShiftCount = psqlScalar(`SELECT count(*) FROM public.work_shifts WHERE worker_id='${testTireWorkerId}' AND status='working';`);
+  assert('E1: DB work_shifts status=working count=1',
+    startShiftCount === '1', `got=${startShiftCount}`);
+
+  // E2: start repeat → 200 idempotent=true (no duplicate work_shift)
+  const r2 = await api('POST', '/api/staff?action=start-tire-worker-shift',
+    { worker_id: testTireWorkerId }, adminToken);
+  assert('E2: start-tire-worker-shift repeat → 200 idempotent=true (no dup shift)',
+    r2.status === 200 && r2.data?.data?.idempotent === true,
+    `status=${r2.status} body=${JSON.stringify(r2.data?.data)}`);
+  const startShiftCountAfterRepeat = psqlScalar(`SELECT count(*) FROM public.work_shifts WHERE worker_id='${testTireWorkerId}' AND status='working';`);
+  assert('E2: DB work_shifts count STILL 1 (no duplicate)',
+    startShiftCountAfterRepeat === '1', `got=${startShiftCountAfterRepeat}`);
+
+  // E5: stop-tire-worker-shift admin → 200, is_working_today=false, work_shift closed, last_shift_date UNCHANGED
+  const r3 = await api('POST', '/api/staff?action=stop-tire-worker-shift',
+    { worker_id: testTireWorkerId }, adminToken);
+  assert('E5: stop-tire-worker-shift admin → 200 success',
+    r3.status === 200, `status=${r3.status} err=${r3.data?.error}`);
+  if (r3.status === 200) {
+    assert('E5: response data.worker.is_working_today=false',
+      r3.data?.data?.worker?.is_working_today === false,
+      `got=${JSON.stringify(r3.data?.data?.worker?.is_working_today)}`);
+    assert('E5: response data.finished_at set',
+      typeof r3.data?.data?.finished_at === 'string',
+      `got=${r3.data?.data?.finished_at}`);
+    assert('E5: response data.work_shift_id matches E1 work_shift_id',
+      r3.data?.data?.work_shift_id === r1.data?.data?.work_shift_id,
+      `e1=${r1.data?.data?.work_shift_id} e5=${r3.data?.data?.work_shift_id}`);
+  }
+
+  // DB: is_working_today=false, last_shift_date UNCHANGED (NOT nulled)
+  const afterStopState = psqlScalar(`SELECT is_working_today::text || '|' || COALESCE(last_shift_date::text, 'NULL') FROM public.tire_workers WHERE id='${testTireWorkerId}';`);
+  assert('E5: DB is_working_today=false, last_shift_date UNCHANGED (still today)',
+    afterStopState === `f|${todayDate}`,
+    `got=${afterStopState}`);
+  // DB: work_shift status='finished', finished_at IS NOT NULL
+  const closedShift = psqlScalar(`SELECT status || '|' || (finished_at IS NOT NULL)::text FROM public.work_shifts WHERE worker_id='${testTireWorkerId}' AND worker_type='tire_worker';`);
+  assert('E5: DB work_shift status=finished, finished_at IS NOT NULL',
+    closedShift === 'finished|t',
+    `got=${closedShift}`);
+
+  // E6: stop repeat → 200 idempotent=true (no further side effects)
+  const r4 = await api('POST', '/api/staff?action=stop-tire-worker-shift',
+    { worker_id: testTireWorkerId }, adminToken);
+  assert('E6: stop-tire-worker-shift repeat → 200 idempotent=true',
+    r4.status === 200 && r4.data?.data?.idempotent === true,
+    `status=${r4.status} body=${JSON.stringify(r4.data?.data)}`);
+
+  // E7: zero salary side effects from ON/OFF cycle
+  const ledgerCount = psqlScalar(`SELECT count(*) FROM public.salary_transactions WHERE worker_id='${testTireWorkerId}';`);
+  assert('E7: salary_transactions count for test_tire_worker after ON+OFF cycle = 0',
+    ledgerCount === '0', `got=${ledgerCount}`);
+
+  // E8: no-tire-worker-id 404 (RPC returns "record not found" → 500 mapped; or anon→401)
+  const r5 = await api('POST', '/api/staff?action=start-tire-worker-shift',
+    { worker_id: '00000000-0000-0000-0000-000000000000' }, adminToken);
+  assert('E8: start-tire-worker-shift unknown worker_id → 500 (RPC no-row) or 404',
+    r5.status === 500 || r5.status === 404, `status=${r5.status}`);
+
+  // E9/E10: anon → 401 / client → 403
+  const r6 = await api('POST', '/api/staff?action=stop-tire-worker-shift',
+    { worker_id: testTireWorkerId }, null);
+  assert('E9: stop-tire-worker-shift anon → 401',
+    r6.status === 401, `status=${r6.status}`);
+  // E10: client JWT (if available) → 403
+  try {
+    const clientT = await getClientToken();
+    if (clientT) {
+      const r7 = await api('POST', '/api/staff?action=stop-tire-worker-shift',
+        { worker_id: testTireWorkerId }, clientT);
+      assert('E10: stop-tire-worker-shift client → 403',
+        r7.status === 403, `status=${r7.status}`);
+    } else {
+      console.log('  SKIP E10: client JWT unavailable');
+    }
+  } catch { console.log('  SKIP E10: getClientToken failed'); }
+
+  // Cleanup: scoped to test_tire_worker_id only (NO created_at filter)
+  execSync(`psql -q -t -A "${PG_URL}" -c "
+    DELETE FROM public.work_shifts WHERE worker_id='${testTireWorkerId}';
+    DELETE FROM public.tire_workers WHERE id='${testTireWorkerId}';"`, { encoding: 'utf8' });
+  console.log(`  cleanup: deleted fixture test_tire_worker_id=${testTireWorkerId}`);
+
   // --- post-test cleanup helpers (echo) ---
   console.log('\n--- POST: cleanup helper echo ---');
   console.log(`  To cleanup test rows: run the SQL printed in the final summary.`);

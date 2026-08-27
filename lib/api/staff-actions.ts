@@ -681,13 +681,42 @@ export async function startStaffWorkerShift(workerId: string): Promise<Worker> {
 }
 
 // === start-tire-worker-shift ===
-export async function startStaffTireWorkerShift(workerId: string): Promise<TireWorker> {
+//
+// Migration 019a updated the RPC body (carwash-only `base_rate_taken_today`
+// removed). Response shape now enriched by the dispatcher with work_shift_id.
+export interface StartTireWorkerShiftResult {
+  worker: TireWorker;
+  work_shift_id: string | null;
+  idempotent: boolean;
+}
+
+export async function startStaffTireWorkerShift(workerId: string): Promise<StartTireWorkerShiftResult> {
   const res = await dispatchStaffCall<{
-    data?: { tire_worker: TireWorker };
+    data?: StartTireWorkerShiftResult;
     error?: string;
   }>('start-tire-worker-shift', { worker_id: workerId });
-  if (!res.data?.tire_worker) throw new Error('staff_no_tire_worker_in_response');
-  return res.data.tire_worker;
+  if (!res.data) throw new Error('staff_no_response');
+  return res.data;
+}
+
+// === stop-tire-worker-shift (admin/owner) ===
+//
+// Migration 019a NEW RPC. Atomic OFF: is_working_today=false, last_shift_date
+// PRESERVED, active work_shift row closed with finished_at=NOW().
+export interface StopTireWorkerShiftResult {
+  worker: TireWorker;
+  work_shift_id: string | null;
+  finished_at: string | null;
+  idempotent: boolean;
+}
+
+export async function stopStaffTireWorkerShift(workerId: string): Promise<StopTireWorkerShiftResult> {
+  const res = await dispatchStaffCall<{
+    data?: StopTireWorkerShiftResult;
+    error?: string;
+  }>('stop-tire-worker-shift', { worker_id: workerId });
+  if (!res.data) throw new Error('staff_no_response');
+  return res.data;
 }
 
 // === add-tire-worker-earnings — SECURITY CRITICAL ===
