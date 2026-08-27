@@ -894,13 +894,15 @@ async function updateStaffBookingAction(_claims: StaffClaims, body: AnyObj): Pro
   return { status: 200, body: { data: { booking: data } } };
 }
 
-// === C3: add-staff-services ===
+// === C3: add-staff-services (atomic RPC for FOR UPDATE row-lock) ===
 async function addStaffServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const booking_id = readUuidRequired(body, 'booking_id');
   const service_ids = body.service_ids;
   if (!Array.isArray(service_ids) || service_ids.length === 0) {
     throw new ValidationError('service_ids_required');
   }
+  // Read current state outside the lock — needed to compute the merge.
+  // The RPC then re-reads with FOR UPDATE, so concurrent calls serialize.
   const current = await lockCarwashBooking(booking_id);
   if (current.status === 'ГОТОВО' || current.status === 'ОТМЕНЕНО') {
     return failAction(409, 'invalid_status_transition', { status: current.status });
@@ -917,26 +919,33 @@ async function addStaffServicesAction(_claims: StaffClaims, body: AnyObj): Promi
     discount: Number(current.discount ?? 0),
   });
 
-  const { data, error } = await supabaseAdmin
-    .from('bookings')
-    .update({
-      services: recomputed.services,
-      services_with_quantities: recomputed.services_with_quantities,
-      price: recomputed.final_price,
-      discount: recomputed.discount,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', booking_id)
-    .select()
-    .maybeSingle();
+  // Atomic modify: SELECT ... FOR UPDATE → UPDATE in same transaction.
+  // Recompute happens in handler BEFORE RPC; RPC re-locks row so concurrent
+  // handlers serialize and no two updates land with stale snapshots.
+  const { data, error } = await supabaseAdmin.rpc('atomic_modify_carwash_services', {
+    p_booking_id: booking_id,
+    p_action: 'add',
+    p_service_ids: service_ids.map((s: any) => String(s)),
+    p_antifreeze_intents: antifreeze_intents ?? [],
+    p_allow_override: allow_override,
+    p_discount: Number(current.discount ?? 0),
+    p_status: current.status,
+    p_car_type: current.car_type,
+    p_new_services: recomputed.services,
+    p_new_services_with_quantities: recomputed.services_with_quantities,
+    p_new_price: recomputed.final_price,
+  });
   if (error) {
-    console.error('[staff:add-staff-services] update error:', error.message);
-    return failAction(500, 'db_error', { detail: error.message });
+    const msg = String(error.message ?? '');
+    if (msg === 'BOOKING_NOT_FOUND') return { status: 404, body: { error: 'booking_not_found' } };
+    console.error('[staff:add-staff-services] rpc error:', error);
+    return failAction(500, 'db_error', { detail: msg });
   }
-  return { status: 200, body: { data: { booking: data } } };
+  const booking = (data as any)?.booking ?? null;
+  return { status: 200, body: { data: { booking } } };
 }
 
-// === C4: remove-staff-services ===
+// === C4: remove-staff-services (atomic RPC) ===
 async function removeStaffServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const booking_id = readUuidRequired(body, 'booking_id');
   const service_id = readUuidRequired(body, 'service_id');
@@ -952,23 +961,27 @@ async function removeStaffServicesAction(_claims: StaffClaims, body: AnyObj): Pr
     allow_override: false,
     discount: Number(current.discount ?? 0),
   });
-  const { data, error } = await supabaseAdmin
-    .from('bookings')
-    .update({
-      services: recomputed.services,
-      services_with_quantities: recomputed.services_with_quantities,
-      price: recomputed.final_price,
-      discount: recomputed.discount,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', booking_id)
-    .select()
-    .maybeSingle();
+  const { data, error } = await supabaseAdmin.rpc('atomic_modify_carwash_services', {
+    p_booking_id: booking_id,
+    p_action: 'remove',
+    p_service_ids: [service_id],
+    p_antifreeze_intents: [],
+    p_allow_override: false,
+    p_discount: Number(current.discount ?? 0),
+    p_status: current.status,
+    p_car_type: current.car_type,
+    p_new_services: recomputed.services,
+    p_new_services_with_quantities: recomputed.services_with_quantities,
+    p_new_price: recomputed.final_price,
+  });
   if (error) {
-    console.error('[staff:remove-staff-services] update error:', error.message);
-    return failAction(500, 'db_error', { detail: error.message });
+    const msg = String(error.message ?? '');
+    if (msg === 'BOOKING_NOT_FOUND') return { status: 404, body: { error: 'booking_not_found' } };
+    console.error('[staff:remove-staff-services] rpc error:', error);
+    return failAction(500, 'db_error', { detail: msg });
   }
-  return { status: 200, body: { data: { booking: data } } };
+  const booking = (data as any)?.booking ?? null;
+  return { status: 200, body: { data: { booking } } };
 }
 
 // === C5: assign-staff-worker ===
@@ -1215,14 +1228,14 @@ async function staffCancelBookingAction(_claims: StaffClaims, body: AnyObj): Pro
 // Tire parallels (10 actions)
 // =========================================================================
 
-// === T1: create-staff-tire-booking ===
+// === T1: create-staff-tire-booking (atomic RPC) ===
 async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   if (!claims.profile_id) throw new ValidationError('missing_profile_id_in_token');
 
   for (const k of [
     'end_time', 'booking_source', 'created_by_profile_id', 'status',
     'paid_at', 'worker_name', 'org_name', 'signature_data', 'completed_at',
-    'services_with_quantities', 'total_price',
+    'services_with_quantities', 'total_price', 'notes',
   ]) {
     if (body[k] !== undefined) throw new ValidationError(`field_not_allowed_${k}`);
   }
@@ -1257,7 +1270,6 @@ async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): 
     return failAction(400, `unknown_tire_service_${missing[0]}`);
   }
 
-  // Supabase-js returns tire_services.price as string; coerce to number.
   const servicesOut: AnyObj[] = (tireRows as any[]).map((r: any) => ({
     id: r.id,
     name: r.name,
@@ -1282,51 +1294,44 @@ async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): 
   const client_car_id   = !is_org ? readUuidOpt(body, 'client_car_id')  : null;
   const worker_id       = readUuidOpt(body, 'worker_id');
 
-  let worker_name: string | null = null;
-  let signature_data: string | null = null;
-  let signature_obtained_at: string | null = null;
-  let org_name: string | null = null;
+  // Atomic RPC: holds pg_advisory_xact_lock + rechecks overlap + INSERT
+  // in one transaction. Mirrors create_staff_carwash_booking (migrations/008)
+  // for tire — see migrations/010 for the lock-key rationale.
+  const { data, error } = await supabaseAdmin.rpc('atomic_create_staff_tire_booking', {
+    p_target_date: target_date,
+    p_start_time: start_time,
+    p_estimated_duration: estimated_duration,
+    p_client_name: client_name,
+    p_phone: phone,
+    p_car_model: car_model,
+    p_plate_number: plate_number,
+    p_services: servicesOut,
+    p_total_price: total_price,
+    p_payment_method: payment_method,
+    p_is_paid: is_paid,
+    p_paid_at: paid_at,
+    p_status: status,
+    p_is_org: is_org,
+    p_organization_id: organization_id,
+    p_driver_id: driver_id,
+    p_car_id: car_id,
+    p_client_id: client_id,
+    p_client_car_id: client_car_id,
+    p_worker_id: worker_id,
+    p_signature_obtained_at: null,
+    p_booking_source: 'admin',
+    p_created_by_profile_id: claims.profile_id,
+  });
 
-  if (worker_id) {
-    const { data: w } = await supabaseAdmin.from('tire_workers').select('id, full_name').eq('id', worker_id).maybeSingle();
-    if (!w) return { status: 404, body: { error: 'tire_worker_not_found' } };
-    worker_name = w.full_name;
-  }
-  if (is_org && organization_id) {
-    const { data: o } = await supabaseAdmin.from('organizations').select('id, name').eq('id', organization_id).maybeSingle();
-    if (!o) return { status: 404, body: { error: 'organization_not_found' } };
-    org_name = o.name;
-  }
-  if (is_org && driver_id) {
-    const { data: d } = await supabaseAdmin.from('organization_drivers').select('id, signature_data').eq('id', driver_id).maybeSingle();
-    if (d && d.signature_data) {
-      signature_data = d.signature_data;
-      signature_obtained_at = new Date().toISOString();
-    }
-  }
-
-  const insert: AnyObj = {
-    client_name, phone, car_model, plate_number,
-    booking_date: target_date, start_time, estimated_duration,
-    services: servicesOut, total_price,
-    payment_method, is_paid, paid_at, status,
-    is_org, organization_id, driver_id, car_id, org_name,
-    client_id, client_car_id,
-    worker_id, worker_name,
-    signature_data, signature_obtained_at,
-    booking_source: 'admin',
-    created_by_profile_id: claims.profile_id,
-  };
-  // tire_bookings has no `notes` column. Reject any client attempt to set it.
-  if (body.notes !== undefined) throw new ValidationError('field_not_allowed_notes');
-
-  const { data, error } = await supabaseAdmin
-    .from('tire_bookings').insert(insert).select().maybeSingle();
   if (error) {
-    console.error('[staff:create-staff-tire-booking] insert error:', error.message);
-    return failAction(500, 'db_error', { detail: error.message });
+    const msg = String(error.message ?? '');
+    if (msg === 'TIRE_OVERLAP') return failAction(409, 'tire_overlap');
+    console.error('[staff:create-staff-tire-booking] rpc error:', error);
+    return failAction(500, 'create_staff_tire_booking_failed', { detail: msg });
   }
-  return { status: 200, body: { data: { booking: data } } };
+
+  const booking = (data as any)?.booking ?? null;
+  return { status: 200, body: { data: { booking } } };
 }
 
 // === T2: update-staff-tire-booking ===
@@ -1372,7 +1377,7 @@ async function updateStaffTireBookingAction(_claims: StaffClaims, body: AnyObj):
   return { status: 200, body: { data: { booking: data } } };
 }
 
-// === T3: add-staff-tire-services ===
+// === T3: add-staff-tire-services (atomic RPC for FOR UPDATE row-lock) ===
 async function addStaffTireServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
   const services_in = body.services;
@@ -1398,20 +1403,27 @@ async function addStaffTireServicesAction(_claims: StaffClaims, body: AnyObj): P
   const newOnes = tireRows.map((r: any) => ({ id: r.id, name: r.name, price: Number(r.price) }));
   const merged = [...((current.services as AnyObj[]) ?? []), ...newOnes];
   const total_price = merged.reduce((s, r) => s + Number(r.price), 0);
-  const { data, error } = await supabaseAdmin
-    .from('tire_bookings')
-    .update({ services: merged, total_price, updated_at: new Date().toISOString() })
-    .eq('id', tire_booking_id)
-    .select()
-    .maybeSingle();
+
+  // Atomic modify: SELECT FOR UPDATE → UPDATE inside one tx. Prevents
+  // lost-update when two admins add services to the same tire booking.
+  const { data, error } = await supabaseAdmin.rpc('atomic_modify_tire_services', {
+    p_tire_booking_id: tire_booking_id,
+    p_action: 'add',
+    p_service_ids: ids,
+    p_new_services: merged,
+    p_new_total_price: total_price,
+  });
   if (error) {
-    console.error('[staff:add-staff-tire-services] update error:', error.message);
-    return failAction(500, 'db_error', { detail: error.message });
+    const msg = String(error.message ?? '');
+    if (msg === 'TIRE_BOOKING_NOT_FOUND') return { status: 404, body: { error: 'tire_booking_not_found' } };
+    console.error('[staff:add-staff-tire-services] rpc error:', error);
+    return failAction(500, 'db_error', { detail: msg });
   }
-  return { status: 200, body: { data: { booking: data } } };
+  const booking = (data as any)?.booking ?? null;
+  return { status: 200, body: { data: { booking } } };
 }
 
-// === T4: remove-staff-tire-services ===
+// === T4: remove-staff-tire-services (atomic RPC) ===
 async function removeStaffTireServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
   const service_id = readUuidRequired(body, 'service_id');
@@ -1421,17 +1433,22 @@ async function removeStaffTireServicesAction(_claims: StaffClaims, body: AnyObj)
   }
   const merged = ((current.services as AnyObj[]) ?? []).filter((x: any) => x.id !== service_id);
   const total_price = merged.reduce((s: number, r: any) => s + Number(r.price ?? 0), 0);
-  const { data, error } = await supabaseAdmin
-    .from('tire_bookings')
-    .update({ services: merged, total_price, updated_at: new Date().toISOString() })
-    .eq('id', tire_booking_id)
-    .select()
-    .maybeSingle();
+
+  const { data, error } = await supabaseAdmin.rpc('atomic_modify_tire_services', {
+    p_tire_booking_id: tire_booking_id,
+    p_action: 'remove',
+    p_service_ids: [service_id],
+    p_new_services: merged,
+    p_new_total_price: total_price,
+  });
   if (error) {
-    console.error('[staff:remove-staff-tire-services] update error:', error.message);
-    return failAction(500, 'db_error', { detail: error.message });
+    const msg = String(error.message ?? '');
+    if (msg === 'TIRE_BOOKING_NOT_FOUND') return { status: 404, body: { error: 'tire_booking_not_found' } };
+    console.error('[staff:remove-staff-tire-services] rpc error:', error);
+    return failAction(500, 'db_error', { detail: msg });
   }
-  return { status: 200, body: { data: { booking: data } } };
+  const booking = (data as any)?.booking ?? null;
+  return { status: 200, body: { data: { booking } } };
 }
 
 // === T5: assign-staff-tire-technician ===
