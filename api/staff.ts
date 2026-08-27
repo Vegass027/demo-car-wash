@@ -1344,6 +1344,7 @@ async function updateStaffTireBookingAction(_claims: StaffClaims, body: AnyObj):
     'signature_data', 'signature_obtained_at', 'signature_obtained',
     'client_id', 'organization_id', 'driver_id', 'car_id', 'client_car_id',
     'is_paid', 'paid_at', 'completed_at',
+    'notes',  // tire_bookings has no `notes` column; reject explicitly
   ];
   for (const f of DISALLOWED_NAMES) {
     if (body[f] !== undefined) throw new ValidationError(`field_not_allowed_${f}`);
