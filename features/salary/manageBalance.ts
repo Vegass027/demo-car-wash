@@ -6,14 +6,15 @@
 import { Worker, updateWorker } from '@/lib/api/workers';
 import { TireWorker, updateTireWorker } from '@/lib/api/tire-workers';
 import {
-  createEarningTransaction,
-  createPayoutTransaction,
-  createAdvanceTransaction,
-  createTransferTransaction,
-  deleteSalaryTransaction,
   type SalaryTransaction,
 } from '@/lib/api/salary-transactions';
-import { updateAdmin } from '@/lib/api/admins';
+import {
+  createStaffAdvanceTransaction,
+  createStaffPayoutTransaction,
+  createStaffTransferTransaction,
+  deleteStaffSalaryTransaction,
+  updateStaffAdmin,
+} from '@/lib/api/staff-actions';
 
 /**
  * Проверяет, можно ли выплатить указанную сумму
@@ -67,14 +68,14 @@ export async function transferDailyEarningsToBalance(worker: Worker): Promise<Wo
   });
 
   // Создаем транзакцию перевода с ежедневного на итоговый баланс
-  await createTransferTransaction(
-    'worker',
-    worker.id,
-    worker.full_name,
-    worker.earned_today,
-    newBalance,
-    `Перевод с ежедневного баланса за:\n${dateStr}, ${timeStr}`
-  );
+  await createStaffTransferTransaction({
+    worker_type: 'worker',
+    worker_id: worker.id,
+    worker_name: worker.full_name,
+    amount: worker.earned_today,
+    balance_after: newBalance,
+    description: `Перевод с ежедневного баланса за:\n${dateStr}, ${timeStr}`,
+  });
 
   // Обновляем мойщика в БД
   const updatedWorker = await updateWorker(worker.id, {
@@ -110,14 +111,14 @@ export async function transferDailyEarningsToBalanceForTechnician(
   const fullDateStr = now.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
   // Создаем транзакцию перевода с ежедневного на итоговый баланс
-  await createTransferTransaction(
-    'tire_worker',
-    technician.id,
-    technician.full_name,
-    technician.earned_today,
-    newBalance,
-    `Перевод с ежедневного баланса за:\n${dateStr}, ${timeStr}`
-  );
+  await createStaffTransferTransaction({
+    worker_type: 'tire_worker',
+    worker_id: technician.id,
+    worker_name: technician.full_name,
+    amount: technician.earned_today,
+    balance_after: newBalance,
+    description: `Перевод с ежедневного баланса за:\n${dateStr}, ${timeStr}`,
+  });
 
   // Обновляем мастера в БД
   const updatedTechnician = await updateTireWorker(technician.id, {
@@ -152,34 +153,34 @@ export async function payoutSalary(
     const advanceAmount = amount - worker.current_balance; // Аванс
 
     // Создаем транзакцию обычной выплаты
-    await createPayoutTransaction(
-      'worker',
-      worker.id,
-      worker.full_name,
-      payoutAmount,
-      newBalance,
-      'Выплата зарплаты'
-    );
+    await createStaffPayoutTransaction({
+      worker_type: 'worker',
+      worker_id: worker.id,
+      worker_name: worker.full_name,
+      amount: payoutAmount,
+      balance_after: newBalance,
+      description: 'Выплата зарплаты',
+    });
 
     // Создаем транзакцию аванса
-    await createAdvanceTransaction(
-      'worker',
-      worker.id,
-      worker.full_name,
-      advanceAmount,
-      newBalance,
-      'Выдача аванса'
-    );
+    await createStaffAdvanceTransaction({
+      worker_type: 'worker',
+      worker_id: worker.id,
+      worker_name: worker.full_name,
+      amount: advanceAmount,
+      balance_after: newBalance,
+      description: 'Выдача аванса',
+    });
   } else {
     // Просто обычная выплата
-    await createPayoutTransaction(
-      'worker',
-      worker.id,
-      worker.full_name,
+    await createStaffPayoutTransaction({
+      worker_type: 'worker',
+      worker_id: worker.id,
+      worker_name: worker.full_name,
       amount,
-      newBalance,
-      'Выплата зарплаты'
-    );
+      balance_after: newBalance,
+      description: 'Выплата зарплаты',
+    });
   }
   
   // Обновляем мойщика в БД
@@ -218,34 +219,34 @@ export async function payoutSalaryForTechnician(
     const advanceAmount = amount - technician.current_balance; // Аванс
 
     // Создаем транзакцию обычной выплаты
-    await createPayoutTransaction(
-      'tire_worker',
-      technician.id,
-      technician.full_name,
-      payoutAmount,
-      newBalance,
-      'Выплата зарплаты'
-    );
+    await createStaffPayoutTransaction({
+      worker_type: 'tire_worker',
+      worker_id: technician.id,
+      worker_name: technician.full_name,
+      amount: payoutAmount,
+      balance_after: newBalance,
+      description: 'Выплата зарплаты',
+    });
 
     // Создаем транзакцию аванса
-    await createAdvanceTransaction(
-      'tire_worker',
-      technician.id,
-      technician.full_name,
-      advanceAmount,
-      newBalance,
-      'Выдача аванса'
-    );
+    await createStaffAdvanceTransaction({
+      worker_type: 'tire_worker',
+      worker_id: technician.id,
+      worker_name: technician.full_name,
+      amount: advanceAmount,
+      balance_after: newBalance,
+      description: 'Выдача аванса',
+    });
   } else {
     // Просто обычная выплата
-    await createPayoutTransaction(
-      'tire_worker',
-      technician.id,
-      technician.full_name,
+    await createStaffPayoutTransaction({
+      worker_type: 'tire_worker',
+      worker_id: technician.id,
+      worker_name: technician.full_name,
       amount,
-      newBalance,
-      'Выплата зарплаты'
-    );
+      balance_after: newBalance,
+      description: 'Выплата зарплаты',
+    });
   }
   
   // Обновляем мастера в БД
@@ -274,14 +275,14 @@ export async function giveAdvance(
   const newBalance = worker.current_balance - amount;
 
   // Создаем транзакцию аванса
-  await createAdvanceTransaction(
-    'worker',
-    worker.id,
-    worker.full_name,
+  await createStaffAdvanceTransaction({
+    worker_type: 'worker',
+    worker_id: worker.id,
+    worker_name: worker.full_name,
     amount,
-    newBalance,
-    'Выдача аванса'
-  );
+    balance_after: newBalance,
+    description: 'Выдача аванса',
+  });
 
   // Обновляем мойщика в БД
   const updatedWorker = await updateWorker(worker.id, {
@@ -310,14 +311,14 @@ export async function giveAdvanceForTechnician(
   const newBalance = technician.current_balance - amount;
 
   // Создаем транзакцию аванса
-  await createAdvanceTransaction(
-    'tire_worker',
-    technician.id,
-    technician.full_name,
+  await createStaffAdvanceTransaction({
+    worker_type: 'tire_worker',
+    worker_id: technician.id,
+    worker_name: technician.full_name,
     amount,
-    newBalance,
-    'Выдача аванса'
-  );
+    balance_after: newBalance,
+    description: 'Выдача аванса',
+  });
 
   // Обновляем мастера в БД
   const updatedTechnician = await updateTireWorker(technician.id, {
@@ -364,7 +365,7 @@ export async function revertWorkerPayoutTransaction(
   }
 
   // Удаляем транзакцию
-  await deleteSalaryTransaction(transaction.id);
+  await deleteStaffSalaryTransaction(transaction.id);
 
   // Восстанавливаем баланс: добавляем сумму выплаты обратно
   const restoreAmount = Math.abs(transaction.amount);
@@ -394,7 +395,7 @@ export async function revertTireWorkerPayoutTransaction(
   }
 
   // Удаляем транзакцию
-  await deleteSalaryTransaction(transaction.id);
+  await deleteStaffSalaryTransaction(transaction.id);
 
   // Восстанавливаем баланс: добавляем сумму выплаты обратно
   const restoreAmount = Math.abs(transaction.amount);
@@ -424,14 +425,14 @@ export async function revertAdminPayoutTransaction(
   }
 
   // Удаляем транзакцию
-  await deleteSalaryTransaction(transaction.id);
+  await deleteStaffSalaryTransaction(transaction.id);
 
   // Восстанавливаем баланс: добавляем сумму выплаты обратно
   const restoreAmount = Math.abs(transaction.amount);
   const newBalance = transaction.balance_after + restoreAmount;
 
   // Обновляем админа в БД
-  await updateAdmin(transaction.worker_id, {
+  await updateStaffAdmin(transaction.worker_id, {
     current_balance: newBalance,
   });
 }

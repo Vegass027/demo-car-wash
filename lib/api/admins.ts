@@ -275,57 +275,6 @@ function formatDate(date: Date): string {
 }
 
 /**
- * Завершить смену админа
- * @param adminId - UUID админа
- * @throws Error если запрос к базе данных не удался
- */
-export async function finishAdminShift(adminId: string): Promise<void> {
-  const admin = await getAdminById(adminId);
-  if (!admin) {
-    throw new Error(`Админ с ID ${adminId} не найден`);
-  }
-
-  // Получаем активную смену
-  const { data: shift } = await supabase
-    .from('work_shifts')
-    .select('*')
-    .eq('worker_type', 'admin')
-    .eq('worker_id', adminId)
-    .eq('status', 'working')
-    .order('started_at', { ascending: false })
-    .limit(1)
-    .single();
-
-  // Закрываем смену если она существует
-  if (shift) {
-    await supabase
-      .from('work_shifts')
-      .update({
-        finished_at: new Date().toISOString(),
-        status: 'finished',
-        earnings: admin.earned_today
-      })
-      .eq('id', shift.id);
-  }
-
-  // Сбрасываем дневные показатели (транзакция уже создана при начале смены)
-  const { error } = await supabase
-    .from('admins')
-    .update({
-      is_working_today: false,
-      base_rate_taken_today: false,
-      earned_today: 0,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', adminId);
-
-  if (error) {
-    console.error('[Admins] Ошибка при завершении смены:', error);
-    throw new Error(`Не удалось завершить смену: ${error.message}`);
-  }
-}
-
-/**
  * Получить историю смен админа
  * @param adminId - UUID админа
  * @returns Массив смен с датой и суммой начисления

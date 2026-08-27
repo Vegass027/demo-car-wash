@@ -313,6 +313,323 @@ export async function staffCancelTireBooking(
 }
 
 // =========================================================================
+// Slice #3c — Category A writes (15 actions)
+// =========================================================================
+//
+// All actions are JWT-protected (admin OR owner role for the 4
+// admin-or-owner actions, owner-only for the 11 owner-only actions).
+// Server enforces role check + data validation; browser sends only
+// the fields documented in the wrapper signatures.
+
+// ---- admins CRUD (owner-only: create-admin, update-admin, delete-admin)
+
+export interface AdminCreateInput {
+  full_name: string;
+  phone?: string | null;
+  card_number?: string | null;
+  payment_phone?: string | null;
+  fixed_salary?: number | null;
+}
+export interface Admin {
+  id: string;
+  full_name: string;
+  phone: string | null;
+  card_number: string | null;
+  payment_phone: string | null;
+  fixed_salary: number | null;
+  is_active: boolean;
+  earned_today: number;
+  current_balance: number;
+  days_worked_this_month: number;
+  is_advance_taken: boolean;
+  is_working_today: boolean;
+  base_rate_taken_today: boolean;
+  last_shift_date: string | null;
+  payment_comment: string | null;
+  salary_comment: string | null;
+  profile_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function createStaffAdmin(input: AdminCreateInput): Promise<Admin> {
+  const res = await dispatchStaffCall<{ data?: { admin: Admin }; error?: string }>(
+    'create-admin',
+    input as unknown as Record<string, unknown>,
+  );
+  if (!res?.data?.admin) throw new Error('staff_create_admin_no_admin_in_response');
+  return res.data.admin;
+}
+
+export async function updateStaffAdmin(
+  adminId: string,
+  patch: Partial<Omit<Admin, 'id' | 'profile_id' | 'created_at' | 'updated_at'>>,
+): Promise<Admin> {
+  const res = await dispatchStaffCall<{ data?: { admin: Admin }; error?: string }>(
+    'update-admin',
+    { admin_id: adminId, ...patch },
+  );
+  if (!res?.data?.admin) throw new Error('staff_update_admin_no_admin_in_response');
+  return res.data.admin;
+}
+
+export async function deleteStaffAdmin(adminId: string): Promise<void> {
+  await dispatchStaffCall<{ data?: { success: boolean }; error?: string }>(
+    'delete-admin',
+    { admin_id: adminId },
+  );
+}
+
+// ---- start-admin-shift (admin-or-owner)
+// Replaces direct supabase.rpc('start_admin_shift') frontend call.
+// INVOKER RPC runs as caller; after migration 017 REVOKE, caller
+// (anon/authenticated) loses direct UPDATE on admins table. This
+// dispatcher proxy uses supabaseAdmin (service_role) so the RPC works.
+
+export async function startStaffAdminShift(adminId: string): Promise<Admin> {
+  const res = await dispatchStaffCall<{ data?: { admin: Admin }; error?: string }>(
+    'start-admin-shift',
+    { admin_id: adminId },
+  );
+  if (!res?.data?.admin) throw new Error('staff_start_admin_shift_no_admin_in_response');
+  return res.data.admin;
+}
+
+// ---- admin-give-advance / admin-payout-salary / admin-transfer-balance
+// (all owner-only)
+
+export async function adminGiveAdvance(adminId: string, amount: number): Promise<Admin> {
+  const res = await dispatchStaffCall<{ data?: { admin: Admin }; error?: string }>(
+    'admin-give-advance',
+    { admin_id: adminId, amount },
+  );
+  if (!res?.data?.admin) throw new Error('staff_admin_give_advance_no_admin_in_response');
+  return res.data.admin;
+}
+
+export async function adminPayoutSalary(adminId: string, amount: number): Promise<Admin> {
+  const res = await dispatchStaffCall<{ data?: { admin: Admin }; error?: string }>(
+    'admin-payout-salary',
+    { admin_id: adminId, amount },
+  );
+  if (!res?.data?.admin) throw new Error('staff_admin_payout_salary_no_admin_in_response');
+  return res.data.admin;
+}
+
+export async function adminTransferBalance(adminId: string): Promise<Admin> {
+  const res = await dispatchStaffCall<{ data?: { admin: Admin }; error?: string }>(
+    'admin-transfer-balance',
+    { admin_id: adminId },
+  );
+  if (!res?.data?.admin) throw new Error('staff_admin_transfer_balance_no_admin_in_response');
+  return res.data.admin;
+}
+
+// ---- salary_transactions writes (4 actions)
+
+export type WorkerType = 'worker' | 'tire_worker' | 'admin';
+export type TransactionType = 'EARNING' | 'PAYOUT' | 'ADVANCE' | 'TRANSFER' | 'STORAGE_FEE';
+
+export interface SalaryTransaction {
+  id: string;
+  worker_type: WorkerType;
+  worker_id: string;
+  worker_name: string | null;
+  amount: number;
+  balance_after: number | null;
+  transaction_type: TransactionType;
+  description: string | null;
+  notes: string | null;
+  created_at: string;
+  booking_id: string | null;
+  shift_id: string | null;
+}
+
+export interface CreateTransactionInput {
+  worker_type: WorkerType;
+  worker_id: string;
+  worker_name: string;
+  amount: number;
+  balance_after?: number | null;
+  description?: string | null;
+  notes?: string | null;
+}
+
+export async function createStaffEarningTransaction(input: CreateTransactionInput): Promise<SalaryTransaction> {
+  const res = await dispatchStaffCall<{ data?: { transaction: SalaryTransaction }; error?: string }>(
+    'create-earning-transaction',
+    input as unknown as Record<string, unknown>,
+  );
+  if (!res?.data?.transaction) throw new Error('staff_create_earning_transaction_no_transaction');
+  return res.data.transaction;
+}
+
+export async function createStaffAdvanceTransaction(input: CreateTransactionInput): Promise<SalaryTransaction> {
+  const res = await dispatchStaffCall<{ data?: { transaction: SalaryTransaction }; error?: string }>(
+    'create-advance-transaction',
+    input as unknown as Record<string, unknown>,
+  );
+  if (!res?.data?.transaction) throw new Error('staff_create_advance_transaction_no_transaction');
+  return res.data.transaction;
+}
+
+export async function createStaffPayoutTransaction(input: CreateTransactionInput): Promise<SalaryTransaction> {
+  const res = await dispatchStaffCall<{ data?: { transaction: SalaryTransaction }; error?: string }>(
+    'create-payout-transaction',
+    input as unknown as Record<string, unknown>,
+  );
+  if (!res?.data?.transaction) throw new Error('staff_create_payout_transaction_no_transaction');
+  return res.data.transaction;
+}
+
+export async function createStaffTransferTransaction(input: CreateTransactionInput): Promise<SalaryTransaction> {
+  const res = await dispatchStaffCall<{ data?: { transaction: SalaryTransaction }; error?: string }>(
+    'create-transfer-transaction',
+    input as unknown as Record<string, unknown>,
+  );
+  if (!res?.data?.transaction) throw new Error('staff_create_transfer_transaction_no_transaction');
+  return res.data.transaction;
+}
+
+export async function deleteStaffSalaryTransaction(transactionId: string): Promise<void> {
+  await dispatchStaffCall<{ data?: { success: boolean }; error?: string }>(
+    'delete-salary-transaction',
+    { transaction_id: transactionId },
+  );
+}
+
+// ---- salary_settings + company_settings (3 actions, all owner-only)
+
+export interface SalarySettings {
+  id: string;
+  worker_solo_base: number;
+  worker_solo_commission: number;
+  worker_pair_base: number;
+  worker_pair_commission: number;
+  tire_worker_commission: number;
+  admin_fixed_salary: number;
+  tire_worker_storage_fee: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpdateSalarySettingsInput {
+  worker_solo_base?: number;
+  worker_solo_commission?: number;
+  worker_pair_base?: number;
+  worker_pair_commission?: number;
+  tire_worker_commission?: number;
+  admin_fixed_salary?: number;
+  tire_worker_storage_fee?: number;
+}
+
+export async function updateStaffSalarySettings(
+  patch: UpdateSalarySettingsInput,
+): Promise<SalarySettings> {
+  const res = await dispatchStaffCall<{ data?: { settings: SalarySettings }; error?: string }>(
+    'update-salary-settings',
+    patch as unknown as Record<string, unknown>,
+  );
+  if (!res?.data?.settings) throw new Error('staff_update_salary_settings_no_settings');
+  return res.data.settings;
+}
+
+export interface CompanySettings {
+  id: string;
+  legal_form: string;
+  full_legal_name: string;
+  short_name: string | null;
+  inn: string;
+  kpp: string | null;
+  ogrn: string;
+  legal_address: string;
+  actual_address: string | null;
+  bank_name: string;
+  bik: string;
+  correspondent_account: string;
+  payment_account: string;
+  director_name: string;
+  director_position: string | null;
+  accountant_name: string | null;
+  is_vat_payer: boolean;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateCompanySettingsInput {
+  legal_form: string;
+  full_legal_name: string;
+  inn: string;
+  ogrn: string;
+  legal_address: string;
+  bank_name: string;
+  bik: string;
+  correspondent_account: string;
+  payment_account: string;
+  director_name: string;
+  short_name?: string;
+  kpp?: string;
+  actual_address?: string;
+  director_position?: string;
+  accountant_name?: string;
+  is_vat_payer?: boolean;
+  phone?: string;
+  email?: string;
+  website?: string;
+  is_active?: boolean;
+}
+
+export interface UpdateCompanySettingsInput {
+  settings_id: string;
+  legal_form?: string;
+  full_legal_name?: string;
+  short_name?: string | null;
+  inn?: string;
+  kpp?: string | null;
+  ogrn?: string;
+  legal_address?: string;
+  actual_address?: string | null;
+  bank_name?: string;
+  bik?: string;
+  correspondent_account?: string;
+  payment_account?: string;
+  director_name?: string;
+  director_position?: string | null;
+  accountant_name?: string | null;
+  is_vat_payer?: boolean;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  is_active?: boolean;
+}
+
+export async function createStaffCompanySettings(
+  input: CreateCompanySettingsInput,
+): Promise<CompanySettings> {
+  const res = await dispatchStaffCall<{ data?: { settings: CompanySettings }; error?: string }>(
+    'create-company-settings',
+    input as unknown as Record<string, unknown>,
+  );
+  if (!res?.data?.settings) throw new Error('staff_create_company_settings_no_settings');
+  return res.data.settings;
+}
+
+export async function updateStaffCompanySettings(
+  patch: UpdateCompanySettingsInput,
+): Promise<CompanySettings> {
+  const res = await dispatchStaffCall<{ data?: { settings: CompanySettings }; error?: string }>(
+    'update-company-settings',
+    patch as unknown as Record<string, unknown>,
+  );
+  if (!res?.data?.settings) throw new Error('staff_update_company_settings_no_settings');
+  return res.data.settings;
+}
+
+// =========================================================================
 // Phase 2.1a — staff self-service password change
 // =========================================================================
 //

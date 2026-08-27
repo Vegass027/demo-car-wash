@@ -99,6 +99,30 @@ const ALLOWED_ACTIONS = new Set([
 
   // Phase 2.1a — staff self-service password change:
   'change-password',
+
+  // Slice #3c — Category A writes (15 actions):
+  //   4 admin-or-owner: start-admin-shift, create-earning-transaction,
+  //                      create-advance-transaction, create-transfer-transaction
+  //  11 owner-only:    create-admin, update-admin, delete-admin,
+  //                      admin-give-advance, admin-payout-salary,
+  //                      admin-transfer-balance, create-payout-transaction,
+  //                      delete-salary-transaction, update-salary-settings,
+  //                      create-company-settings, update-company-settings
+  'create-admin',
+  'update-admin',
+  'delete-admin',
+  'start-admin-shift',
+  'admin-give-advance',
+  'admin-payout-salary',
+  'admin-transfer-balance',
+  'create-earning-transaction',
+  'create-advance-transaction',
+  'create-payout-transaction',
+  'create-transfer-transaction',
+  'delete-salary-transaction',
+  'update-salary-settings',
+  'create-company-settings',
+  'update-company-settings',
 ]);
 
 const supabaseAdmin = createClient(
@@ -1693,6 +1717,527 @@ async function changeStaffPasswordAction(claims: StaffClaims, body: AnyObj): Pro
 }
 
 // =========================================================================
+// Slice #3c — Category A writes (Phase 2.4)
+// =========================================================================
+//
+// 15 dispatcher actions replacing direct supabase.from('admins'),
+// supabase.from('salary_settings'), etc. from frontend. After
+// migration 017 (REVOKE grant-level + new RLS policies), admin dashboard
+// reads remain direct via RLS, but all writes MUST go through these
+// actions which use supabaseAdmin (service_role) to bypass REVOKE.
+//
+// Authorization matrix (entry 21 of PROJECT_STATE.md):
+//   4 admin-or-owner: start-admin-shift, create-earning-transaction,
+//                      create-advance-transaction, create-transfer-transaction
+//  11 owner-only:    create-admin, update-admin, delete-admin,
+//                      admin-give-advance, admin-payout-salary,
+//                      admin-transfer-balance, create-payout-transaction,
+//                      delete-salary-transaction, update-salary-settings,
+//                      create-company-settings, update-company-settings
+//
+// Helper: requireOwner(claims) — used for owner-only actions.
+// requireStaff already exists for admin-or-owner.
+
+// =========================================================================
+// Helper: requireOwner — checks claims.app_role === 'owner'
+// =========================================================================
+class OwnerOnlyError extends Error {
+  code = 'owner_only_required';
+}
+function requireOwner(claims: StaffClaims): void {
+  if (claims.app_role !== 'owner') {
+    throw new OwnerOnlyError();
+  }
+}
+
+// =========================================================================
+// admins CRUD (4 actions)
+// =========================================================================
+async function createAdminAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  // Reject client-supplied id/profile_id/created_at/updated_at.
+  for (const f of ['id', 'profile_id', 'created_at', 'updated_at', 'is_active']) {
+    if (body[f] !== undefined) throw new ValidationError(`field_not_allowed_${f}`);
+  }
+  const full_name = readString(body, 'full_name', { max: 200, required: true });
+  if (!full_name) throw new ValidationError('full_name_required');
+  const phone = body.phone !== undefined ? body.phone : null;
+  const card_number = body.card_number !== undefined ? body.card_number : null;
+  const payment_phone = body.payment_phone !== undefined ? body.payment_phone : null;
+  const fixed_salary = body.fixed_salary !== undefined ? Number(body.fixed_salary) : null;
+  if (fixed_salary !== null && (!Number.isFinite(fixed_salary) || fixed_salary < 0)) {
+    throw new ValidationError('fixed_salary_invalid');
+  }
+  const insert: AnyObj = { full_name };
+  if (phone !== null) insert.phone = phone;
+  if (card_number !== null) insert.card_number = card_number;
+  if (payment_phone !== null) insert.payment_phone = payment_phone;
+  if (fixed_salary !== null) insert.fixed_salary = fixed_salary;
+  const { data, error } = await supabaseAdmin.from('admins').insert(insert).select().maybeSingle();
+  if (error) {
+    console.error('[staff:create-admin] insert error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { admin: data } } };
+}
+
+async function updateAdminAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  const admin_id = readUuidRequired(body, 'admin_id');
+  for (const f of ['id', 'profile_id', 'created_at']) {
+    if (body[f] !== undefined) throw new ValidationError(`field_not_allowed_${f}`);
+  }
+  const patch: AnyObj = { updated_at: new Date().toISOString() };
+  if (body.full_name !== undefined) {
+    const v = readString(body, 'full_name', { max: 200, required: true });
+    if (!v) throw new ValidationError('full_name_invalid');
+    patch.full_name = v.trim();
+  }
+  if (body.phone !== undefined) patch.phone = body.phone;
+  if (body.card_number !== undefined) patch.card_number = body.card_number;
+  if (body.payment_phone !== undefined) patch.payment_phone = body.payment_phone;
+  if (body.fixed_salary !== undefined) {
+    const v = Number(body.fixed_salary);
+    if (!Number.isFinite(v) || v < 0) throw new ValidationError('fixed_salary_invalid');
+    patch.fixed_salary = v;
+  }
+  if (body.is_active !== undefined) patch.is_active = !!body.is_active;
+  const { data, error } = await supabaseAdmin
+    .from('admins').update(patch).eq('id', admin_id).select().maybeSingle();
+  if (error) {
+    console.error('[staff:update-admin] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return failAction(404, 'admin_not_found');
+  return { status: 200, body: { data: { admin: data } } };
+}
+
+async function deleteAdminAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  const admin_id = readUuidRequired(body, 'admin_id');
+  const { error } = await supabaseAdmin.from('admins').delete().eq('id', admin_id);
+  if (error) {
+    console.error('[staff:delete-admin] delete error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { success: true } } };
+}
+
+// =========================================================================
+// start-admin-shift (admin-or-owner, dispatcher proxy for INVOKER RPC)
+// =========================================================================
+async function startAdminShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  // No requireOwner — admin-or-owner OK.
+  const admin_id = readUuidRequired(body, 'admin_id');
+  if (body.p_admin_id !== undefined && body.p_admin_id !== undefined) {
+    // already covered by readUuidRequired above
+  }
+  // p_salary and p_today are server-derived. Caller doesn't pass them.
+  // p_today = today date in YYYY-MM-DD format.
+  const today = new Date().toISOString().slice(0, 10);
+  // p_salary = 0 default; admin shift start doesn't carry a salary param in
+  // our admin dashboard (no fixed_salary increase on shift start).
+  const { data, error } = await supabaseAdmin.rpc('start_admin_shift', {
+    p_admin_id: admin_id,
+    p_salary: 0,
+    p_today: today,
+  });
+  if (error) {
+    console.error('[staff:start-admin-shift] rpc error:', error.message);
+    return failAction(500, 'start_admin_shift_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { admin: data } } };
+}
+
+// =========================================================================
+// admin-give-advance / admin-payout-salary / admin-transfer-balance
+// (all owner-only — admin shouldn't manage their own money out)
+// =========================================================================
+async function adminGiveAdvanceAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  const admin_id = readUuidRequired(body, 'admin_id');
+  const amount = Number(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new ValidationError('amount_invalid');
+  }
+  // Direct UPDATE on admins.current_balance + earned_today.
+  // Original lib/api/admins.ts:giveAdminAdvance did this in JS with separate
+  // SELECT/UPDATE — server-side we combine into one transaction.
+  const { data: admin, error: fetchErr } = await supabaseAdmin
+    .from('admins').select('current_balance, earned_today').eq('id', admin_id).single();
+  if (fetchErr || !admin) {
+    console.error('[staff:admin-give-advance] fetch error:', fetchErr?.message);
+    return failAction(404, 'admin_not_found');
+  }
+  const newBalance = Number(admin.current_balance) + amount;
+  const newEarned = Number(admin.earned_today) - amount;
+  if (newEarned < 0) {
+    return failAction(400, 'insufficient_earned_today');
+  }
+  const { data, error } = await supabaseAdmin
+    .from('admins')
+    .update({
+      current_balance: newBalance,
+      earned_today: newEarned,
+      is_advance_taken: true,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', admin_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:admin-give-advance] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  // Create a salary_transactions ledger row (mirroring legacy JS logic).
+  const { error: txErr } = await supabaseAdmin.from('salary_transactions').insert({
+    worker_type: 'admin',
+    worker_id: admin_id,
+    amount: amount,
+    transaction_type: 'ADVANCE',
+    description: `Аванс админу`,
+    created_at: new Date().toISOString(),
+  });
+  if (txErr) {
+    console.error('[staff:admin-give-advance] ledger insert error:', txErr.message);
+    // Compensate: revert balance update
+    await supabaseAdmin.from('admins').update({
+      current_balance: admin.current_balance,
+      earned_today: admin.earned_today,
+      is_advance_taken: false,
+    }).eq('id', admin_id);
+    return failAction(500, 'salary_transaction_failed', { detail: txErr.message });
+  }
+  return { status: 200, body: { data: { admin: data } } };
+}
+
+async function adminPayoutSalaryAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  const admin_id = readUuidRequired(body, 'admin_id');
+  const amount = Number(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new ValidationError('amount_invalid');
+  }
+  const { data: admin, error: fetchErr } = await supabaseAdmin
+    .from('admins').select('current_balance').eq('id', admin_id).single();
+  if (fetchErr || !admin) {
+    return failAction(404, 'admin_not_found');
+  }
+  if (Number(admin.current_balance) < amount) {
+    return failAction(400, 'insufficient_balance');
+  }
+  const newBalance = Number(admin.current_balance) - amount;
+  const { data, error } = await supabaseAdmin
+    .from('admins')
+    .update({
+      current_balance: newBalance,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', admin_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:admin-payout-salary] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  const { error: txErr } = await supabaseAdmin.from('salary_transactions').insert({
+    worker_type: 'admin',
+    worker_id: admin_id,
+    amount: amount,
+    transaction_type: 'PAYOUT',
+    description: `Выплата зарплаты админу`,
+    created_at: new Date().toISOString(),
+  });
+  if (txErr) {
+    await supabaseAdmin.from('admins').update({
+      current_balance: admin.current_balance,
+    }).eq('id', admin_id);
+    return failAction(500, 'salary_transaction_failed', { detail: txErr.message });
+  }
+  return { status: 200, body: { data: { admin: data } } };
+}
+
+async function adminTransferBalanceAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  const admin_id = readUuidRequired(body, 'admin_id');
+  const { data: admin, error: fetchErr } = await supabaseAdmin
+    .from('admins').select('earned_today, current_balance').eq('id', admin_id).single();
+  if (fetchErr || !admin) {
+    return failAction(404, 'admin_not_found');
+  }
+  const earned = Number(admin.earned_today);
+  if (earned <= 0) {
+    return failAction(400, 'nothing_to_transfer');
+  }
+  const newBalance = Number(admin.current_balance) + earned;
+  const { data, error } = await supabaseAdmin
+    .from('admins')
+    .update({
+      current_balance: newBalance,
+      earned_today: 0,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', admin_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:admin-transfer-balance] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  const { error: txErr } = await supabaseAdmin.from('salary_transactions').insert({
+    worker_type: 'admin',
+    worker_id: admin_id,
+    amount: earned,
+    transaction_type: 'TRANSFER',
+    description: `Перевод earned → balance (admin)`,
+    created_at: new Date().toISOString(),
+  });
+  if (txErr) {
+    await supabaseAdmin.from('admins').update({
+      current_balance: admin.current_balance,
+      earned_today: admin.earned_today,
+    }).eq('id', admin_id);
+    return failAction(500, 'salary_transaction_failed', { detail: txErr.message });
+  }
+  return { status: 200, body: { data: { admin: data } } };
+}
+
+// =========================================================================
+// salary_transactions writes (4 actions)
+// =========================================================================
+async function createEarningTransactionAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  // admin-or-owner
+  const worker_type = readString(body, 'worker_type', { max: 32, required: true });
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const worker_name = readString(body, 'worker_name', { max: 200, required: true });
+  const amount = Number(body.amount);
+  if (!Number.isFinite(amount)) throw new ValidationError('amount_invalid');
+  const balance_after = body.balance_after !== undefined ? Number(body.balance_after) : null;
+  const description = body.description !== undefined ? body.description : null;
+  const { data, error } = await supabaseAdmin.from('salary_transactions').insert({
+    worker_type,
+    worker_id,
+    worker_name,
+    amount,
+    balance_after,
+    transaction_type: 'EARNING',
+    description,
+    created_at: new Date().toISOString(),
+  }).select().maybeSingle();
+  if (error) {
+    console.error('[staff:create-earning-transaction] insert error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { transaction: data } } };
+}
+
+async function createAdvanceTransactionAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  // admin-or-owner
+  const worker_type = readString(body, 'worker_type', { max: 32, required: true });
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const worker_name = readString(body, 'worker_name', { max: 200, required: true });
+  const amount = Number(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0) throw new ValidationError('amount_invalid');
+  const balance_after = body.balance_after !== undefined ? Number(body.balance_after) : null;
+  const description = body.description !== undefined ? body.description : null;
+  const notes = body.notes !== undefined ? body.notes : null;
+  const { data, error } = await supabaseAdmin.from('salary_transactions').insert({
+    worker_type,
+    worker_id,
+    worker_name,
+    amount,
+    balance_after,
+    transaction_type: 'ADVANCE',
+    description,
+    notes,
+    created_at: new Date().toISOString(),
+  }).select().maybeSingle();
+  if (error) {
+    console.error('[staff:create-advance-transaction] insert error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { transaction: data } } };
+}
+
+async function createPayoutTransactionAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  const worker_type = readString(body, 'worker_type', { max: 32, required: true });
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const worker_name = readString(body, 'worker_name', { max: 200, required: true });
+  const amount = Number(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0) throw new ValidationError('amount_invalid');
+  const balance_after = body.balance_after !== undefined ? Number(body.balance_after) : null;
+  const description = body.description !== undefined ? body.description : null;
+  const notes = body.notes !== undefined ? body.notes : null;
+  const { data, error } = await supabaseAdmin.from('salary_transactions').insert({
+    worker_type,
+    worker_id,
+    worker_name,
+    amount,
+    balance_after,
+    transaction_type: 'PAYOUT',
+    description,
+    notes,
+    created_at: new Date().toISOString(),
+  }).select().maybeSingle();
+  if (error) {
+    console.error('[staff:create-payout-transaction] insert error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { transaction: data } } };
+}
+
+async function createTransferTransactionAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  // admin-or-owner
+  const worker_type = readString(body, 'worker_type', { max: 32, required: true });
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const worker_name = readString(body, 'worker_name', { max: 200, required: true });
+  const amount = Number(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0) throw new ValidationError('amount_invalid');
+  const balance_after = body.balance_after !== undefined ? Number(body.balance_after) : null;
+  const description = body.description !== undefined ? body.description : null;
+  const { data, error } = await supabaseAdmin.from('salary_transactions').insert({
+    worker_type,
+    worker_id,
+    worker_name,
+    amount,
+    balance_after,
+    transaction_type: 'TRANSFER',
+    description,
+    created_at: new Date().toISOString(),
+  }).select().maybeSingle();
+  if (error) {
+    console.error('[staff:create-transfer-transaction] insert error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { transaction: data } } };
+}
+
+async function deleteSalaryTransactionAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  const transaction_id = readUuidRequired(body, 'transaction_id');
+  const { error } = await supabaseAdmin
+    .from('salary_transactions').delete().eq('id', transaction_id);
+  if (error) {
+    console.error('[staff:delete-salary-transaction] delete error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { success: true } } };
+}
+
+// =========================================================================
+// salary_settings + company_settings (3 actions, all owner-only)
+// =========================================================================
+async function updateSalarySettingsAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  for (const f of ['id', 'created_at', 'updated_at']) {
+    if (body[f] !== undefined) throw new ValidationError(`field_not_allowed_${f}`);
+  }
+  const patch: AnyObj = { updated_at: new Date().toISOString() };
+  // All salary_settings columns are numeric >= 0. Some are 0..1 (commissions),
+  // others are unbounded (base/storage). Validate accordingly.
+  const NUM_0_1 = (v: any, name: string): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0 || n > 1) {
+      throw new ValidationError(`${name}_invalid`);
+    }
+    return n;
+  };
+  const NUM_0 = (v: any, name: string): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new ValidationError(`${name}_invalid`);
+    }
+    return n;
+  };
+  if (body.worker_solo_base !== undefined)     patch.worker_solo_base     = NUM_0(body.worker_solo_base, 'worker_solo_base');
+  if (body.worker_solo_commission !== undefined) patch.worker_solo_commission = NUM_0_1(body.worker_solo_commission, 'worker_solo_commission');
+  if (body.worker_pair_base !== undefined)     patch.worker_pair_base     = NUM_0(body.worker_pair_base, 'worker_pair_base');
+  if (body.worker_pair_commission !== undefined) patch.worker_pair_commission = NUM_0_1(body.worker_pair_commission, 'worker_pair_commission');
+  if (body.tire_worker_commission !== undefined) patch.tire_worker_commission = NUM_0_1(body.tire_worker_commission, 'tire_worker_commission');
+  if (body.tire_worker_storage_fee !== undefined) patch.tire_worker_storage_fee = NUM_0(body.tire_worker_storage_fee, 'tire_worker_storage_fee');
+  if (body.admin_fixed_salary !== undefined)   patch.admin_fixed_salary   = NUM_0(body.admin_fixed_salary, 'admin_fixed_salary');
+  // Singleton: there is exactly one salary_settings row. Update all.
+  const { data, error } = await supabaseAdmin
+    .from('salary_settings').update(patch).select().maybeSingle();
+  if (error) {
+    console.error('[staff:update-salary-settings] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return failAction(404, 'salary_settings_not_found');
+  return { status: 200, body: { data: { settings: data } } };
+}
+
+async function createCompanySettingsAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  for (const f of ['id', 'created_at', 'updated_at']) {
+    if (body[f] !== undefined) throw new ValidationError(`field_not_allowed_${f}`);
+  }
+  // Required: legal_form, full_legal_name, inn, ogrn, legal_address,
+  //           bank_name, bik, correspondent_account, payment_account,
+  //           director_name.
+  // Optional: short_name, kpp, actual_address, director_position,
+  //           accountant_name, is_vat_payer, phone, email, website,
+  //           is_active.
+  const REQUIRED = [
+    'legal_form', 'full_legal_name', 'inn', 'ogrn', 'legal_address',
+    'bank_name', 'bik', 'correspondent_account', 'payment_account',
+    'director_name',
+  ];
+  const OPTIONAL_TEXT = [
+    'short_name', 'kpp', 'actual_address', 'director_position',
+    'accountant_name', 'phone', 'email', 'website',
+  ];
+  for (const f of REQUIRED) {
+    if (body[f] === undefined || body[f] === null || body[f] === '') {
+      throw new ValidationError(`${f}_required`);
+    }
+  }
+  const insert: AnyObj = {};
+  for (const f of REQUIRED) insert[f] = String(body[f]);
+  for (const f of OPTIONAL_TEXT) {
+    if (body[f] !== undefined && body[f] !== null) insert[f] = String(body[f]);
+  }
+  if (body.is_vat_payer !== undefined) insert.is_vat_payer = !!body.is_vat_payer;
+  if (body.is_active !== undefined) insert.is_active = !!body.is_active;
+  const { data, error } = await supabaseAdmin
+    .from('company_settings').insert(insert).select().maybeSingle();
+  if (error) {
+    console.error('[staff:create-company-settings] insert error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { settings: data } } };
+}
+
+async function updateCompanySettingsAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  requireOwner(_claims);
+  const settings_id = readUuidRequired(body, 'settings_id');
+  for (const f of ['id', 'created_at']) {
+    if (body[f] !== undefined) throw new ValidationError(`field_not_allowed_${f}`);
+  }
+  const UPDATABLE_TEXT = [
+    'legal_form', 'full_legal_name', 'short_name', 'inn', 'kpp', 'ogrn',
+    'legal_address', 'actual_address', 'bank_name', 'bik',
+    'correspondent_account', 'payment_account', 'director_name',
+    'director_position', 'accountant_name', 'phone', 'email', 'website',
+  ];
+  const patch: AnyObj = { updated_at: new Date().toISOString() };
+  for (const k of UPDATABLE_TEXT) {
+    if (body[k] !== undefined) patch[k] = body[k] === null ? null : String(body[k]);
+  }
+  if (body.is_vat_payer !== undefined) patch.is_vat_payer = !!body.is_vat_payer;
+  if (body.is_active !== undefined) patch.is_active = !!body.is_active;
+  const { data, error } = await supabaseAdmin
+    .from('company_settings').update(patch).eq('id', settings_id).select().maybeSingle();
+  if (error) {
+    console.error('[staff:update-company-settings] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return failAction(404, 'company_settings_not_found');
+  return { status: 200, body: { data: { settings: data } } };
+}
+
+// =========================================================================
 // Dispatch
 // =========================================================================
 
@@ -1778,6 +2323,23 @@ export default async function handler(req: any, res: any) {
       // Phase 2.1a — staff self-service password change:
       case 'change-password':                    result = await changeStaffPasswordAction(guard.claims, body); break;
 
+      // Slice #3c — Category A writes (15 actions):
+      case 'create-admin':                      result = await createAdminAction(guard.claims, body); break;
+      case 'update-admin':                      result = await updateAdminAction(guard.claims, body); break;
+      case 'delete-admin':                      result = await deleteAdminAction(guard.claims, body); break;
+      case 'start-admin-shift':                 result = await startAdminShiftAction(guard.claims, body); break;
+      case 'admin-give-advance':                result = await adminGiveAdvanceAction(guard.claims, body); break;
+      case 'admin-payout-salary':               result = await adminPayoutSalaryAction(guard.claims, body); break;
+      case 'admin-transfer-balance':            result = await adminTransferBalanceAction(guard.claims, body); break;
+      case 'create-earning-transaction':         result = await createEarningTransactionAction(guard.claims, body); break;
+      case 'create-advance-transaction':         result = await createAdvanceTransactionAction(guard.claims, body); break;
+      case 'create-payout-transaction':         result = await createPayoutTransactionAction(guard.claims, body); break;
+      case 'create-transfer-transaction':        result = await createTransferTransactionAction(guard.claims, body); break;
+      case 'delete-salary-transaction':         result = await deleteSalaryTransactionAction(guard.claims, body); break;
+      case 'update-salary-settings':            result = await updateSalarySettingsAction(guard.claims, body); break;
+      case 'create-company-settings':           result = await createCompanySettingsAction(guard.claims, body); break;
+      case 'update-company-settings':           result = await updateCompanySettingsAction(guard.claims, body); break;
+
       default:
         return res.status(404).json({ error: 'unknown_action' });
     }
@@ -1785,6 +2347,9 @@ export default async function handler(req: any, res: any) {
   } catch (err) {
     if (err instanceof ValidationError) {
       return res.status(400).json({ error: err.code });
+    }
+    if (err instanceof OwnerOnlyError) {
+      return res.status(403).json({ error: err.code });
     }
     console.error(`[staff:${action}] uncaught:`, err);
     return res.status(500).json({ error: 'internal_error' });
