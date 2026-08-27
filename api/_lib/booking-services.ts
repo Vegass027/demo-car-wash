@@ -145,16 +145,25 @@ export async function recomputeBookingServices(
   }
 
   // Resolve service rows by both UUID and slug in one round-trip.
-  const idList = uniqueIds.map((x) => `'${x.replace(/'/g, "''")}'`).join(',');
-  const { data: rows, error } = await supabase
+  // Supabase .or() expects CSV without surrounding quotes — the underlying
+  // PostgREST .in filter adds them. Use .in() directly instead, twice.
+  const { data: rowsByUuid, error: err1 } = await supabase
     .from('services')
     .select('id, service_id, name, price_sedan, price_crossover, price_jeep, price_large_suv, price_minivan, allow_multiple, is_active')
-    .or(`id.in.(${idList}),service_id.in.(${idList})`)
+    .in('id', uniqueIds)
     .eq('is_active', true);
-
-  if (error) {
-    throw new Error(`services_query_failed: ${error.message}`);
+  if (err1) {
+    throw new Error(`services_query_failed: ${err1.message}`);
   }
+  const { data: rowsBySlug, error: err2 } = await supabase
+    .from('services')
+    .select('id, service_id, name, price_sedan, price_crossover, price_jeep, price_large_suv, price_minivan, allow_multiple, is_active')
+    .in('service_id', uniqueIds)
+    .eq('is_active', true);
+  if (err2) {
+    throw new Error(`services_query_failed: ${err2.message}`);
+  }
+  const rows = [...(rowsByUuid ?? []), ...(rowsBySlug ?? [])];
 
   const byId = new Map<string, ResolvedService>();
   const bySlug = new Map<string, ResolvedService>();

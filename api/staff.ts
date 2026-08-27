@@ -1217,11 +1217,10 @@ async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): 
     throw new ValidationError('services_required');
   }
   const ids = services_in.map((s: any) => String(s));
-  const idList = ids.map((x) => `'${x.replace(/'/g, "''")}'`).join(',');
   const { data: tireRows, error: tireErr } = await supabaseAdmin
     .from('tire_services')
     .select('id, name, price, duration_minutes, is_custom_price, is_active')
-    .or(`id.in.(${idList})`)
+    .in('id', ids)
     .eq('is_active', true);
   if (tireErr) {
     console.error('[staff:create-staff-tire-booking] tire_services query error:', tireErr.message);
@@ -1354,7 +1353,6 @@ async function addStaffTireServicesAction(_claims: StaffClaims, body: AnyObj): P
     throw new ValidationError('services_required');
   }
   const ids = services_in.map((s: any) => String(s));
-  const idList = ids.map((x) => `'${x.replace(/'/g, "''")}'`).join(',');
   const current = await lockTireBooking(tire_booking_id);
   if (current.status === 'ГОТОВО' || current.status === 'ОТМЕНЕНО') {
     return failAction(409, 'invalid_status_transition', { status: current.status });
@@ -1362,7 +1360,7 @@ async function addStaffTireServicesAction(_claims: StaffClaims, body: AnyObj): P
   const { data: tireRows, error: tireErr } = await supabaseAdmin
     .from('tire_services')
     .select('id, name, price')
-    .or(`id.in.(${idList})`)
+    .in('id', ids)
     .eq('is_active', true);
   if (tireErr) return failAction(500, 'db_error', { detail: tireErr.message });
   if (!tireRows || tireRows.length !== ids.length) {
