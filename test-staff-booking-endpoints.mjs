@@ -1800,9 +1800,10 @@ async function postTestCleanup() {
   ).trim();
   console.log(`  fixture test tire worker_id: ${testTireWorkerId}`);
 
+  // Reuse adminToken from earlier PRE auth section.
   // E1: start-tire-worker-shift admin → 200, is_working_today=true, work_shift_id present
   const r1 = await api('POST', '/api/staff?action=start-tire-worker-shift',
-    { worker_id: testTireWorkerId }, adminToken);
+    { worker_id: testTireWorkerId }, staffToken);
   assert('E1: start-tire-worker-shift admin → 200 success',
     r1.status === 200, `status=${r1.status} err=${r1.data?.error}`);
   if (r1.status === 200) {
@@ -1821,7 +1822,7 @@ async function postTestCleanup() {
   const todayDate = new Date().toISOString().slice(0, 10);
   const afterStartState = psqlScalar(`SELECT is_working_today::text || '|' || COALESCE(last_shift_date::text, 'NULL') FROM public.tire_workers WHERE id='${testTireWorkerId}';`);
   assert('E1: DB tire_worker.is_working_today=true, last_shift_date=today',
-    afterStartState === `t|${todayDate}`,
+    afterStartState === `true|${todayDate}`,
     `got=${afterStartState}`);
   // DB: 1 work_shifts row with status='working'
   const startShiftCount = psqlScalar(`SELECT count(*) FROM public.work_shifts WHERE worker_id='${testTireWorkerId}' AND status='working';`);
@@ -1830,7 +1831,7 @@ async function postTestCleanup() {
 
   // E2: start repeat → 200 idempotent=true (no duplicate work_shift)
   const r2 = await api('POST', '/api/staff?action=start-tire-worker-shift',
-    { worker_id: testTireWorkerId }, adminToken);
+    { worker_id: testTireWorkerId }, staffToken);
   assert('E2: start-tire-worker-shift repeat → 200 idempotent=true (no dup shift)',
     r2.status === 200 && r2.data?.data?.idempotent === true,
     `status=${r2.status} body=${JSON.stringify(r2.data?.data)}`);
@@ -1840,7 +1841,7 @@ async function postTestCleanup() {
 
   // E5: stop-tire-worker-shift admin → 200, is_working_today=false, work_shift closed, last_shift_date UNCHANGED
   const r3 = await api('POST', '/api/staff?action=stop-tire-worker-shift',
-    { worker_id: testTireWorkerId }, adminToken);
+    { worker_id: testTireWorkerId }, staffToken);
   assert('E5: stop-tire-worker-shift admin → 200 success',
     r3.status === 200, `status=${r3.status} err=${r3.data?.error}`);
   if (r3.status === 200) {
@@ -1858,17 +1859,17 @@ async function postTestCleanup() {
   // DB: is_working_today=false, last_shift_date UNCHANGED (NOT nulled)
   const afterStopState = psqlScalar(`SELECT is_working_today::text || '|' || COALESCE(last_shift_date::text, 'NULL') FROM public.tire_workers WHERE id='${testTireWorkerId}';`);
   assert('E5: DB is_working_today=false, last_shift_date UNCHANGED (still today)',
-    afterStopState === `f|${todayDate}`,
+    afterStopState === `false|${todayDate}`,
     `got=${afterStopState}`);
   // DB: work_shift status='finished', finished_at IS NOT NULL
   const closedShift = psqlScalar(`SELECT status || '|' || (finished_at IS NOT NULL)::text FROM public.work_shifts WHERE worker_id='${testTireWorkerId}' AND worker_type='tire_worker';`);
   assert('E5: DB work_shift status=finished, finished_at IS NOT NULL',
-    closedShift === 'finished|t',
+    closedShift === 'finished|true',
     `got=${closedShift}`);
 
   // E6: stop repeat → 200 idempotent=true (no further side effects)
   const r4 = await api('POST', '/api/staff?action=stop-tire-worker-shift',
-    { worker_id: testTireWorkerId }, adminToken);
+    { worker_id: testTireWorkerId }, staffToken);
   assert('E6: stop-tire-worker-shift repeat → 200 idempotent=true',
     r4.status === 200 && r4.data?.data?.idempotent === true,
     `status=${r4.status} body=${JSON.stringify(r4.data?.data)}`);
@@ -1880,9 +1881,10 @@ async function postTestCleanup() {
 
   // E8: no-tire-worker-id 404 (RPC returns "record not found" → 500 mapped; or anon→401)
   const r5 = await api('POST', '/api/staff?action=start-tire-worker-shift',
-    { worker_id: '00000000-0000-0000-0000-000000000000' }, adminToken);
-  assert('E8: start-tire-worker-shift unknown worker_id → 500 (RPC no-row) or 404',
-    r5.status === 500 || r5.status === 404, `status=${r5.status}`);
+    { worker_id: '00000000-0000-0000-0000-000000000000' }, staffToken);
+  assert('E8: start-tire-worker-shift unknown worker_id → 404 tire_worker_not_found',
+    r5.status === 404 && r5.data?.error === 'tire_worker_not_found',
+    `status=${r5.status} err=${r5.data?.error}`);
 
   // E9/E10: anon → 401 / client → 403
   const r6 = await api('POST', '/api/staff?action=stop-tire-worker-shift',
