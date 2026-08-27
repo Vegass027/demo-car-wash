@@ -13,10 +13,9 @@ DROP FUNCTION IF EXISTS public.atomic_create_staff_tire_booking(
 ) CASCADE;
 
 DROP FUNCTION IF EXISTS public.atomic_modify_carwash_services(
-  uuid, text, text[], jsonb, boolean, numeric,
-  text, text, jsonb, jsonb, numeric
+  uuid, text, text[], jsonb, boolean, numeric
 ) CASCADE;
 
 DROP FUNCTION IF EXISTS public.atomic_modify_tire_services(
-  uuid, text, text[], jsonb, numeric
+  uuid, text, text[]
 ) CASCADE;

@@ -13,18 +13,26 @@
 // in test range (box=5,7,8,10) AND closed_date='2099-*', salary_transactions
 // WHERE description LIKE 'Заказ #<uuid-prefix>%' or 'Шиномонтаж #<uuid-prefix>%'.
 //
+// Race / idempotency tests use Promise.all to dispatch N parallel calls
+// and verify the lock/idempotency invariants. Worker_id / tire_worker_id
+// resolved via psql (read-only) — no service_role key in this Node env.
+//
 // Run from /Users/dmitriy/Downloads/demo-car-wash:
 //   node test-staff-booking-endpoints.mjs
 //
 // Env override: DEPLOY_URL (default production alias).
 //
 // --- Assert accounting --------------------------------------------------
-// 79+ E-numbers. Each E* section issues 1..3 assert() calls. Sub-asserts use
-// -prep / -b suffixes. Total assert() invocations = ~75. Reference table
-// in PROJECT_STATE.md entry 41. Keep both in sync if cases change.
+// E0..E47 + T1..T9 + race cluster R1..R8. Each section issues 1..N asserts.
+// Total: ~62 sequential + 8 race = ~70 invocations. Reference table
+// in PROJECT_STATE.md entry 15b. Keep both in sync if cases change.
 // -----------------------------------------------------------------------
 
+import { execSync } from 'node:child_process';
+
 const BASE = process.env.DEPLOY_URL || 'https://demo-car-wash.vercel.app';
+const PG_URL = process.env.TEST_PG_URL
+  || 'postgresql://postgres.danobongqzbxilyvdwig:YVJlmcibmLQYBtRM@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?options=-c%20project%3Dpostgres';
 const BOT_TOKEN = '8968802010:AAFsPlpWkW-GQWmJjSP25MKLU0jCooE7hdM';
 const OWNER_TELEGRAM_ID = '111111111';
 const CLIENT_TELEGRAM_ID = '333333333';
@@ -488,10 +496,10 @@ async function postTestCleanup() {
       `status=${r.status} error=${r.data?.error}`);
   }
   // T5: 'Наличные' (with е) → 200 (tire-specific enum value)
+  //    Use unique date+time so it doesn't collide with T1 (2099-09-15).
   {
     const r = await api('POST', '/api/staff?action=create-staff-tire-booking',
-      makeTireBody({ plate_number: 'T005TT' }), staffToken);
-    // makeTireBody already uses 'Наличные'
+      makeTireBody({ plate_number: 'T005TT', booking_date: '2099-09-16', start_time: '08:00', estimated_duration: 30 }), staffToken);
     assert('T5: Наличные (tire enum) → 200', r.status === 200,
       `status=${r.status} error=${r.data?.error}`);
     if (r.status === 200 && r.data?.data?.booking?.id) created.tire_bookings.push(r.data.data.booking.id);
@@ -499,16 +507,14 @@ async function postTestCleanup() {
   // T6: 'FooBar' (not in either enum) → 400 invalid_payment_method
   {
     const r = await api('POST', '/api/staff?action=create-staff-tire-booking',
-      makeTireBody({ plate_number: 'T006TT', payment_method: 'FooBar' }), staffToken);
+      makeTireBody({ plate_number: 'T006TT', payment_method: 'FooBar', booking_date: '2099-09-17', start_time: '08:00', estimated_duration: 30 }), staffToken);
     assert('T6: unknown payment_method → 400', r.status === 400,
       `status=${r.status} error=${r.data?.error}`);
   }
   // T7: is_paid=true → server-derives paid_at
   {
-    const r = await api('POST', '/api/telegram-auth', {}).catch(() => null);
-    // Just test tire is_paid flow
     const r2 = await api('POST', '/api/staff?action=create-staff-tire-booking',
-      makeTireBody({ plate_number: 'T007TT', is_paid: true }), staffToken);
+      makeTireBody({ plate_number: 'T007TT', is_paid: true, booking_date: '2099-09-18', start_time: '08:00', estimated_duration: 30 }), staffToken);
     if (r2.status === 200 && r2.data?.data?.booking?.id) created.tire_bookings.push(r2.data.data.booking.id);
     assert('T7: tire is_paid=true → paid_at set',
       r2.status === 200 && r2.data?.data?.booking?.is_paid === true && !!r2.data?.data?.booking?.paid_at,
@@ -520,7 +526,7 @@ async function postTestCleanup() {
   let tirePaidId = null;
   {
     const r = await api('POST', '/api/staff?action=create-staff-tire-booking',
-      makeTireBody({ plate_number: 'T099TT', is_paid: true }), staffToken);
+      makeTireBody({ plate_number: 'T099TT', is_paid: true, booking_date: '2099-09-19', start_time: '08:00', estimated_duration: 30 }), staffToken);
     if (r.status === 200 && r.data?.data?.booking?.id) {
       tirePaidId = r.data.data.booking.id;
       created.tire_bookings.push(tirePaidId);
@@ -551,7 +557,7 @@ async function postTestCleanup() {
   let tireToCancelId = null;
   {
     const r = await api('POST', '/api/staff?action=create-staff-tire-booking',
-      makeTireBody({ plate_number: 'T098TT' }), staffToken);
+      makeTireBody({ plate_number: 'T098TT', booking_date: '2099-09-20', start_time: '08:00', estimated_duration: 30 }), staffToken);
     if (r.status === 200 && r.data?.data?.booking?.id) {
       tireToCancelId = r.data.data.booking.id;
       created.tire_bookings.push(tireToCancelId);
@@ -667,11 +673,339 @@ async function postTestCleanup() {
   }
 
   // -----------------------------------------------------------------------
-  console.log('\n--- EARNINGS FLOW ---');
-  // We test the mark-staff-ready with worker_id → triggers earnings path.
-  // Need a real worker_id from workers table; for simplicity we use existing.
-  // Skip if no real worker_id available without DB query.
-  console.log('  (worker-required earnings test requires DB fixture; manual verification in psql after run)');
+  console.log('\n--- EARNINGS + RACE / IDEMPOTENCY CLUSTER (R1..R8) ---');
+  // Read-only psql helpers — resolve real worker_id / tire_worker_id so we
+  // can exercise the two-step earnings pipeline end-to-end.
+  function psqlScalar(sql) {
+    const out = execSync(
+      `psql -q -t -A "${PG_URL}" -c "${sql.replace(/"/g, '\\"')}"`,
+      { encoding: 'utf8' }
+    ).trim();
+    return out;
+  }
+  function psqlCount(sql) {
+    return Number(psqlScalar(`SELECT count(*) FROM (${sql}) _x;`));
+  }
+
+  const workerId = psqlScalar(`SELECT id FROM public.workers WHERE is_active=true ORDER BY full_name LIMIT 1;`);
+  const tireWorkerId = psqlScalar(`SELECT id FROM public.tire_workers WHERE is_active=true ORDER BY full_name LIMIT 1;`);
+  const antifreezeUmcId = psqlScalar(`SELECT id FROM public.services WHERE service_id='antifreeze-umc' AND is_active=true LIMIT 1;`);
+
+  // --- R1: carwash create race on same (box, time) — atomic RPC ---
+  {
+    const baseBody = {
+      booking_date: '2099-10-01',
+      box_number: 12,
+      start_time: '10:00',
+      end_time: '11:00',
+      client_name: '[TEST STAFF] R1 race',
+      car_model: 'X',
+      plate_number: 'R1XX01',
+      car_type: 'SEDAN',
+      services: [antifreezeUmcId],
+      is_org: false,
+      is_paid: false,
+      discount: 0,
+      is_quick_booking: false,
+      payment_method: 'Наличный',
+    };
+    const N = 4;
+    const results = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        api('POST', '/api/staff?action=create-staff-booking',
+          { ...baseBody, plate_number: `R1XX${String(i).padStart(2, '0')}` },
+          staffToken)
+      )
+    );
+    const ok = results.filter((r) => r.status === 200).length;
+    const overlap = results.filter((r) => r.status === 409 && r.data?.error === 'box_overlap').length;
+    const others = results.length - ok - overlap;
+    assert(`R1: 4x parallel create-staff-booking same box → exactly 1 success + 3 box_overlap (others=${others})`,
+      ok === 1 && overlap === (N - 1) && others === 0,
+      `ok=${ok} overlap=${overlap} others=${others}`);
+    // Cleanup: delete the 1 successful booking
+    const winner = results.find((r) => r.status === 200);
+    if (winner) {
+      created.bookings.push(winner.data.data.booking.id);
+      // Verify DB count = 1
+      const dbCount = psqlCount(`SELECT 1 FROM public.bookings WHERE client_name='[TEST STAFF] R1 race'`);
+      assert(`R1b: DB has exactly 1 booking row for R1 race (advisory lock effective)`,
+        dbCount === 1, `db_count=${dbCount}`);
+    }
+  }
+
+  // --- R2: tire create race on same (date, time, duration) ---
+  {
+    const baseBody = {
+      booking_date: '2099-10-01',
+      start_time: '11:00',
+      estimated_duration: 60,
+      client_name: '[TEST STAFF] R2 tire race',
+      phone: '+79991234521',
+      car_model: 'X',
+      services: ['72000000-0000-0000-0000-000000000001'],
+      payment_method: 'Наличные',
+      is_org: false,
+      is_paid: false,
+    };
+    const N = 3;
+    const results = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        api('POST', '/api/staff?action=create-staff-tire-booking',
+          { ...baseBody, plate_number: `R2XX${String(i).padStart(2, '0')}` },
+          staffToken)
+      )
+    );
+    // No atomic RPC for tire — first-wins via find_tire_booking_overlap preflight.
+    // The race here is app-side; expect 1 ok + (N-1) overlap.
+    const ok = results.filter((r) => r.status === 200).length;
+    const overlap = results.filter((r) => r.status === 409 && r.data?.error === 'tire_overlap').length;
+    assert(`R2: 3x parallel tire create same time → 1 ok + 2 overlap`,
+      ok === 1 && overlap === (N - 1),
+      `ok=${ok} overlap=${overlap}`);
+    const winner = results.find((r) => r.status === 200);
+    if (winner) created.tire_bookings.push(winner.data.data.booking.id);
+  }
+
+  // --- R3: add-staff-services concurrent — lost-update guard ---
+  {
+    // Create a fresh booking for the race
+    const createR = await api('POST', '/api/staff?action=create-staff-booking',
+      {
+        booking_date: '2099-10-02', box_number: 13, start_time: '10:00', end_time: '11:00',
+        client_name: '[TEST STAFF] R3 services race',
+        car_model: 'X', plate_number: 'R3XX01',
+        car_type: 'SEDAN',
+        services: [antifreezeUmcId],
+        is_org: false, is_paid: false, discount: 0,
+        is_quick_booking: false, payment_method: 'Наличный',
+      },
+      staffToken);
+    if (createR.status === 200 && createR.data?.data?.booking?.id) {
+      const bid = createR.data.data.booking.id;
+      created.bookings.push(bid);
+      // 2 parallel adds of DIFFERENT services — both should land, total
+      // price should be sum (no lost-update).
+      const antifreezeOrgId = psqlScalar(`SELECT id FROM public.services WHERE service_id='antifreeze-org' AND is_active=true LIMIT 1;`);
+      const [r1, r2] = await Promise.all([
+        api('POST', '/api/staff?action=add-staff-services',
+          { booking_id: bid, service_ids: [antifreezeOrgId] }, staffToken),
+        api('POST', '/api/staff?action=add-staff-services',
+          { booking_id: bid, service_ids: [antifreezeUmcId] }, staffToken),
+      ]);
+      assert(`R3: 2x parallel add-staff-services → both 200`,
+        r1.status === 200 && r2.status === 200,
+        `r1=${r1.status} r2=${r2.status}`);
+      // Final DB: services[] has both antifreeze-org AND antifreeze-umc
+      // (2 entries — dedup makes the parallel umc-add a no-op since umc
+      // was already in services[] from create). Without atomic RPC, two
+      // parallel handlers could BOTH read services=[umc], compute merged
+      // = [umc,org] / [umc,umc], and one would overwrite the other's update
+      // — losing the org. Atomic RPC FOR UPDATE serializes and ensures
+      // both intents land.
+      const dbServicesCount = psqlCount(`SELECT 1 FROM public.bookings, jsonb_array_elements(services) elem WHERE id='${bid}'`);
+      assert(`R3b: DB services array has both umc + org (no lost-update)`,
+        dbServicesCount === 2, `count=${dbServicesCount}`);
+    } else {
+      assert('R3: create booking for services race → 200', false, `status=${createR.status}`);
+    }
+  }
+
+  // --- R4: mark-staff-paid idempotent + parallel ---
+  {
+    const createR = await api('POST', '/api/staff?action=create-staff-booking',
+      {
+        booking_date: '2099-10-03', box_number: 14, start_time: '10:00', end_time: '11:00',
+        client_name: '[TEST STAFF] R4 paid race',
+        car_model: 'X', plate_number: 'R4XX01',
+        car_type: 'SEDAN', services: [antifreezeUmcId],
+        is_org: false, is_paid: false, discount: 0,
+        is_quick_booking: false, payment_method: 'Наличный',
+      },
+      staffToken);
+    if (createR.status === 200 && createR.data?.data?.booking?.id) {
+      const bid = createR.data.data.booking.id;
+      created.bookings.push(bid);
+      const N = 4;
+      const results = await Promise.all(
+        Array.from({ length: N }, () =>
+          api('POST', '/api/staff?action=mark-staff-paid',
+            { booking_id: bid }, staffToken)
+        )
+      );
+      const ok = results.filter((r) => r.status === 200).length;
+      assert(`R4: 4x parallel mark-staff-paid → all 200 (idempotent)`,
+        ok === N, `ok=${ok}/${N}`);
+      // Verify paid_at unchanged (single timestamp) — read final row
+      const final = results[0];
+      const paid_at_set = !!final.data?.data?.booking?.paid_at;
+      assert(`R4b: paid_at is set on final row`, paid_at_set,
+        `paid_at=${final.data?.data?.booking?.paid_at}`);
+    }
+  }
+
+  // --- R5: mark-staff-ready with worker → exactly 1 ledger row ---
+  //      + 2x parallel call → still exactly 1 ledger row
+  {
+    if (!workerId) {
+      console.log('  SKIP R5: no worker_id available (no rows in workers table)');
+    } else {
+      // Create + assign worker + is_paid + mark-ready
+      const createR = await api('POST', '/api/staff?action=create-staff-booking',
+        {
+          booking_date: '2099-10-04', box_number: 15, start_time: '10:00', end_time: '11:00',
+          client_name: '[TEST STAFF] R5 earnings',
+          car_model: 'X', plate_number: 'R5XX01',
+          car_type: 'SEDAN', services: [antifreezeUmcId],
+          is_org: false, is_paid: true, discount: 0,
+          is_quick_booking: false, payment_method: 'Наличный',
+          worker_id: workerId, working_mode: 'solo',
+        },
+        staffToken);
+      if (createR.status === 200 && createR.data?.data?.booking?.id) {
+        const bid = createR.data.data.booking.id;
+        created.bookings.push(bid);
+        // Snapshot pre-mark ledger count for this worker (no booking_id
+        // FK on salary_transactions; match via description prefix which
+        // includes booking_id.slice(0, 8)).
+        const descPrefix = bid.slice(0, 8);
+        const preLedger = psqlCount(`SELECT 1 FROM public.salary_transactions WHERE worker_id='${workerId}' AND description LIKE 'Заказ #${descPrefix}%'`);
+        assert(`R5-prep: no ledger row before mark-ready for this booking`,
+          preLedger === 0, `count=${preLedger}`);
+        // Single mark-ready
+        const r1 = await api('POST', '/api/staff?action=mark-staff-ready',
+          { booking_id: bid }, staffToken);
+        assert(`R5: mark-staff-ready → 200`, r1.status === 200, `status=${r1.status}`);
+        const ledgerAfter1 = psqlCount(`SELECT 1 FROM public.salary_transactions WHERE worker_id='${workerId}' AND description LIKE 'Заказ #${descPrefix}%'`);
+        assert(`R5b: exactly 1 salary_transactions row after first mark-ready`,
+          ledgerAfter1 === 1, `count=${ledgerAfter1}`);
+        // 3x parallel re-mark (idempotent path)
+        const parallel = await Promise.all(
+          Array.from({ length: 3 }, () =>
+            api('POST', '/api/staff?action=mark-staff-ready',
+              { booking_id: bid }, staffToken)
+          )
+        );
+        const allOk = parallel.every((r) => r.status === 200);
+        assert(`R5c: 3x parallel re-mark-staff-ready → all 200 (idempotent)`,
+          allOk, `statuses=${parallel.map((r) => r.status).join(',')}`);
+        const ledgerFinal = psqlCount(`SELECT 1 FROM public.salary_transactions WHERE worker_id='${workerId}' AND description LIKE 'Заказ #${descPrefix}%'`);
+        assert(`R5d: still exactly 1 ledger row after 3 parallel re-marks (RPC FOR UPDATE worker lock)`,
+          ledgerFinal === 1, `count=${ledgerFinal}`);
+        // Mark created.salary_txns so cleanup script knows
+        created.salary_txns.push(`worker=${workerId} booking=${bid}`);
+      }
+    }
+  }
+
+  // --- R6: staff-cancel-booking parallel — 1 success + N idempotent ---
+  {
+    const createR = await api('POST', '/api/staff?action=create-staff-booking',
+      {
+        booking_date: '2099-10-05', box_number: 16, start_time: '10:00', end_time: '11:00',
+        client_name: '[TEST STAFF] R6 cancel race',
+        car_model: 'X', plate_number: 'R6XX01',
+        car_type: 'SEDAN', services: [antifreezeUmcId],
+        is_org: false, is_paid: false, discount: 0,
+        is_quick_booking: false, payment_method: 'Наличный',
+      },
+      staffToken);
+    if (createR.status === 200 && createR.data?.data?.booking?.id) {
+      const bid = createR.data.data.booking.id;
+      created.bookings.push(bid);
+      const N = 4;
+      const results = await Promise.all(
+        Array.from({ length: N }, () =>
+          api('POST', '/api/staff?action=staff-cancel-booking',
+            { booking_id: bid }, staffToken)
+        )
+      );
+      const ok = results.filter((r) => r.status === 200).length;
+      const conflict = results.filter((r) => r.status === 409).length;
+      assert(`R6: 4x parallel staff-cancel-booking → all 200 (FOR UPDATE serializes)`,
+        ok === N && conflict === 0,
+        `ok=${ok} conflict=${conflict}`);
+      // Verify exactly 0 booking_cancellations rows (OD#1: staff cancel
+      // does NOT write to booking_cancellations)
+      const cxn = psqlCount(`SELECT 1 FROM public.booking_cancellations WHERE booking_id='${bid}'`);
+      assert(`R6b: booking_cancellations count for booking = 0 (OD#1 invariant)`,
+        cxn === 0, `count=${cxn}`);
+    }
+  }
+
+  // --- R7: staff-cancel-tire-booking parallel ---
+  {
+    const createR = await api('POST', '/api/staff?action=create-staff-tire-booking',
+      {
+        booking_date: '2099-10-05', start_time: '10:00', estimated_duration: 60,
+        client_name: '[TEST STAFF] R7 tire cancel race',
+        phone: '+79991234531', car_model: 'X', plate_number: 'R7XX01',
+        services: ['72000000-0000-0000-0000-000000000001'],
+        payment_method: 'Наличные', is_org: false, is_paid: false,
+      },
+      staffToken);
+    if (createR.status === 200 && createR.data?.data?.booking?.id) {
+      const tid = createR.data.data.booking.id;
+      created.tire_bookings.push(tid);
+      const N = 4;
+      const results = await Promise.all(
+        Array.from({ length: N }, () =>
+          api('POST', '/api/staff?action=staff-cancel-tire-booking',
+            { tire_booking_id: tid }, staffToken)
+        )
+      );
+      const ok = results.filter((r) => r.status === 200).length;
+      assert(`R7: 4x parallel staff-cancel-tire-booking → all 200`,
+        ok === N, `ok=${ok}/${N}`);
+      const cxn = psqlCount(`SELECT 1 FROM public.booking_cancellations WHERE tire_booking_id='${tid}'`);
+      assert(`R7b: booking_cancellations count for tire booking = 0 (OD#1 invariant)`,
+        cxn === 0, `count=${cxn}`);
+    }
+  }
+
+  // --- R8: mark-staff-tire-ready with tire_worker → exactly 1 ledger row ---
+  {
+    if (!tireWorkerId) {
+      console.log('  SKIP R8: no tire_worker_id available');
+    } else {
+      const createR = await api('POST', '/api/staff?action=create-staff-tire-booking',
+        {
+          booking_date: '2099-10-06', start_time: '10:00', estimated_duration: 60,
+          client_name: '[TEST STAFF] R8 tire earnings',
+          phone: '+79991234541', car_model: 'X', plate_number: 'R8XX01',
+          services: ['72000000-0000-0000-0000-000000000001'],
+          payment_method: 'Наличные', is_org: false, is_paid: true,
+          worker_id: tireWorkerId,
+        },
+        staffToken);
+      if (createR.status === 200 && createR.data?.data?.booking?.id) {
+        const tid = createR.data.data.booking.id;
+        created.tire_bookings.push(tid);
+        const descPrefix = tid.slice(0, 8);
+        const r1 = await api('POST', '/api/staff?action=mark-staff-tire-ready',
+          { tire_booking_id: tid }, staffToken);
+        assert(`R8: mark-staff-tire-ready → 200`, r1.status === 200, `status=${r1.status}`);
+        const ledger = psqlCount(`SELECT 1 FROM public.salary_transactions WHERE worker_id='${tireWorkerId}' AND description LIKE 'Шиномонтаж #${descPrefix}%'`);
+        assert(`R8b: exactly 1 salary_transactions row after tire mark-ready`,
+          ledger === 1, `count=${ledger}`);
+        // 3x parallel re-mark
+        const parallel = await Promise.all(
+          Array.from({ length: 3 }, () =>
+            api('POST', '/api/staff?action=mark-staff-tire-ready',
+              { tire_booking_id: tid }, staffToken)
+          )
+        );
+        const ledgerFinal = psqlCount(`SELECT 1 FROM public.salary_transactions WHERE worker_id='${tireWorkerId}' AND description LIKE 'Шиномонтаж #${descPrefix}%'`);
+        assert(`R8c: still exactly 1 ledger row after 3 parallel re-marks`,
+          ledgerFinal === 1, `count=${ledgerFinal}`);
+        created.salary_txns.push(`tire_worker=${tireWorkerId} booking=${tid}`);
+      }
+    }
+  }
+
+  // --- post-test cleanup helpers (echo) ---
+  console.log('\n--- POST: cleanup helper echo ---');
+  console.log(`  To cleanup test rows: run the SQL printed in the final summary.`);
 
   // -----------------------------------------------------------------------
   console.log('\n==========================================================');
@@ -681,12 +1015,12 @@ async function postTestCleanup() {
     for (const f of FAILURES) console.log(`  - ${f}`);
   }
   console.log('==========================================================');
-  console.log(`created.bookings: ${created.bookings.length} | created.tire_bookings: ${created.tire_bookings.length}`);
+  console.log(`created.bookings: ${created.bookings.length} | created.tire_bookings: ${created.tire_bookings.length} | salary_txn_bookings: ${created.salary_txns.length}`);
   console.log('Test rows must be cleaned via psql using:');
-  console.log('  DELETE FROM public.bookings WHERE client_name LIKE \'[TEST STAFF]%\';');
-  console.log('  DELETE FROM public.tire_bookings WHERE client_name LIKE \'[TEST STAFF]%\';');
-  console.log('  DELETE FROM public.closed_boxes WHERE box_number IN (5,7,8,10) AND closed_date=\'2099-09-15\';');
-  console.log('  DELETE FROM public.salary_transactions WHERE description LIKE \'Заказ #%\' AND created_at > now() - interval \'1 hour\';');
+  console.log("  DELETE FROM public.worksheet_entries WHERE carwash_booking_id IN (SELECT id FROM public.bookings WHERE client_name LIKE '[TEST STAFF]%' OR client_name LIKE '[TEST]%');");
+  console.log("  DELETE FROM public.bookings WHERE client_name LIKE '[TEST STAFF]%' OR client_name LIKE '[TEST]%';");
+  console.log("  DELETE FROM public.tire_bookings WHERE client_name LIKE '[TEST STAFF]%' OR client_name LIKE '[TEST]%';");
+  console.log("  DELETE FROM public.salary_transactions WHERE booking_id IN (SELECT id FROM public.bookings WHERE client_name LIKE '[TEST STAFF]%') OR booking_id IN (SELECT id FROM public.tire_bookings WHERE client_name LIKE '[TEST STAFF]%');");
   process.exit(FAIL > 0 ? 1 : 0);
 })().catch((e) => {
   console.error('FATAL:', e);
