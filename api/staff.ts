@@ -849,7 +849,7 @@ async function updateStaffBookingAction(_claims: StaffClaims, body: AnyObj): Pro
   const ALLOWED = [
     'client_name', 'phone', 'car_model', 'plate_number', 'car_type',
     'booking_date', 'start_time', 'end_time',
-    'box_number', 'payment_method', 'discount', 'notes', 'is_org',
+    'box_number', 'payment_method', 'discount', 'is_org',
   ];
   const DISALLOWED_NAMES = [
     'status', 'booking_source', 'created_by_profile_id',
@@ -877,8 +877,64 @@ async function updateStaffBookingAction(_claims: StaffClaims, body: AnyObj): Pro
   if (body.box_number !== undefined)   patch.box_number = readNumberInRange(body, 'box_number', 1, 99, true);
   if (body.payment_method !== undefined) patch.payment_method = readPaymentMethod(body, 'payment_method');
   if (body.discount !== undefined)     patch.discount = readNumberInRange(body, 'discount', 0, 1_000_000, true);
-  if (body.notes !== undefined)        patch.notes = body.notes === null ? null : readString(body, 'notes', { max: 4000, required: true });
   if (body.is_org !== undefined)       patch.is_org = !!body.is_org;
+
+  // Price recompute: when car_type or discount changes, the booking's
+  // services (and their quantities + unit prices) need re-pricing.
+  // Mirror the original lib/api/bookings.ts::updateBookingCarType /
+  // updateBooking(discount=0) behavior, but server-side so the price
+  // can NEVER come from the browser.
+  const needsPriceRecompute = body.car_type !== undefined || body.discount !== undefined;
+  if (needsPriceRecompute) {
+    const { data: current, error: curErr } = await supabaseAdmin
+      .from('bookings')
+      .select('services, services_with_quantities, discount, car_type')
+      .eq('id', booking_id)
+      .maybeSingle();
+    if (curErr) {
+      console.error('[staff:update-staff-booking] current booking fetch error:', curErr.message);
+      return failAction(500, 'db_error', { detail: curErr.message });
+    }
+    if (!current) return { status: 404, body: { error: 'booking_not_found' } };
+
+    const newCarType = (body.car_type ?? current.car_type) as string;
+    const newDiscount = body.discount !== undefined ? Number(body.discount) : Number(current.discount ?? 0);
+    const swq = (current.services_with_quantities as Array<{ service_id: string; quantity: number; price: number; total: number }>) ?? [];
+    const servicesList: string[] = (current.services as string[]) ?? [];
+
+    // Use services_with_quantities if present (newer bookings); else
+    // fall back to a fresh lookup of services table for the IDs.
+    let total = 0;
+    if (swq.length > 0) {
+      for (const q of swq) {
+        total += Number(q.total ?? 0);
+      }
+    } else if (servicesList.length > 0) {
+      const { data: rows, error: srvErr } = await supabaseAdmin
+        .from('services')
+        .select('id, service_id, price_sedan, price_crossover, price_jeep, price_large_suv, price_minivan')
+        .in('id', servicesList);
+      if (srvErr) {
+        console.error('[staff:update-staff-booking] services fetch error:', srvErr.message);
+        return failAction(500, 'db_error', { detail: srvErr.message });
+      }
+      for (const r of (rows ?? []) as any[]) {
+        const isAntifreeze = r.service_id === 'antifreeze-org' || r.service_id === 'antifreeze-umc';
+        let unit = Number(r.price_sedan);
+        if (!isAntifreeze) {
+          unit = Number(
+            newCarType === 'CROSSOVER' ? r.price_crossover :
+            newCarType === 'JEEP'      ? r.price_jeep :
+            newCarType === 'LARGE_SUV' ? r.price_large_suv :
+            newCarType === 'MINIVAN'   ? r.price_minivan :
+                                          r.price_sedan,
+          );
+        }
+        total += unit;
+      }
+    }
+    patch.price = Math.max(0, total - Math.max(0, newDiscount));
+  }
 
   const { data, error } = await supabaseAdmin
     .from('bookings')
@@ -916,7 +972,9 @@ async function addStaffServicesAction(_claims: StaffClaims, body: AnyObj): Promi
     p_service_ids: service_ids.map((s: any) => String(s)),
     p_antifreeze_intents: antifreeze_intents,
     p_allow_override: allow_override,
-    p_discount: 0,
+    // Pass null so RPC COALESCE keeps the existing booking.discount.
+    // add-staff-services must NOT clear a customer's existing discount.
+    p_discount: null,
   });
   if (error) {
     const msg = String(error.message ?? '');
@@ -941,7 +999,8 @@ async function removeStaffServicesAction(_claims: StaffClaims, body: AnyObj): Pr
     p_service_ids: [service_id],
     p_antifreeze_intents: [],
     p_allow_override: false,
-    p_discount: 0,
+    // Pass null so RPC COALESCE keeps the existing booking.discount.
+    p_discount: null,
   });
   if (error) {
     const msg = String(error.message ?? '');

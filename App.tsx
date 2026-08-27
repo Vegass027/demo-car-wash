@@ -37,34 +37,38 @@ import { createWorksheetEntry, updateWorksheetEntryByBookingId } from './lib/api
 import {
   getBookingsByDate,
   getQuickBookings,
-  createBooking,
-  updateBooking,
-  updateBookingStatus,
-  markAsReady,
-  startWork,
-  markAsPaid,
-  cancelBooking,
-  addServicesToBooking,
-  removeServiceFromBooking,
-  updatePaymentMethod
 } from './lib/api/bookings';
 import {
-  createTireBooking,
   getTireBookingsByDate,
-  updateTireBooking,
-  addTireServicesToBooking,
-  removeTireServiceFromBooking,
   autoUpdateTireBookingStatuses,
-  assignTireTechnicianToBooking,
-  markTireBookingAsReady,
-  cancelTireBooking,
   TireBookingStatus
 } from './lib/api/tire-bookings';
+import {
+  createStaffBooking,
+  createStaffTireBooking,
+  updateStaffBooking,
+  updateStaffTireBooking,
+  addStaffServices,
+  removeStaffService,
+  addStaffTireServices,
+  removeStaffTireService,
+  assignStaffWorker,
+  assignStaffTireTechnician,
+  startStaffWork,
+  startStaffTireWork,
+  markStaffPaid,
+  markStaffTirePaid,
+  markStaffReady,
+  markStaffTireReady,
+  updateStaffPaymentMethod,
+  updateStaffTirePaymentMethod,
+  staffCancelBooking,
+  staffCancelTireBooking,
+} from './lib/api/staff-actions';
 import { getTireServices } from './lib/api/tire-services';
 import { toggleWorkerWorkingToday, toggleWorkerWorkingMode } from './features/workers/calculateEarnings';
 import { toggleTechnicianWorkingToday } from './features/tire-technicians/calculateEarnings';
 import { addWorkerEarningsForBooking } from './lib/api/workers';
-import { addTireWorkerEarningsForBooking } from './lib/api/tire-workers';
 import { formatDate, addDays } from './shared/utils/date';
 import { Organization, OrganizationDriver, OrganizationCar } from './entities/organization/model';
 
@@ -1124,18 +1128,15 @@ export default function App() {
 
       
       const { updateWorker } = await import('./lib/api/workers');
-      const { assignWorkerToBooking } = await import('./lib/api/bookings');
-      
+
       // Если работник в паре - находим партнёра
       let partnerId: string | undefined;
-      let partnerName: string | undefined;
-      
+
       if (worker.working_mode === 'pair' && worker.partner_id) {
         const partner = workers.find(w => w.id === worker.partner_id);
         if (partner) {
           partnerId = partner.id;
-          partnerName = partner.full_name;
-          
+
           // Обновляем партнёра в БД
           await updateWorker(partnerId, {
             status: 'busy',
@@ -1150,14 +1151,13 @@ export default function App() {
         current_booking_id: selectedBookingId
       });
 
-      // Назначаем работника(ов) на заказ в БД
-      await assignWorkerToBooking(
+      // Назначаем работника(ов) на заказ в БД — staff API derives
+      // worker_name / worker_name_2 server-side from the worker rows.
+      await assignStaffWorker(
         selectedBookingId,
         workerId,
-        worker.full_name,
         worker.working_mode,
         partnerId,
-        partnerName
       );
       
       // Закрываем модальное окно
@@ -1186,10 +1186,10 @@ export default function App() {
       const technician = tireTechnicians.find(t => t.id === technicianId);
       if (!technician) return;
 
-      await assignTireTechnicianToBooking(
+      // staff API derives worker_name from tire_workers row.
+      await assignStaffTireTechnician(
         selectedTireBookingId,
         technicianId,
-        technician.full_name
       );
 
       setIsAssignTireTechnicianOpen(false);
@@ -1218,7 +1218,7 @@ export default function App() {
       if (selectedPaymentBookingType === 'tire') {
         // ✅ Для шиномонтажа обновляем в БД
         try {
-          await updateTireBooking(selectedPaymentBookingId, { payment_method: method });
+          await updateStaffTirePaymentMethod(selectedPaymentBookingId, method);
           // Перезагружаем данные из БД для синхронизации
           await loadTireBookings();
         } catch (error) {
@@ -1231,7 +1231,7 @@ export default function App() {
         if (selectedPaymentBookingId.startsWith('quick-')) {
           // Быстрые заказы тоже хранятся в БД, обновляем
           try {
-            await updatePaymentMethod(selectedPaymentBookingId, method);
+            await updateStaffPaymentMethod(selectedPaymentBookingId, method);
             // Перезагружаем данные из БД для синхронизации
             await loadQuickBookings();
           } catch (error) {
@@ -1242,7 +1242,7 @@ export default function App() {
         } else {
           // Обычные заказы - обновляем в БД
           try {
-            await updatePaymentMethod(selectedPaymentBookingId, method);
+            await updateStaffPaymentMethod(selectedPaymentBookingId, method);
             // Перезагружаем данные из БД для синхронизации
             await loadBookings();
           } catch (error) {
@@ -1290,7 +1290,7 @@ export default function App() {
         setWorkers(updatedWorkers);
 
         // Отменяем заказ
-        await cancelBooking(bookingId);
+        await staffCancelBooking(bookingId);
         await loadBookings();
         await loadQuickBookings();
       } catch (error) {
@@ -1389,7 +1389,7 @@ export default function App() {
         }
       }
 
-      await markAsReady(bookingId);
+      await markStaffReady(bookingId);
 
       await loadBookings();
       await loadQuickBookings();
@@ -1401,7 +1401,7 @@ export default function App() {
 
   const handleStartWork = async (bookingId: string) => {
     try {
-      await startWork(bookingId);
+      await startStaffWork(bookingId);
       // Перезагружаем данные из БД для синхронизации
       await loadBookings();
       await loadQuickBookings();
@@ -1413,7 +1413,7 @@ export default function App() {
 
   const handleMarkAsPaid = async (bookingId: string) => {
     try {
-      await markAsPaid(bookingId);
+      await markStaffPaid(bookingId);
       // Перезагружаем данные из БД для синхронизации
       await loadBookings();
       await loadQuickBookings();
@@ -1428,7 +1428,11 @@ export default function App() {
       const booking = [...bookings, ...quickBookings].find(b => b.id === bookingId);
       if (!booking) return;
 
-      await addServicesToBooking(bookingId, serviceIds, booking.services, services, booking.car_type as CarType, discount);
+      // add-staff-services recomputes price server-side via the atomic RPC.
+      // Existing booking.discount is preserved (RPC COALESCE p_discount).
+      // If caller passes a discount, we send antifreeze_intents/allow_override
+      // — but the existing handler in the booking wizard never used them.
+      await addStaffServices(bookingId, serviceIds);
 
       // Перезагружаем списки
       await loadBookings();
@@ -1443,9 +1447,10 @@ export default function App() {
     try {
       const booking = [...bookings, ...quickBookings].find(b => b.id === bookingId);
       if (!booking) return;
-      
-      await removeServiceFromBooking(bookingId, serviceId, booking.services, services, booking.car_type as CarType);
-      
+
+      // remove-staff-services: server reads booking + recomputes price.
+      await removeStaffService(bookingId, serviceId);
+
       // Перезагружаем списки
       await loadBookings();
       await loadQuickBookings();
@@ -1457,9 +1462,10 @@ export default function App() {
 
   const handleRemoveDiscount = async (bookingId: string) => {
     try {
-      // Удаляем скидку (устанавливаем на 0)
-      await updateBooking(bookingId, { discount: 0 });
-      
+      // Удаляем скидку (устанавливаем на 0) — patch-staff-booking,
+      // server recomputes price = total - 0 = total.
+      await updateStaffBooking(bookingId, { discount: 0 });
+
       // Перезагружаем списки
       await loadBookings();
       await loadQuickBookings();
@@ -1471,8 +1477,10 @@ export default function App() {
 
   const handleUpdateCarType = async (bookingId: string, carType: CarType) => {
     try {
-      const { updateBookingCarType } = await import('./lib/api/bookings');
-      await updateBookingCarType(bookingId, carType, services);
+      // update-staff-booking with car_type — server recomputes price
+      // using the booking's stored services, antifreeze_intents, and
+      // existing discount (RPC COALESCE on p_discount=NULL).
+      await updateStaffBooking(bookingId, { car_type: carType });
       // Перезагружаем данные из БД для синхронизации
       await loadBookings();
       await loadQuickBookings();
@@ -1538,7 +1546,7 @@ export default function App() {
   const handleCancelTireBooking = async (bookingId: string) => {
     withPin(async () => {
       try {
-        await cancelTireBooking(bookingId);
+        await staffCancelTireBooking(bookingId);
         await loadTireBookings();
       } catch (error) {
         console.error('Ошибка отмены заказа шиномонтажа:', error);
@@ -1549,7 +1557,7 @@ export default function App() {
 
   const handleStartTireBookingWork = async (bookingId: string) => {
     try {
-      await updateTireBooking(bookingId, { status: 'В РАБОТЕ' });
+      await startStaffTireWork(bookingId);
       await loadTireBookings();
     } catch (error) {
       console.error('Ошибка обновления статуса заказа шиномонтажа:', error);
@@ -1566,8 +1574,8 @@ export default function App() {
         return;
       }
 
-      // ✅ Используем markTireBookingAsReady с проверкой is_paid и начислением зарплаты
-      await markTireBookingAsReady(bookingId);
+      // ✅ Используем mark-staff-tire-ready с проверкой is_paid и начислением зарплаты
+      await markStaffTireReady(bookingId);
 
       // Перезагружаем заказы и мастеров из БД
       await loadTireBookings();
@@ -1583,8 +1591,7 @@ export default function App() {
 
   const handleMarkTireBookingAsPaid = async (bookingId: string) => {
     try {
-      const { markTireBookingAsPaid } = await import('./lib/api/tire-bookings');
-      await markTireBookingAsPaid(bookingId);
+      await markStaffTirePaid(bookingId);
       // Перезагружаем данные из БД для синхронизации
       await loadTireBookings();
     } catch (error) {
@@ -1595,9 +1602,10 @@ export default function App() {
 
   const handleAddTireService = async (bookingId: string, services: Array<{ service_id: string; quantity: number }>) => {
     try {
-      // Используем новый API для добавления услуг
-      const { addTireServicesToBooking } = await import('./lib/api/tire-bookings');
-      await addTireServicesToBooking(bookingId, services, tireServices);
+      // Staff API recomputes total_price + services_with_quantities via
+      // atomic_modify_tire_services RPC. Caller passes only the new IDs.
+      const ids = services.map(s => s.service_id);
+      await addStaffTireServices(bookingId, ids);
       // Перезагружаем заказы из БД
       await loadTireBookings();
     } catch (error) {
@@ -1608,9 +1616,7 @@ export default function App() {
 
   const handleRemoveTireService = async (bookingId: string, serviceId: string) => {
     try {
-      // Используем новый API для удаления услуги
-      const { removeTireServiceFromBooking } = await import('./lib/api/tire-bookings');
-      await removeTireServiceFromBooking(bookingId, serviceId);
+      await removeStaffTireService(bookingId, serviceId);
       // Перезагружаем заказы из БД
       await loadTireBookings();
     } catch (error) {
@@ -1639,7 +1645,9 @@ export default function App() {
         // Конвертируем телефон из формата "+7 (XXX) XXX-XX-XX" в формат "8XXXXXXXXXX"
         const formattedPhone = data.phone.replace(/\D/g, '').replace(/^7/, '8');
 
-        // Подготовка данных для API (snake_case)
+        // Staff API derives total_price + services_with_quantities server-side
+        // from the tire_services catalog (idempotent recompute inside the RPC).
+        // We pass only the new service IDs.
         const bookingData = {
           client_name: data.clientName,
           phone: formattedPhone,
@@ -1648,14 +1656,7 @@ export default function App() {
           start_time: data.startTime,
           booking_date: data.date || initialTireBookingDate || tireSelectedDate,
           estimated_duration: data.estimatedDuration,
-          services: data.services.map(s => ({
-            service_id: s.service_id,
-            name: s.name,
-            quantity: s.quantity,
-            price: s.price,
-            total: s.total
-          })),
-          total_price: data.price,
+          services: data.services.map(s => s.service_id),
           payment_method: data.paymentType,
           is_org: data.clientType === 'ORG',
           organization_id: data.organizationId,
@@ -1663,13 +1664,11 @@ export default function App() {
           car_id: data.carId,
           client_id: data.clientId,
           client_car_id: data.clientCarId,
-          status: 'ОЖИДАЕТ' as TireBookingStatus,
           is_paid: false,
-          booking_source: 'admin' as const
         };
 
-        // Создаем заказ через Supabase API
-        const newTireBooking = await createTireBooking(bookingData);
+        // Создаем заказ через staff API (atomic RPC).
+        const newTireBooking = await createStaffTireBooking(bookingData);
 
         // Создаем запись в ведомости для организаций
         if (newTireBooking.organization_id && newTireBooking.is_org) {
@@ -1868,7 +1867,7 @@ export default function App() {
                   isQuickBooking: true,
                   orgName: organizationName
                 });
-                const newBooking = await createBooking(bookingData);
+                const newBooking = await createStaffBooking(bookingData);
 
                 // Создаем запись в ведомости для организаций
                 if (newBooking.organization_id && newBooking.is_org) {
@@ -1941,7 +1940,7 @@ export default function App() {
               // Создаем заказ через Supabase API
               try {
                 const bookingData = mapWizardDataToBooking(data);
-                const newBooking = await createBooking(bookingData);
+                const newBooking = await createStaffBooking(bookingData);
 
                 // Создаем запись в ведомости для организаций
                 if (newBooking.organization_id && newBooking.is_org) {
@@ -2039,7 +2038,7 @@ export default function App() {
                   bookingData.start_time = `${String(startHour).padStart(2, '0')}:${String(startMinute).padStart(2, '0')}`;
                   bookingData.end_time = `${String(endHour).padStart(2, '0')}:${String(endMinute).padStart(2, '0')}`;
                 
-                  const newBooking = await createBooking(bookingData);
+                  const newBooking = await createStaffBooking(bookingData);
 
                   // Создаем запись в ведомости для организаций
                   if (newBooking.organization_id && newBooking.is_org) {

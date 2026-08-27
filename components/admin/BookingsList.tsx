@@ -11,7 +11,6 @@ import { cn } from '../../lib/utils';
 import { AddServiceModalCarWash } from './AddServiceModalCarWash';
 import { SignatureViewModal } from './SignatureViewModal';
 import { getServicePrice } from '../../lib/api/services';
-import { updateBookingCarType } from '../../lib/api/bookings';
 import { formatPhoneForDisplay } from '../../shared/utils/phone';
 
 const ANTIFREEZE_SERVICE_IDS = ['antifreeze-org', 'antifreeze-umc'];
