@@ -31,18 +31,10 @@ export interface ClientCar {
  * Получить всех активных клиентов
  */
 export async function getClients(): Promise<Client[]> {
-  const { data, error } = await supabase
-    .from('clients')
-    .select('*')
-    .eq('is_active', true)
-    .order('full_name', { ascending: true })
-
-  if (error) {
-    console.error('Ошибка при загрузке клиентов:', error)
-    throw error
-  }
-
-  return data || []
+  // DEPRECATED Phase A Slice #3e: was anon-side SELECT clients via supabase.
+  // Replaced by staff dispatcher listClientsAction() (api/staff.ts).
+  // Zero live callers per AST scan 27.08.2026.
+  throw new Error('getClients: deprecated, use staff dispatcher list-clients');
 }
 
 /**
@@ -110,22 +102,13 @@ export async function updateClient(
 }
 
 /**
- * Получить все автомобили клиента
+ * DEPRECATED Phase A Slice #3e: was anon-side SELECT client_cars via supabase.
+ * Replaced by staff dispatcher getClientCarsByClientIdAction() (api/staff.ts).
+ * Zero live callers per AST scan 27.08.2026 (BookingWizard + TireBookingWizard
+ * rewired; OnlineBookingWizard.tsx had only dead import — removed).
  */
-export async function getClientCars(clientId: string): Promise<ClientCar[]> {
-  const { data, error } = await supabase
-    .from('client_cars')
-    .select('*')
-    .eq('client_id', clientId)
-    .eq('is_active', true)
-    .order('car_model', { ascending: true })
-
-  if (error) {
-    console.error('Ошибка при загрузке автомобилей клиентов:', error)
-    throw error
-  }
-
-  return data || []
+export async function getClientCars(_clientId: string): Promise<ClientCar[]> {
+  throw new Error('getClientCars: deprecated, use staff dispatcher get-client-cars-by-client-id');
 }
 
 /**
@@ -222,102 +205,28 @@ export async function findClientByPhone(phone: string): Promise<Client | null> {
 }
 
 /**
- * Получить клиента по profile_id
- */
-export async function getClientByProfileId(profileId: string): Promise<Client | null> {
-  const { data, error } = await supabase
-    .from('clients')
-    .select('*')
-    .eq('profile_id', profileId)
-    .single()
-
-  if (error && error.code !== 'PGRST116') {
-    console.error('Ошибка при поиске клиента по profile_id:', error)
-    throw error
-  }
-
-  return data as Client | null
-}
-
-/**
- * Получить машины клиента по profile_id
- */
-export async function getClientCarsByProfileId(profileId: string): Promise<ClientCar[]> {
-  // Сначала находим client_id по profile_id
-  const client = await getClientByProfileId(profileId)
-
-  if (!client) {
-    return []
-  }
-
-  return getClientCars(client.id)
-}
-
-/**
  * Связать клиента с профилем
  */
-export async function linkClientToProfile(
-  clientId: string,
-  profileId: string
+export async function linkClientToProfile_DEPRECATED(
+  _clientId: string,
+  _profileId: string
 ): Promise<Client> {
-  const { data, error } = await supabase
-    .from('clients')
-    .update({ profile_id: profileId })
-    .eq('id', clientId)
-    .select()
-    .single()
-
-  if (error) {
-    console.error('Ошибка при связывании клиента с профилем:', error)
-    throw error
-  }
-
-  return data as Client
+  // DEPRECATED Phase A Slice #3e: was anon-side UPDATE clients via supabase.
+  // Replaced by staff dispatcher path (api/staff.ts search-client-by-phone +
+  // update-client). Zero live callers per AST scan 27.08.2026.
+  // Kept as no-op stub for any external module-level import that might still
+  // exist; safe to delete in next minor refactor.
+  throw new Error('linkClientToProfile: deprecated, use staff dispatcher update-client');
 }
 
 /**
- * Получить всех клиентов с их автомобилями (один запрос с JOIN)
- * Используется для базы клиентов в админке
+ * DEPRECATED Phase A Slice #3e: was anon-side SELECT clients via supabase.
+ * Replaced by staff dispatcher listClientsWithCarsAction() (api/staff.ts).
+ * Zero live callers per AST scan 27.08.2026.
  */
-export async function getClientsWithCars(): Promise<Array<{
+export async function getClientsWithCars_DEPRECATED(): Promise<Array<{
   client: Client;
   cars: ClientCar[];
 }>> {
-  const { data, error } = await supabase
-    .from('clients')
-    .select(`
-      *,
-      client_cars (
-        id,
-        client_id,
-        car_model,
-        plate_number,
-        car_type,
-        is_active,
-        created_at
-      )
-    `)
-    .eq('is_active', true)
-    .order('full_name', { ascending: true })
-
-  if (error) {
-    console.error('Ошибка при загрузке клиентов с автомобилями:', error)
-    throw error
-  }
-
-  // Фильтруем только активные машины
-  return (data || []).map(client => ({
-    client: {
-      id: client.id,
-      full_name: client.full_name,
-      phone: client.phone,
-      is_active: client.is_active,
-      notes: client.notes,
-      profile_id: client.profile_id,
-      online_booking_blocked_until: client.online_booking_blocked_until,
-      created_at: client.created_at,
-      updated_at: client.updated_at
-    },
-    cars: (client.client_cars as ClientCar[] || []).filter(car => car.is_active)
-  }))
+  throw new Error('getClientsWithCars: deprecated, use staff dispatcher list-clients-with-cars');
 }

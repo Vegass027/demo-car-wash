@@ -30,7 +30,8 @@ import { initTelegramWebApp, getTelegramId } from './shared/telegram/telegram';
 
 import { getServices, getServicesWithPrices, Service, getServicePrice } from './lib/api/services';
 import { getOrganizations, getOrganizationDrivers, getOrganizationCars } from './lib/api/organizations';
-import { getClients, Client } from './lib/api/clients';
+import { Client } from './lib/api/clients';
+import { listClientsAction } from './lib/api/staff-actions';
 import { getBoxes, toggleBox as toggleBoxApi, toggleBoxWithReset, getClosedBoxesForDate } from './lib/api/boxes';
 import { getSalarySettings } from './lib/api/salary';
 import { createWorksheetEntry, updateWorksheetEntryByBookingId } from './lib/api/worksheets';
@@ -279,7 +280,7 @@ export default function App() {
           getOrganizations(),
           getOrganizationDrivers(),
           getOrganizationCars(),
-          getClients()
+          listClientsAction()
         ]);
         setOrganizations(orgs);
         setOrganizationDrivers(drivers);
@@ -880,7 +881,7 @@ export default function App() {
         
         // Перезагружаем клиентов из БД
         try {
-          const clientsData = await getClients()
+          const clientsData = await listClientsAction()
           setClients(clientsData)
         } catch (error) {
           console.error('[App] Ошибка загрузки клиентов:', error)
@@ -916,7 +917,7 @@ export default function App() {
         // Перезагружаем клиентов и их автомобили из БД
         try {
           const [clientsData] = await Promise.all([
-            getClients()
+            listClientsAction()
           ])
           setClients(clientsData)
         } catch (error) {

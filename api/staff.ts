@@ -249,6 +249,88 @@ async function lockTireBooking(id: string): Promise<AnyObj> {
 // All fields here are allow-listed explicitly; nothing else is exposed.
 //
 // LIMIT 5 per type (client / organization) so the response is bounded.
+// === action: list-clients ===
+//
+// Phase A Slice #3e (Category C admin-side ports):
+// Replaces anon-side lib/api/clients.ts:getClients() in App.tsx and
+// ClientDatabaseAccordion.tsx. Reads all active clients ordered by
+// full_name. Caller is admin/owner (Path B + service_role bypass).
+async function listClientsAction(_claims: StaffClaims, _body: AnyObj): Promise<ActionResult> {
+  const { data, error } = await supabaseAdmin
+    .from('clients')
+    .select('id, full_name, phone, profile_id, is_active, notes, email, online_booking_blocked_until, created_at, updated_at')
+    .eq('is_active', true)
+    .order('full_name', { ascending: true });
+
+  if (error) {
+    console.error('[staff:list-clients] error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { clients: data || [] } } };
+}
+
+// === action: list-clients-with-cars ===
+//
+// Phase A Slice #3e: replaces anon-side lib/api/clients.ts:getClientsWithCars()
+// in ClientDatabaseAccordion.tsx. Reads all active clients with their
+// active cars. service_role bypasses RLS (no own-row policy needed here).
+async function listClientsWithCarsAction(_claims: StaffClaims, _body: AnyObj): Promise<ActionResult> {
+  const { data, error } = await supabaseAdmin
+    .from('clients')
+    .select(`
+      id, full_name, phone, profile_id, is_active, notes, email,
+      online_booking_blocked_until, created_at, updated_at,
+      client_cars (
+        id, client_id, car_model, plate_number, car_type, is_active, created_at
+      )
+    `)
+    .eq('is_active', true)
+    .order('full_name', { ascending: true });
+
+  if (error) {
+    console.error('[staff:list-clients-with-cars] error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  const rows = (data || []).map((c: any) => ({
+    client: {
+      id: c.id,
+      full_name: c.full_name,
+      phone: c.phone,
+      profile_id: c.profile_id,
+      is_active: c.is_active,
+      notes: c.notes,
+      email: c.email,
+      online_booking_blocked_until: c.online_booking_blocked_until,
+      created_at: c.created_at,
+      updated_at: c.updated_at,
+    },
+    cars: (c.client_cars || []).filter((car: any) => car.is_active),
+  }));
+  return { status: 200, body: { data: { clientsWithCars: rows } } };
+}
+
+// === action: get-client-cars-by-client-id ===
+//
+// Phase A Slice #3e: replaces anon-side lib/api/clients.ts:getClientCars(clientId)
+// in BookingWizard.tsx and TireBookingWizard.tsx (6 callsites). Returns
+// active cars for a specific client_id. Caller is admin/owner/booking-wizard
+// — admin path reads any client's cars.
+async function getClientCarsByClientIdAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const client_id = readUuidRequired(body, 'client_id');
+  const { data, error } = await supabaseAdmin
+    .from('client_cars')
+    .select('id, client_id, car_model, plate_number, car_type, is_active, created_at')
+    .eq('client_id', client_id)
+    .eq('is_active', true)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('[staff:get-client-cars-by-client-id] error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { cars: data || [] } } };
+}
+
 async function searchClientByPhone(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const rawPhone = readString(body, 'phone', { max: 32, required: true });
   if (!rawPhone) throw new ValidationError('phone_required');
@@ -2733,6 +2815,9 @@ export default async function handler(req: any, res: any) {
     let result: ActionResult;
     switch (action) {
       case 'search-client-by-phone':       result = await searchClientByPhone(guard.claims, body); break;
+      case 'list-clients':                 result = await listClientsAction(guard.claims, body); break;
+      case 'list-clients-with-cars':       result = await listClientsWithCarsAction(guard.claims, body); break;
+      case 'get-client-cars-by-client-id': result = await getClientCarsByClientIdAction(guard.claims, body); break;
       case 'create-client':                result = await createClientAction(guard.claims, body); break;
       case 'update-client':                result = await updateClientAction(guard.claims, body); break;
       case 'unblock-client':               result = await unblockClientAction(guard.claims, body); break;

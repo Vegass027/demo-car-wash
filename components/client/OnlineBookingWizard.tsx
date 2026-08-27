@@ -11,7 +11,6 @@ import { formatDate } from '../../shared/utils/date';
 import { Service, getServicePrice } from '../../lib/api/services';
 import { getBookingsByProfileId } from '../../lib/api/bookings';
 import { SERVICE_CATEGORIES, isBonusService } from '../../lib/config/serviceCategories';
-import { getClientCars } from '../../lib/api/clients';
 import { hasFreeBodyWashAvailable, hasFreeBodyWashAvailableByProfileId, getWashesUntilNextFreeWash, getWashesUntilNextFreeWashByProfileId } from '../../lib/api/loyalty';
 import { LOYALTY_CONFIG } from '../../shared/config/loyalty';
 import { Client, ClientCar } from '../../lib/api/clients';

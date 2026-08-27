@@ -16,7 +16,8 @@ import { addMinutesToTime, isValidTimeRange, findOverlappingTireBookings, findAv
 import { DURATION_OPTIONS } from '../../shared/config/tire-booking';
 import { searchByPhone, searchByPlateNumber } from '../../lib/api/search';
 import { SearchResult } from '../../lib/api/search';
-import { Client, ClientCar, getClientCars } from '../../lib/api/clients';
+import { Client, ClientCar } from '../../lib/api/clients';
+import { getClientCarsByClientIdAction } from '../../lib/api/staff-actions';
 import { validatePhone, validateCarNumber } from '../booking/validation';
 import { CarCard } from '../booking/CarCard';
 import { trackCarChanges, findCarById } from '../booking/carUtils';
@@ -746,7 +747,7 @@ export const TireBookingWizard: React.FC<TireBookingWizardProps> = ({
                                            setPhone(result.phone);
 
                                            try {
-                                             const cars = await getClientCars(result.client_id!);
+                                             const cars = await getClientCarsByClientIdAction(result.client_id!);
                                              setClientCars(cars);
                                            } catch (error) {
                                              console.error('Ошибка при загрузке автомобилей клиента:', error);
@@ -963,7 +964,7 @@ export const TireBookingWizard: React.FC<TireBookingWizardProps> = ({
                                             setPhone(result.phone);
 
                                             try {
-                                              const cars = await getClientCars(result.client_id!);
+                                              const cars = await getClientCarsByClientIdAction(result.client_id!);
                                               setClientCars(cars);
                                             } catch (error) {
                                               console.error('Ошибка при загрузке автомобилей клиента:', error);
@@ -1105,7 +1106,7 @@ export const TireBookingWizard: React.FC<TireBookingWizardProps> = ({
                    setPhone(phone);
 
                    try {
-                     const cars = await getClientCars(clientId);
+                     const cars = await getClientCarsByClientIdAction(clientId);
                      setClientCars(cars);
                    } catch (error) {
                      console.error('Ошибка при загрузке автомобилей клиента:', error);
