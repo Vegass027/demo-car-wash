@@ -140,6 +140,15 @@ const ALLOWED_ACTIONS = new Set([
   'delete-inventory-category',
   'inventory-arrival',
   'get-next-document-number',
+
+  // Slice #3e Phase A — admin-side Category C client/car read dispatcher
+  // ports (3 actions). Replaces anon-side lib/api/clients.ts browser reads
+  // in App.tsx, ClientDatabaseAccordion.tsx, BookingWizard.tsx,
+  // TireBookingWizard.tsx. Admin/owner role via guard.claims.
+  // service_role bypasses RLS — no own-row policy needed yet.
+  'list-clients',
+  'list-clients-with-cars',
+  'get-client-cars-by-client-id',
 ]);
 
 const supabaseAdmin = createClient(
