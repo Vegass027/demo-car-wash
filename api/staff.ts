@@ -1317,7 +1317,8 @@ async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): 
     booking_source: 'admin',
     created_by_profile_id: claims.profile_id,
   };
-  if (body.notes !== undefined) insert.notes = body.notes === null ? null : readString(body, 'notes', { max: 4000, required: false });
+  // tire_bookings has no `notes` column. Reject any client attempt to set it.
+  if (body.notes !== undefined) throw new ValidationError('field_not_allowed_notes');
 
   const { data, error } = await supabaseAdmin
     .from('tire_bookings').insert(insert).select().maybeSingle();
@@ -1334,7 +1335,7 @@ async function updateStaffTireBookingAction(_claims: StaffClaims, body: AnyObj):
   const ALLOWED = [
     'client_name', 'phone', 'car_model', 'plate_number',
     'booking_date', 'start_time', 'estimated_duration',
-    'payment_method', 'notes', 'is_org',
+    'payment_method', 'is_org',
   ];
   const DISALLOWED_NAMES = [
     'status', 'booking_source', 'created_by_profile_id',
@@ -1358,7 +1359,6 @@ async function updateStaffTireBookingAction(_claims: StaffClaims, body: AnyObj):
   if (body.start_time !== undefined)   patch.start_time = readTimeHHMM(body, 'start_time');
   if (body.estimated_duration !== undefined) patch.estimated_duration = readNumberInRange(body, 'estimated_duration', 5, 1440, true);
   if (body.payment_method !== undefined) patch.payment_method = readTirePaymentMethod(body, 'payment_method');
-  if (body.notes !== undefined)        patch.notes = body.notes === null ? null : readString(body, 'notes', { max: 4000, required: true });
   if (body.is_org !== undefined)       patch.is_org = !!body.is_org;
 
   const { data, error } = await supabaseAdmin
@@ -1578,8 +1578,11 @@ async function staffCancelTireBookingAction(_claims: StaffClaims, body: AnyObj):
   }
   await supabaseAdmin.from('worksheet_entries').delete().eq('tire_booking_id', tire_booking_id);
 
+  // tire_bookings has no `notes` column — cancel_reason is NOT stored on
+  // the booking row (no audit field for it either; preserved via auth_logs
+  // if needed). Caller can keep cancel_reason in their UI; we just don't
+  // echo it back.
   const patch: AnyObj = { status: 'ОТМЕНЕНО', updated_at: new Date().toISOString() };
-  if (cancel_reason) patch.notes = cancel_reason;
   const { data, error } = await supabaseAdmin
     .from('tire_bookings').update(patch).eq('id', tire_booking_id).select().maybeSingle();
   if (error) {

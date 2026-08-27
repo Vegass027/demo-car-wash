@@ -470,8 +470,10 @@ async function postTestCleanup() {
   }
   // T3: missing estimated_duration → 400
   {
+    const baseTire = makeTireBody();
+    const { estimated_duration: _, ...bodyNoDur } = baseTire;
     const r = await api('POST', '/api/staff?action=create-staff-tire-booking',
-      makeTireBody({ plate_number: 'T003TT' }), staffToken);
+      { ...bodyNoDur, plate_number: 'T003TT' }, staffToken);
     // estimated_duration has no default; should fail validation
     assert('T3: missing estimated_duration → 400',
       r.status === 400 && (r.data?.error === 'estimated_duration_required' || r.data?.error === 'estimated_duration_invalid'),
@@ -569,11 +571,20 @@ async function postTestCleanup() {
   // -----------------------------------------------------------------------
   console.log('\n--- TIRE update-staff-tire-booking (T2 contract) ---');
   if (tireBookingId) {
-    // patch notes → 200
+    // patch client_name → 200 (notes column doesn't exist in tire_bookings;
+    // we test with client_name instead)
     {
       const r = await api('POST', '/api/staff?action=update-staff-tire-booking',
-        { tire_booking_id: tireBookingId, notes: 'patched notes' }, staffToken);
-      assert('T2a: patch notes → 200', r.status === 200, `status=${r.status}`);
+        { tire_booking_id: tireBookingId, client_name: '[TEST STAFF] renamed' }, staffToken);
+      assert('T2a: patch client_name → 200', r.status === 200, `status=${r.status}`);
+    }
+    // patch notes → 400 field_not_allowed_notes (column doesn't exist)
+    {
+      const r = await api('POST', '/api/staff?action=update-staff-tire-booking',
+        { tire_booking_id: tireBookingId, notes: 'patched' }, staffToken);
+      assert('T2-notes: patch notes → 400 field_not_allowed_notes',
+        r.status === 400 && r.data?.error === 'field_not_allowed_notes',
+        `status=${r.status} error=${r.data?.error}`);
     }
     // patch total_price → 400 field_not_allowed_total_price
     {
