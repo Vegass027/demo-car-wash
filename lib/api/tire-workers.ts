@@ -318,26 +318,18 @@ export async function addTireWorkerEarningsForBooking(
 
 /**
  * Начать смену мастера шиномонтажа с защитой от двойного начисления
+ *
+ * Slice #3d Step 0 fix: dispatcher proxy returns StartTireWorkerShiftResult.
+ * The legacy pre-check (`is_working_today`) is now redundant because the
+ * dispatcher proxy + the underlying RPC both guarantee idempotency — a repeat
+ * call returns idempotent=true without creating a duplicate work_shifts row.
+ *
  * @param workerId - UUID мастера
- * @throws Error если запрос к базе данных не удался
+ * @returns StartTireWorkerShiftResult { worker, work_shift_id, idempotent }
+ * @throws Error if RPC fails or worker not found
  */
-export async function startTireWorkerShift(workerId: string): Promise<void> {
-  // 🔒 Проверяем is_working_today перед RPC вызовом
-  const worker = await getTireWorkerById(workerId);
-  if (!worker) {
-    throw new Error(`Мастер с ID ${workerId} не найден`);
-  }
-
-  // ✅ Если уже работает сегодня - не позволяем
-  if (worker.is_working_today) {
-    console.log('[TireWorkers] Мастер уже работает сегодня');
-    return;
-  }
-
-  // Slice #3d Step 0: dispatcher proxy (server-stamps p_today + p_salary=0).
-  // Old direct .rpc('start_tire_worker_shift', ...) path removed — migration 021
-  // will REVOKE EXECUTE on the underlying RPC.
-  await startStaffTireWorkerShift(workerId);
+export async function startTireWorkerShift(workerId: string): Promise<{ worker: TireWorker; work_shift_id: string | null; idempotent: boolean }> {
+  return await startStaffTireWorkerShift(workerId);
 }
 
 /**

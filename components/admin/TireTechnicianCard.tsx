@@ -12,6 +12,7 @@ import { ru } from 'date-fns/locale';
 import { TireWorker } from '../../lib/api/tire-workers';
 import { TireBooking } from '../../lib/api/tire-bookings';
 import { TIRE_TECHNICIAN_CONFIG } from '../../shared/config/worker';
+import { stopStaffTireWorkerShift } from '../../lib/api/staff-actions';
 import {
   transferDailyEarningsToBalanceForTechnician,
   payoutSalaryForTechnician,
@@ -287,24 +288,28 @@ export const TireTechnicianCard: React.FC<TireTechnicianCardProps> = ({
   };
 
   // Локальный обработчик для кнопки "Работает сегодня" с блокировкой
+  // Slice #3d Step 0 fix: ON and OFF both go through the JWT-protected
+  // dispatcher proxy (api/staff.ts stop-tire-worker-shift). The direct
+  // `updateTireWorker` path is no longer used because Category B RLS in
+  // migration 020 will anon/authenticated REVOKE UPDATE on tire_workers.
   const handleToggleWorkingToday = async (isWorking: boolean) => {
-    if (!isWorking) {
-      // Включаем смену - блокируем кнопку
-      try {
-        setStartingShiftTechnicianId(technician.id);
+    setStartingShiftTechnicianId(technician.id);
+    try {
+      if (!isWorking) {
+        // ON: server-stamped via dispatcher
         const { startTireWorkerShift } = await import('../../lib/api/tire-workers');
         await startTireWorkerShift(technician.id);
-        // Перезагружаем техника через onToggleWorking
         onToggleWorking(technician.id, true);
-      } catch (error) {
-        console.error('Ошибка при начале смены:', error);
-        alert('Не удалось начать смену');
-      } finally {
-        setStartingShiftTechnicianId(null);
+      } else {
+        // OFF: atomic via dispatcher (last_shift_date PRESERVED inside RPC)
+        await stopStaffTireWorkerShift(technician.id);
+        onToggleWorking(technician.id, false);
       }
-    } else {
-      // Выключаем смену - просто вызываем пропс
-      onToggleWorking(technician.id, false);
+    } catch (error) {
+      console.error('Ошибка при переключении смены:', error);
+      alert('Не удалось переключить смену');
+    } finally {
+      setStartingShiftTechnicianId(null);
     }
   };
 
