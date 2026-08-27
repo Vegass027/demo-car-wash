@@ -57,7 +57,7 @@ type AnyObj = Record<string, any>;
 type ActionResult = { status: number; body: AnyObj };
 
 const ALLOWED_ACTIONS = new Set([
-  // Slice #3a — staff client/car/org:
+  // Slice #3a — staff client/car/org (13):
   'search-client-by-phone',
   'create-client',
   'update-client',
@@ -71,6 +71,31 @@ const ALLOWED_ACTIONS = new Set([
   'update-driver-signature',
   'create-org-car',
   'update-org-car',
+
+  // Slice #3b — staff carwash booking (11):
+  'create-staff-booking',
+  'update-staff-booking',
+  'add-staff-services',
+  'remove-staff-services',
+  'assign-staff-worker',
+  'unassign-staff-worker',
+  'start-staff-work',
+  'mark-staff-paid',
+  'mark-staff-ready',
+  'update-staff-payment-method',
+  'staff-cancel-booking',
+
+  // Slice #3b — staff tire booking (10):
+  'create-staff-tire-booking',
+  'update-staff-tire-booking',
+  'add-staff-tire-services',
+  'remove-staff-tire-services',
+  'assign-staff-tire-technician',
+  'start-staff-tire-work',
+  'mark-staff-tire-paid',
+  'mark-staff-tire-ready',
+  'update-staff-tire-payment-method',
+  'staff-cancel-tire-booking',
 ]);
 
 const supabaseAdmin = createClient(
