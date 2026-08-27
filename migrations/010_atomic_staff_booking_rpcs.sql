@@ -221,7 +221,7 @@ GRANT EXECUTE ON FUNCTION public.atomic_create_staff_tire_booking(
 CREATE OR REPLACE FUNCTION public.atomic_modify_carwash_services(
   p_booking_id          uuid,
   p_action              text,
-  p_service_ids         text[],
+  p_service_ids         jsonb,
   p_antifreeze_intents  jsonb,
   p_allow_override      boolean,
   p_discount            numeric
@@ -263,14 +263,22 @@ BEGIN
   END IF;
 
   -- (3) Build merged services[] inside the locked transaction.
+  --     p_service_ids arrives as JSONB array of strings (supabase-js
+  --     doesn't transmit Postgres text[] arrays cleanly through PostgREST;
+  --     jsonb passes through natively and we cast here).
   v_current_services := COALESCE(
     (SELECT array_agg(value::text) FROM jsonb_array_elements_text(v_booking.services)),
     ARRAY[]::text[]
   );
   IF p_action = 'add' THEN
-    v_merged := v_current_services || p_service_ids;
+    v_merged := v_current_services
+            || ARRAY(SELECT jsonb_array_elements_text(p_service_ids));
   ELSIF p_action = 'remove' THEN
-    v_merged := array(SELECT unnest(v_current_services) EXCEPT SELECT unnest(p_service_ids));
+    v_merged := array(
+      SELECT unnest(v_current_services)
+      EXCEPT
+      SELECT jsonb_array_elements_text(p_service_ids)
+    );
   ELSE
     RAISE EXCEPTION 'INVALID_ACTION' USING ERRCODE = 'P0001';
   END IF;
@@ -354,20 +362,20 @@ END;
 $fn$;
 
 ALTER FUNCTION public.atomic_modify_carwash_services(
-  uuid, text, text[], jsonb, boolean, numeric
+  uuid, text, jsonb, jsonb, boolean, numeric
 ) OWNER TO postgres;
 
 REVOKE ALL ON FUNCTION public.atomic_modify_carwash_services(
-  uuid, text, text[], jsonb, boolean, numeric
+  uuid, text, jsonb, jsonb, boolean, numeric
 ) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION public.atomic_modify_carwash_services(
-  uuid, text, text[], jsonb, boolean, numeric
+  uuid, text, jsonb, jsonb, boolean, numeric
 ) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.atomic_modify_carwash_services(
-  uuid, text, text[], jsonb, boolean, numeric
+  uuid, text, jsonb, jsonb, boolean, numeric
 ) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.atomic_modify_carwash_services(
-  uuid, text, text[], jsonb, boolean, numeric
+  uuid, text, jsonb, jsonb, boolean, numeric
 ) TO service_role;
 
 -- ============================================================================
@@ -378,7 +386,7 @@ GRANT EXECUTE ON FUNCTION public.atomic_modify_carwash_services(
 CREATE OR REPLACE FUNCTION public.atomic_modify_tire_services(
   p_tire_booking_id    uuid,
   p_action             text,
-  p_service_ids        text[]
+  p_service_ids        jsonb
 )
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -410,16 +418,22 @@ BEGIN
   END IF;
 
   -- (3) Build merged id list inside the locked transaction.
+  --     p_service_ids is jsonb (text[] not transmissible through PostgREST).
+  --     v_booking.services is jsonb array of {id,name,price} objects.
   v_current_services := COALESCE(v_booking.services, '[]'::jsonb);
-  SELECT COALESCE(array_agg(value::text), ARRAY[]::text[])
+  SELECT COALESCE(array_agg(value->>'id'), ARRAY[]::text[])
     INTO v_merged_ids
-    FROM jsonb_array_elements_text(v_current_services->'id');
+    FROM jsonb_array_elements(v_current_services);
 
   IF p_action = 'add' THEN
-    v_merged_ids := array(SELECT DISTINCT unnest(v_merged_ids || p_service_ids));
+    v_merged_ids := array(
+      SELECT DISTINCT unnest(v_merged_ids || ARRAY(SELECT jsonb_array_elements_text(p_service_ids)))
+    );
   ELSIF p_action = 'remove' THEN
     v_merged_ids := array(
-      SELECT unnest(v_merged_ids) EXCEPT SELECT unnest(p_service_ids)
+      SELECT unnest(v_merged_ids)
+      EXCEPT
+      SELECT jsonb_array_elements_text(p_service_ids)
     );
   ELSE
     RAISE EXCEPTION 'INVALID_ACTION' USING ERRCODE = 'P0001';
@@ -458,17 +472,17 @@ END;
 $fn$;
 
 ALTER FUNCTION public.atomic_modify_tire_services(
-  uuid, text, text[]
+  uuid, text, jsonb
 ) OWNER TO postgres;
 REVOKE ALL ON FUNCTION public.atomic_modify_tire_services(
-  uuid, text, text[]
+  uuid, text, jsonb
 ) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION public.atomic_modify_tire_services(
-  uuid, text, text[]
+  uuid, text, jsonb
 ) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.atomic_modify_tire_services(
-  uuid, text, text[]
+  uuid, text, jsonb
 ) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.atomic_modify_tire_services(
-  uuid, text, text[]
+  uuid, text, jsonb
 ) TO service_role;

@@ -23,6 +23,14 @@ DROP FUNCTION IF EXISTS public.atomic_modify_carwash_services(
   text, text, jsonb, jsonb, numeric
 ) CASCADE;
 
+DROP FUNCTION IF EXISTS public.atomic_modify_carwash_services(
+  uuid, text, text[], jsonb, boolean, numeric
+) CASCADE;
+
 DROP FUNCTION IF EXISTS public.atomic_modify_tire_services(
   uuid, text, text[], jsonb, numeric
+) CASCADE;
+
+DROP FUNCTION IF EXISTS public.atomic_modify_tire_services(
+  uuid, text, text[]
 ) CASCADE;
