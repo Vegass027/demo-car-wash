@@ -1,289 +1,322 @@
-# Slice #3d — Phase 2 RLS Category B (staff dashboard reads) — RECON + PLAN
+# Slice #3d — Phase 2 RLS Category B (staff dashboard reads) — RECON + PLAN v2
 
-## Что такое Category B (из плана, line 616)
+## Что изменилось относительно v1
 
-22 таблицы, читаемые staff dashboard (admin + owner через фронтенд):
+| Изменение | Источник |
+|---|---|
+| Полный инвентарь: **41 объект** (39 tables + 2 views), не 39 | Проблема 1 (views были пропущены) |
+| Anomaly **A1 — REAL**: `tire_bookings_timeline` view доступен anon | Подтверждено `SET ROLE anon; SELECT count(*) FROM public.tire_bookings_timeline` — возвращает реальные rows |
+| Anomaly **A6 — NEW**: `profiles.password_hash` доступен anon для SELECT | Подтверждено `SET ROLE anon; SELECT password_hash FROM public.profiles` возвращает bcrypt hash |
+| Anomaly **A7 — NEW**: `admins.card_number`, `admins.payment_phone`, `workers.card_number`, `workers.payment_phone`, `tire_workers.card_number`, `tire_workers.payment_phone` доступны anon для SELECT | Подтверждено `information_schema.column_privileges` показывает полные grants, plan говорит "Phase 0.1 отложена в 2.5" → **никогда не применено** |
+| **Порядок изменён**: Step 0 (code, без миграций) → Step 1 (миграции 019→020→021) | Проблема 2 — повторение ошибки Slice #3c с INVOKER RPC |
+
+---
+
+## Проблема 1: полный инвентарь
+
+### Fresh complete inventory (psql `pg_class`):
 
 ```
-bookings, bookings_timeline, workers, expenses, inventory_arrivals,
-inventory_categories, inventory_items, inventory_operations, tire_workers,
-tire_bookings_timeline, work_shifts, worksheet_entries, worksheets,
-product_sales, document_numbers, daily_reports, booking_cancellations,
-closed_boxes (запись), organizations, organization_cars, organization_drivers,
-profiles (запись)
+39 tables + 2 views = 41 objects in public schema.
+
+Tables (39):
+  _legacy_link_audit, admins, auth_logs, booking_cancellations,
+  booking_settings, bookings, client_cars, clients, closed_boxes,
+  company_settings, daily_reports, document_numbers, expenses,
+  inventory_arrivals, inventory_categories, inventory_items,
+  inventory_operations, loyalty_carwash_progress, organization_cars,
+  organization_drivers, organizations, otp_codes, payments,
+  pending_bookings, product_sales, profiles, salary_settings,
+  salary_transactions, sbp_banks, services, sms_logs, sms_rate_limits,
+  tire_bookings, tire_service_days, tire_services, tire_workers,
+  work_shifts, workers, worksheet_entries.
+
+Views (2):
+  bookings_timeline, tire_bookings_timeline.
 ```
 
-Из них **15 имеют прямые `.from('tablename').select()` callsite'ы** в admin/owner frontend. **7 — нет прямых reads**, только writes через dispatcher или derived/trigger tables.
+### Сравнение с оригиналом (Phase 2 recon, 39 tables):
+
+**2 объекта отсутствовали**: `bookings_timeline` + `tire_bookings_timeline` (это VIEW, не table — `pg_tables` их не возвращает). Это объясняет anomaly A1: оригинальный список не имел views → migration 014 REVOKE для views написан вслепую (через `grant` discovery или `pg_policies` для views). Эмпирически:
+- `bookings_timeline` → `SET ROLE anon; SELECT count(*)` → **permission denied** ✓ (REVOKE работает)
+- `tire_bookings_timeline` → `SET ROLE anon; SELECT count(*)` → **ACCESSIBLE** ✗ (REVOKE пропущен!)
+
+A1 — **REAL security gap**. Anon читает ~43 rows с `total_price`, `worker_id`, `organization_id`, `is_paid` для ВСЕХ tire bookings.
+
+### Anon access matrix (verified):
+
+```
+BLOCKED (Category E, REVOKEd by migration 014):
+  _legacy_link_audit, auth_logs, otp_codes, payments, pending_bookings,
+  sms_logs, sms_rate_limits, bookings_timeline
+
+BLOCKED (Category A, REVOKEd by migration 017):
+  admins, company_settings, salary_settings, salary_transactions
+
+ACCESSIBLE (Category B/D, NO RLS restrictions yet):
+  booking_cancellations, booking_settings, bookings, client_cars,
+  clients, closed_boxes, daily_reports, document_numbers, expenses,
+  inventory_arrivals, inventory_categories, inventory_items,
+  inventory_operations, loyalty_carwash_progress, organization_cars,
+  organization_drivers, organizations, product_sales, profiles,
+  sbp_banks, services, tire_bookings, tire_bookings_timeline ⚠,
+  tire_service_days, tire_services, tire_workers, work_shifts,
+  workers, worksheet_entries
+```
+
+⚠ = view, реальный security gap
+
+### Дополнительные column-level security gaps (Phase 0.1 не применён):
+
+План (line 183-185) говорит:
+```sql
+revoke select (password_hash) on public.profiles from anon, authenticated;
+revoke select (card_number, payment_phone) on public.admins from anon, authenticated;
+revoke select (card_number, payment_phone) on public.workers from anon, authenticated;
+```
+
+**Фактически**: `information_schema.column_privileges` показывает полные grants на эти колонки для anon + authenticated. Эти REVOKE **никогда не были применены в test DB** (Phase 0.1 отложена в Фазу 2.5 по плану line 773).
+
+**Эмпирически подтверждено**:
+```sql
+SET ROLE anon;
+SELECT password_hash FROM public.profiles LIMIT 1;
+-- → 1 row returned (bcrypt hash $2a$06$...)
+RESET ROLE;
+```
+
+| Column | Table | anon SELECT | risk |
+|---|---|---|---|
+| `password_hash` | profiles | REAL | HIGH — bcrypt hash утекает |
+| `card_number` | admins | REAL | HIGH — банковские карты |
+| `payment_phone` | admins | REAL | MED — СБП телефон |
+| `card_number` | workers | REAL | HIGH — банковские карты |
+| `payment_phone` | workers | REAL | MED — СБП телефон |
+| `card_number` | tire_workers | REAL | HIGH — банковские карты |
+| `payment_phone` | tire_workers | REAL | MED — СБП телефон |
+
+**Это критично — нужно добавить в migration 019.**
 
 ---
 
-## Текущее RLS состояние (verified через psql)
+## Проблема 2: исправленный порядок миграций
 
-**Все 22 таблицы** имеют:
-- Policy `public_all_access USING (true)` на `cmd=ALL` (anon + authenticated могут всё)
-- Policy `service_role_all_access USING (true)` (service_role bypass)
-- GRANTs: anon+authenticated+service_role = full DELETE,INSERT,REFERENCES,SELECT,TRIGGER,TRUNCATE,UPDATE
+### Slice #3c правило (entry 20e / 21):
 
-**Исключения** (уже закрыто в Phase 2):
-- `bookings_timeline` (migration 014): только service_role, anon+authenticated REVOKEd
-- `tire_bookings_timeline` ← **ANOMALY**: НЕ REVOKEd, anon видит 43 rows (security gap)
+> Для INVOKER RPC (`start_admin_shift`): сначала dispatcher proxy + переключение фронтенда + deploy, потом REVOKE EXECUTE. Без dispatcher proxy до REVOKE — ломается «начать смену» для staff.
 
----
+### Slice #3d та же проблема для ~10 RPC:
 
-## Callsite inventory (per-table summary)
+| RPC | Caller | SECURITY | Dispatcher proxy нужен |
+|---|---|---|---|
+| `start_worker_shift` | lib/api/workers.ts:523 | INVOKER | YES (Step 0) |
+| `start_tire_worker_shift` | lib/api/tire-workers.ts:411 | INVOKER | YES (Step 0) |
+| `start_admin_shift` | lib/api/admins.ts:253 | INVOKER | **already done** (Slice #3c) |
+| `add_tire_worker_earnings` | lib/api/tire-workers.ts:353 | INVOKER | verify state |
+| `inventory_usage` | lib/api/product-sales.ts:207 | ? | YES (Step 0) |
+| `inventory_restock` | lib/api/product-sales.ts:233 + lib/api/inventory.ts:158 | ? | YES (Step 0) |
+| `add_inventory_category` | lib/api/inventory.ts:24 | ? | YES (Step 0) |
+| `delete_inventory_category` | lib/api/inventory.ts:34 | ? | YES (Step 0) |
+| `inventory_arrival` | lib/api/inventory.ts:122 | ? | YES (Step 0) |
+| `get_next_document_number` | lib/api/document-numbers.ts:27 | ? | YES (Step 0) |
 
-| Таблица | SELECT callsites | Realtime | В dispatcher (writes) | Назначение |
-|---|---|---|---|---|
-| bookings | 20 | 0 | YES (11 Slice #3b actions) | основная таблица заявок |
-| bookings_timeline | 0 | 0 | NO | trigger-only (Category E ✓) |
-| workers | 8 | 0 | partial (lookup) | staff roster carwash |
-| tire_workers | 6 | 0 | partial (lookup) | staff roster tire |
-| tire_bookings_timeline | 0 | 0 | NO | trigger-only ← **должна быть Category E** |
-| expenses | 2 | 0 | NO | финансы |
-| inventory_categories | 1 | 0 | NO | справочник |
-| inventory_items | 2 | 0 | NO | склад |
-| inventory_arrivals | 3 | 0 | NO | поступления |
-| inventory_operations | 1 | 0 | NO | журнал операций |
-| work_shifts | 2 | 0 | NO | смены |
-| worksheet_entries | 3 | 0 | YES (deletes only) | путевые листы |
-| worksheets | 0 | 0 | NO (только через worksheet_entries) | сводный |
-| product_sales | 3 | 0 | NO | продажи товаров |
-| document_numbers | 2 | 0 | NO | нумерация документов |
-| daily_reports | 1 | 0 | NO | ежедневные отчёты |
-| booking_cancellations | 1 | 0 | NO | лог отмен |
-| closed_boxes | 1 | 0 | NO | боксы (anon SELECT нужен клиенту — Category D) |
-| organizations | 7 | 0 | YES (writes) | юрлица |
-| organization_cars | 4 | 0 | YES (writes) | машины юрлиц |
-| organization_drivers | 5 | 0 | YES (writes) | водители юрлиц |
-| profiles | 2 | 0 | NO (admin/owner читают через ChangePasswordWizard) | staff auth profile |
+**Правильный порядок**:
 
-**Итого прямых SELECT reads: ~50 callsites** (это и есть "~50 callsites" из запроса).
+```
+Step 0 (CODE ONLY, no migrations):
+  - Add 9 new dispatcher actions in api/staff.ts:
+    start-worker-shift, start-tire-worker-shift,
+    inventory-usage, inventory-restock, add-inventory-category,
+    delete-inventory-category, inventory-arrival,
+    get-next-document-number
+  - Update frontend callsites: replace `.rpc(...)` with `dispatchStaffCall(...)`
+  - Deploy → test cluster regression (133 PASS / 0 FAIL still)
+  - Browser smoke: confirm shift-start, inventory ops work via dispatcher
+  - OLD RPC grant STILL alive — old direct path still works in parallel
+  - Commit + push
 
-**Realtime подписок на Category B — 0** (verified grep по admin/owner/feature paths).
+Step 1 (MIGRATIONS):
+  - 019_prep_anomalies.sql:
+    - A1: REVOKE ALL FROM anon, authenticated ON view tire_bookings_timeline
+    - A2: closed_boxes split (REVOKE INSERT/UPDATE/DELETE/TRUNCATE FROM anon,
+         + staff WRITE policy)
+    - A3: tire_service_days split (same pattern)
+    - A6: REVOKE SELECT (password_hash) FROM anon, authenticated ON profiles
+    - A7: REVOKE SELECT (card_number, payment_phone) FROM anon, authenticated
+         ON admins, workers, tire_workers
+    - Verify: anon SET ROLE anon → permission denied on all of the above
+  - 020_path_b_category_b.sql:
+    - For 17 Category B tables: DROP public_all_access,
+      CREATE staff_select/insert/update/delete (app_role IN admin/owner),
+      REVOKE ALL FROM anon, GRANT SELECT to authenticated (or per-table)
+    - profiles: staff SELECT (full row, column-level REVOKE из 019 остаётся)
+    - Verify: anon SET ROLE anon → permission_denied на всех 17
+    - Verify: staff JWT SELECT → 200
+    - Verify: dispatcher writes (51 actions) → 200 (bypass RLS)
+  - 021_revoke_staff_direct_rpcs.sql:
+    - REVOKE EXECUTE FROM PUBLIC+anon+authenticated on 9 RPCs (per §20d 4-step)
+    - Verify: anon call → permission_denied
+    - Verify: service_role call → 200
+    - Dispatcher actions use service_role → 200 (regression)
+```
 
----
-
-## RPC inventory (staff frontend)
-
-36 RPC callsites найдено. Из них **15 уже server-only** (dispatcher uses service_role, REVOKEd в Phase 2.0/2.1a). Из staff-direct (browser anon вызывает):
-
-| RPC | Callsite | Caller | SECURITY | Slice #3d решение |
-|---|---|---|---|---|
-| `start_admin_shift` | lib/api/admins.ts:253 | browser anon | INVOKER | **REVOKE EXECUTE** + dispatcher proxy (как start-admin-shift в Slice #3c) |
-| `start_worker_shift` | lib/api/workers.ts:523 | browser anon | INVOKER | **REVOKE EXECUTE** + dispatcher proxy |
-| `start_tire_worker_shift` | lib/api/tire-workers.ts:411 | browser anon | INVOKER | **REVOKE EXECUTE** + dispatcher proxy |
-| `add_tire_worker_earnings` | lib/api/tire-workers.ts:353 | browser anon | INVOKER | **REVOKE EXECUTE** (если ещё не) + dispatcher proxy |
-| `add_worker_earnings` | api/_lib/earnings.ts:125 | browser anon | INVOKER | **уже REVOKEd в migration 015 (OD#11)** |
-| `inventory_usage` | lib/api/product-sales.ts:207 | browser anon | ? | **investigate + REVOKE + proxy** |
-| `inventory_restock` | lib/api/product-sales.ts:233 + lib/api/inventory.ts:158 | browser anon | ? | **investigate + REVOKE + proxy** |
-| `add_inventory_category` | lib/api/inventory.ts:24 | browser anon | ? | **investigate + REVOKE + proxy** |
-| `delete_inventory_category` | lib/api/inventory.ts:34 | browser anon | ? | **investigate + REVOKE + proxy** |
-| `inventory_arrival` | lib/api/inventory.ts:122 | browser anon | ? | **investigate + REVOKE + proxy** |
-| `get_next_document_number` | lib/api/document-numbers.ts:27 | browser anon | ? | **investigate + REVOKE + proxy** |
-| `search_profile_by_phone` | lib/api/expenses.ts:386 | browser anon | ? | **уже REVOKEd в migration 012 (Phase 2.0)** |
-
-Остальные 23 RPC — public/category D (services/tire_services/closed_boxes/etc) — не трогаем.
+**Критическая гарантия**: на каждом Step между миграциями, фронтенд НЕ теряет функциональности. Между 019 и 020 — anon просто теряет доступ к тому, что он не должен был иметь (closed_boxes writes, profiles.password_hash и т.д.) — UI не сломается. Между 020 и 021 — staff JWT теряет INSERT/UPDATE/DELETE на Category B tables, но все writes уже через dispatcher (service_role bypass). 021 просто закрывает прямой RPC путь — фронтенд его уже не использует.
 
 ---
 
-## Auth эксперимент (verified — как в Slice #3c)
+## Anomaly prep (миграция 019) — итоговый список
+
+| # | Объект | Что делаем |
+|---|---|---|
+| A1 | view `tire_bookings_timeline` | REVOKE ALL FROM anon, authenticated (как bookings_timeline в 014) |
+| A2 | table `closed_boxes` | REVOKE INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER FROM anon + staff WRITE policy (admin/owner) + anon SELECT остаётся через `closed_boxes_read` |
+| A3 | table `tire_service_days` | То же что A2 |
+| A6 | table `profiles` | REVOKE SELECT (password_hash) FROM anon, authenticated |
+| A7 | tables `admins`, `workers`, `tire_workers` | REVOKE SELECT (card_number, payment_phone) FROM anon, authenticated |
+
+**Применяется к test DB через psql `\i` после commit, verify через 4-step checklist из §20d.**
+
+---
+
+## Path B для 17 Category B таблиц (миграция 020)
 
 ```sql
--- anon (no JWT) → auth.jwt() returns {"role":"anon"}
--- staff JWT    → auth.jwt() returns {"role":"authenticated","app_role":"admin","profile_id":"<uuid>"}
--- staff JWT owner → app_role='owner'
-```
-
-**Path B (RLS-based filtering) валиден** для Category B reads — staff JWT корректно проставляет `auth.jwt()->>'app_role'` в PostgREST. Это значит: **НЕ нужно портить 50 callsites на dispatcher-proxy**. Достаточно RLS policies с фильтром `app_role IN ('admin','owner')`.
-
----
-
-## ANOMALIES (recon findings — нужны pre-Slice #3d fixes)
-
-### A1. `tire_bookings_timeline` — security gap (Category E missed)
-- **Migration 014** REVOKEd `bookings_timeline` от anon+authenticated, но **забыл** `tire_bookings_timeline`
-- Сейчас: anon SELECT возвращает 43 rows (включая client_name, phone, total_price)
-- Таблица заполняется только через trigger `tire_bookings_table_changes_broadcast`, 0 frontend reads
-- **Fix (cheap, no risk)**: добавить в отдельную миграцию `019_tire_bookings_timeline_revoke_anon.sql` — REVOKE ALL FROM anon, authenticated + новая RLS policy `service_role_all_access USING(true)` only (как bookings_timeline)
-
-### A2. `closed_boxes` — split treatment needed
-- Plan: Category D (anon SELECT only) + Category B WRITE (staff INSERT/UPDATE/DELETE)
-- Сейчас: `public_all_access USING(true)` — anon может всё (но нет UI для этого, так что эксплуатация низкая)
-- **Fix**: anon SELECT через `closed_boxes_read USING(true) TO anon,authenticated` + REVOKE INSERT/UPDATE/DELETE/TRUNCATE FROM anon + staff policy `staff_write_closed_boxes FOR INSERT/UPDATE/DELETE TO authenticated USING (app_role IN ('admin','owner')) WITH CHECK (app_role IN ('admin','owner'))`
-
-### A3. `tire_service_days` — only anon SELECT, no writes
-- Plan: Category D (anon SELECT only)
-- Сейчас: `public_all_access USING(true)` — anon может INSERT/UPDATE/DELETE
-- `lib/api/tire-service-days.ts` имеет `setTireServiceDayStatus` (admin write) — staff INSERT/UPDATE/DELETE policy needed
-- **Fix**: anon SELECT policy + staff write policy
-
-### A4. `profiles` — ChangePasswordWizard direct SELECT
-- Plan: "запись" (write only for staff)
-- Сейчас: `ChangePasswordWizard.tsx:272,283` делает прямой `.from('profiles').select('id, login')` для admin и owner
-- **Fix**: добавить staff SELECT policy (или split: client sees own + staff sees all). В Slice #3e (Category C own-row) логичнее закрыть.
-
-### A5. `worksheets` — 0 callsites (only via worksheet_entries)
-- Не нужно policy для worksheets (derived/composite)
-- Можно оставить `public_all_access` или REVOKE — но т.к. 0 callers, ничего не сломается. **Оставить как есть** для safety (no frontend, no risk).
-
----
-
-## Path B design для 17 Category B таблиц
-
-Все 17 используют один паттерн (подтверждено эмпирически):
-
-```sql
--- DROP old
+-- Шаблон для каждой таблицы:
 DROP POLICY IF EXISTS public_all_access ON public.<table>;
 DROP POLICY IF EXISTS service_role_all_access ON public.<table>;
--- KEEP service_role working
 CREATE POLICY service_role_all_access ON public.<table>
   FOR ALL TO service_role USING (true) WITH CHECK (true);
-
--- STAFF access
 CREATE POLICY staff_select_<table> ON public.<table>
   FOR SELECT TO authenticated
   USING ((auth.jwt()->>'app_role') IN ('admin','owner'));
-
 CREATE POLICY staff_write_<table> ON public.<table>
   FOR INSERT TO authenticated
   WITH CHECK ((auth.jwt()->>'app_role') IN ('admin','owner'));
-
 CREATE POLICY staff_update_<table> ON public.<table>
   FOR UPDATE TO authenticated
   USING ((auth.jwt()->>'app_role') IN ('admin','owner'))
   WITH CHECK ((auth.jwt()->>'app_role') IN ('admin','owner'));
-
 CREATE POLICY staff_delete_<table> ON public.<table>
   FOR DELETE TO authenticated
   USING ((auth.jwt()->>'app_role') IN ('admin','owner'));
-
--- REVOKE anon, restrict authenticated to SELECT only at GRANT level
 REVOKE ALL ON public.<table> FROM anon;
-REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
-  ON public.<table> FROM authenticated;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON public.<table> FROM authenticated;
 GRANT SELECT ON public.<table> TO authenticated;
 ```
 
-**Исключения из паттерна** (нужна отдельная per-table логика):
+### Per-table особенности:
 
-| Таблица | Особенность | Slice |
+| Таблица | Особенность | Дополнительно |
 |---|---|---|
-| bookings | + Category C client-own-row policy | #3e |
-| expenses | has `creator:profiles!, updater:profiles!` join — profiles SELECT policy must be staff or this join breaks | #3d (нужна profiles policy одновременно) |
-| profiles | ChangePasswordWizard reads; + staff SELECT policy | #3d + #3e |
-| closed_boxes | split: anon SELECT + staff WRITE | #3d (A2) |
-| tire_service_days | split: anon SELECT + staff WRITE | #3d (A3) |
-| tire_bookings_timeline | Category E (server-only, 0 callers) | #3d (A1) |
-| organizations / organization_cars / organization_drivers | dispatcher writes уже есть, но reads идут через browser | #3d (Path B для reads, dispatcher для writes — без конфликта) |
+| `profiles` | staff SELECT policy | + `auth.jwt()->>'app_role' IN ('admin','owner')` — НЕ own-row (client SELECT own через link-client-profile уже есть). column-level REVOKE из A6 остаётся. |
+| `expenses` | has `creator:profiles!, updater:profiles!` join | profiles policy из этой же миграции покрывает join |
+| `bookings` | + Category C (client own) — Slice #3e | В 020 — только staff SELECT; client SELECT own = отдельная policy в #3e |
+| `tire_bookings` | + Category C (client own) — Slice #3e | То же |
+| `organizations` / `organization_cars` / `organization_drivers` | dispatcher writes уже есть | reads теперь через RLS staff |
+| `closed_boxes` | A2 уже сделал split | дополнительно — staff SELECT policy |
+| `tire_service_days` | A3 уже сделал split | дополнительно — staff SELECT policy |
+| `worksheet_entries` | dispatcher DELETE only | RLS полная (read+write для staff) |
+| `worksheets` | 0 callsites | оставить public_all_access (no risk, no callers) |
+| `loyalty_carwash_progress` | not in Category B list (Category C) | not in this slice |
 
 ---
 
-## Что НЕ ломается при enable
+## RPC REVOKE (миграция 021) — 4-step checklist
 
-- **50 reads staff frontend** — продолжают работать через wrappedFetch (anon JWT → staff JWT через `injectAuth` в `_supabase-wrapper.ts`, Slice #3c уже подтвердил). После enable RLS фильтрует через `app_role`.
-- **Dispatcher writes** — используют `supabaseAdmin` (service_role) → bypass RLS.
-- **Triggers** — работают под postgres role, не затрагиваются.
+Каждый из 9 RPCs:
+1. `proacl::text` inspection → ожидаем PUBLIC grant EXECUTE
+2. `has_function_privilege('anon', ...)` → false после REVOKE
+3. `has_function_privilege('authenticated', ...)` → false после REVOKE
+4. `SET ROLE anon; SELECT * FROM rpc(...)` → permission_denied
 
-**Что МОЖЕТ сломаться** (нужно проверить):
++ `service_role` EXECUTE preserved (для dispatcher proxy).
 
-1. `lib/api/bookings.ts` функции с `created_by_profile_id` filter — это для client (Category C), не Category B. После #3d они продолжат работать (anon → 0 rows из-за `auth.jwt()->>'app_role'='client'` не подпадает под staff policy; client sees own = Slice #3e).
-2. `lib/api/expenses.ts` has `creator:profiles!, updater:profiles!` join — **if profiles RLS becomes restrictive and staff policy isn't applied yet, this join fails**. Mitigation: добавить profiles staff SELECT в той же миграции что и expenses.
-3. `lib/api/workers.ts` функции могут вызываться из **client** для отображения "какой работник обслуживает" (например, в ClientBookingWrapper) — но recon не нашёл таких callsites. Если найдутся в Slice #3e — нужно будет отдельное client-read policy.
-
----
-
-## Зависимости (что блокирует что)
-
-```
-Slice #3d prep (миграция 019):
-  - A1: tire_bookings_timeline REVOKE ← cheap, no callers
-  - A2: closed_boxes split (anon SELECT + staff WRITE)
-  - A3: tire_service_days split (anon SELECT + staff WRITE)
-
-Slice #3d main (миграция 020):
-  - 17 Category B tables: Path B staff policies
-  - profiles: staff SELECT (для ChangePasswordWizard + expenses join)
-
-Slice #3d staff-shifts RPCs (миграция 021):
-  - REVOKE EXECUTE on start_worker_shift, start_tire_worker_shift
-  - REVOKE EXECUTE on start_admin_shift (уже в 017 — verify)
-  - REVOKE EXECUTE on add_tire_worker_earnings (если ещё не)
-  - INVESTIGATE: inventory_usage, inventory_restock, add/delete_inventory_category, inventory_arrival, get_next_document_number
-  - Dispatcher proxy actions для каждого (если нужны — отдельные actions в api/staff.ts)
-
-Slice #3e (Category C own-row): blocked until Slice #3d done.
-Phase 2.5 (REVOKE clients INSERT/UPDATE): blocked until Phase 1.5 link-client-profile в проде.
-Phase 3 (public views для slots): blocked until Slice #3d done.
+Шаблон:
+```sql
+REVOKE EXECUTE ON FUNCTION public.<rpc>(args) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.<rpc>(args) TO service_role;
 ```
 
 ---
 
-## Test cluster plan (3 числа + Slice #3d = 4-й)
+## Frontend dispatcher proxy actions (Step 0)
 
-Существующий кластер: **133 PASS / 0 FAIL** (80 baseline + 31 admin-rejection + 21 owner-path + 1 PRE auth). Все они продолжат работать после #3d потому что:
-- service_role write paths (dispatcher) — bypass RLS
-- staff JWT read paths — Path B passes through staff policy
-- anon reads (client) — будут filtered out, но в текущем кластере нет client anon reads (всё через tire client JWT или staff JWT)
+Каждое действие в `api/staff.ts`:
 
-**Slice #3d тесты**:
+```typescript
+// start-worker-shift
+async function startWorkerShift(claims: StaffClaims, body: { worker_id: string }) {
+  requireStaff(claims); // admin or owner
+  const today = formatDate(new Date());
+  const settings = await supabaseAdmin.from('salary_settings').select('*').single();
+  const rpc = 'start_worker_shift'; // already exists
+  const { data, error } = await supabaseAdmin.rpc(rpc, {
+    p_worker_id: body.worker_id,
+    p_today: today,
+    // other params from settings
+  });
+  if (error) throw new RpcError(rpc, error);
+  return { worker_id: body.worker_id, success: true };
+}
+```
 
-1. **E1: anon SELECT on each table → permission_denied** (после enable). 17+2+2=21 asserts.
-2. **E2: anon INSERT/UPDATE/DELETE on each table → permission_denied** (после enable). 17+2+2=21 asserts.
-3. **E3: anon RPC calls (start_worker_shift etc) → permission_denied**. 5+ asserts.
-4. **E4: staff JWT SELECT on each table → 200 with rows**. 17+2+2+2 (profiles) = 23 asserts.
-5. **E5: staff JWT INSERT/UPDATE/DELETE on each table → 200 success**. 17+2+2=21 asserts.
-6. **E6: anon SELECT on closed_boxes/tire_service_days → 200 with rows** (Category D split). 2 asserts.
-7. **E7: service_role SELECT/INSERT/UPDATE/DELETE → 200** (bypass verify). 17+ asserts (subset).
-8. **E8: dispatcher write actions (existing 51) → still 200** (regression). 51 asserts (already in 133 baseline, but re-run with new RLS).
+Frontend changes (lib/api/workers.ts):
+```typescript
+// BEFORE:
+export async function startWorkerShift(workerId: string) {
+  await supabase.rpc('start_worker_shift', { p_worker_id: workerId, ... });
+}
 
-**Total Slice #3d adds**: ~120 asserts → ~253 PASS / 0 FAIL final.
+// AFTER:
+export async function startWorkerShift(workerId: string) {
+  return await dispatchStaffCall('start-worker-shift', { worker_id: workerId });
+}
+```
 
----
-
-## Authorization matrix для staff RPCs (для миграции 021)
-
-| RPC | Browser caller | Current | Slice #3d |
-|---|---|---|---|
-| `start_admin_shift` | lib/api/admins.ts | anon direct | REVOKE + dispatcher proxy (already done in Slice #3c) |
-| `start_worker_shift` | lib/api/workers.ts:523 | anon direct | REVOKE + dispatcher proxy (new) |
-| `start_tire_worker_shift` | lib/api/tire-workers.ts:411 | anon direct | REVOKE + dispatcher proxy (new) |
-| `add_tire_worker_earnings` | lib/api/tire-workers.ts:353 | anon direct | already REVOKEd in 012? **verify** |
-| `inventory_usage` | lib/api/product-sales.ts:207 | anon direct | INVESTIGATE + REVOKE + proxy |
-| `inventory_restock` | lib/api/product-sales.ts:233 | anon direct | INVESTIGATE + REVOKE + proxy |
-| `inventory_restock` (inventory.ts) | lib/api/inventory.ts:158 | anon direct | same RPC, same action |
-| `add_inventory_category` | lib/api/inventory.ts:24 | anon direct | INVESTIGATE + REVOKE + proxy |
-| `delete_inventory_category` | lib/api/inventory.ts:34 | anon direct | INVESTIGATE + REVOKE + proxy |
-| `inventory_arrival` | lib/api/inventory.ts:122 | anon direct | INVESTIGATE + REVOKE + proxy |
-| `get_next_document_number` | lib/api/document-numbers.ts:27 | anon direct | INVESTIGATE + REVOKE + proxy |
-
-Каждый из них → новый dispatcher action в `api/staff.ts` с auth check (admin/owner) + service_role call.
+То же для 8 других actions.
 
 ---
 
-## Что я НЕ сделаю в этом recon (нужен отдельный research)
+## Тестовый план (3 числа + Slice #3d = 4-й)
 
-1. **Per-table column-level sensitivity** — например, `expenses.amount` vs `expenses.description`. Category B policies row-level, не column-level. Если нужно column-level, нужен отдельный slice с grants на specific columns.
-2. **Composite key joins** — `expenses.creator:profiles!`, `worksheet_entries.booking:tire_bookings!`. Если RLS на parent (`profiles`, `tire_bookings`) уже restrictive, join может не работать. Mitigation: проверить в browser smoke после enable.
-3. **Storage bucket reads** — recon показал 0 callsites, но Storage uses different auth path. Это отдельный Slice (Phase 1.8 уже в плане).
-4. **RPC SECURITY DEFINER vs INVOKER** — subagent не смог проверить. Нужно `pg_get_functiondef` для каждого. Запланировано в Phase исследования (перед миграцией 021).
+### Baseline (pre-Slice #3d): 133 PASS / 0 FAIL
+
+### Slice #3d — Step 0 (dispatcher proxies) tests:
+- **D1**: каждый из 9 dispatcher proxy actions → 200 success с правильными DB effects (regression smoke)
+- **D2**: каждый из 9 dispatcher proxy actions → 403 owner_only_required для client JWT (negative)
+- **D3**: каждый из 9 dispatcher proxy actions → 401 no_token (negative)
+- **D4**: старый прямой `.rpc(...)` путь всё ещё работает (параллельно, до 021)
+- **Total Step 0**: ~30-45 asserts
+
+### Slice #3d — Step 1 migration 019 tests:
+- **M19-A1**: anon SELECT tire_bookings_timeline → permission_denied
+- **M19-A2**: anon INSERT closed_boxes → permission_denied
+- **M19-A2b**: staff INSERT closed_boxes → 200 success
+- **M19-A3**: anon INSERT tire_service_days → permission_denied
+- **M19-A3b**: staff INSERT tire_service_days → 200 success
+- **M19-A6**: anon SELECT password_hash → permission_denied
+- **M19-A7**: anon SELECT card_number/payment_phone → permission_denied
+- **Total M19**: ~10 asserts
+
+### Slice #3d — Step 1 migration 020 tests:
+- **M20-E1**: anon SELECT each of 17 Category B tables → permission_denied
+- **M20-E2**: anon INSERT/UPDATE/DELETE each → permission_denied
+- **M20-E4**: staff JWT SELECT each → 200 with rows
+- **M20-E5**: staff JWT INSERT/UPDATE/DELETE each → 200
+- **M20-R**: dispatcher writes (51 actions baseline regression) → still 200
+- **Total M20**: ~70 asserts
+
+### Slice #3d — Step 1 migration 021 tests:
+- **M21-E1**: anon call each of 9 RPCs → permission_denied
+- **M21-E2**: authenticated call each → permission_denied
+- **M21-R**: dispatcher proxy for each → still 200 (service_role works)
+- **Total M21**: ~30 asserts
+
+### Total Slice #3d adds: ~140-150 asserts → ~280 PASS / 0 FAIL final
 
 ---
 
-## Plan для OK (отдельный цикл, без кода сейчас)
-
-Перед написанием кода / миграции / deploy, жду ОК. Подтверждение должно включать:
-
-1. **Anomaly fixes в миграции 019** — все 4 anomalies (A1-A4) принимаются как prep?
-2. **Path B design для 17 таблиц** — admin-SELECT/owner-ALL policy без dispatcher proxy для reads?
-3. **Split design для closed_boxes + tire_service_days** — anon SELECT + staff WRITE?
-4. **RPC dispatcher proxy список** (5-10 actions) — добавляем в api/staff.ts?
-5. **profiles staff SELECT policy** в той же миграции что expenses (для join)?
-6. **Order of migrations**: 019 (prep) → 020 (Path B) → 021 (RPC revokes+proxies)?
-
----
-
-## Vercel function count
+## Vercel function count invariant
 
 - Сейчас: 12/12 (slice #3c достиг лимита)
 - Slice #3d добавит 0 новых serverless файлов (всё идёт в `api/staff.ts` dispatcher)
@@ -291,6 +324,50 @@ Phase 3 (public views для slots): blocked until Slice #3d done.
 
 ---
 
+## Authorization matrix (полный, для верификации)
+
+| Action | admin | owner | anon | service_role (dispatcher) |
+|---|---|---|---|---|
+| Step 0 dispatcher actions (×9) | ✓ | ✓ | ✗ (401) | ✓ |
+| Migration 020 staff reads | ✓ | ✓ | ✗ | ✓ |
+| Migration 020 staff writes | ✓ | ✓ | ✗ | ✓ |
+| Migration 021 RPC REVOKE | n/a (no caller) | n/a | ✗ | ✓ |
+
+---
+
+## Что я НЕ сделаю в этом recon (нужен отдельный research)
+
+1. **`tire_bookings_timeline` view definition** — содержит Category C логику (`WHEN client_id = auth.uid() THEN car_model ELSE NULL`). Нужно прочитать view определение перед A1 REVOKE — убедиться что view не используется staff UI (иначе REVOKE сломает).
+2. **RPC SECURITY DEFINER vs INVOKER** для всех 9 RPCs — нужен `pg_get_functiondef` для каждого. Уже частично сделано в v1 recon (subagent нашёл `add_tire_worker_earnings` INVOKER). Перед 021 нужен полный список.
+3. **Composite joins** — например, `worksheet_entries.booking_id → bookings` (FK). Если bookings становится staff-only через RLS, join из staff context работает (staff JWT видит). Но если есть cross-table joins из client context — сломается.
+4. **Storage buckets** — вне scope этого slice (Phase 1.8 отдельно).
+
+---
+
+## Order of migrations (финальный):
+
+```
+1. Step 0 (CODE): dispatcher proxies + frontend switch + deploy + browser smoke
+2. Migration 019: anomaly prep (A1+A2+A3+A6+A7) + verify
+3. Migration 020: Path B 17 tables + profiles + verify
+4. Migration 021: REVOKE 9 staff-direct RPCs + verify
+```
+
+После каждого шага: test cluster full run + browser smoke + commit + push.
+
+---
+
 ## Production deployment
 
 **Не в этом цикле.** Отдельный вопрос (как Slice #3c).
+
+---
+
+## Чек-лист перед ОК
+
+- [ ] **Anomaly prep в миграции 019** (A1+A2+A3+A6+A7) — принимается с дополнением column-level?
+- [ ] **Path B для 17 таблиц** без dispatcher-proxy для reads — принимается?
+- [ ] **Split design для closed_boxes + tire_service_days** — принимается?
+- [ ] **Порядок Step 0 → 019 → 020 → 021** (dispatcher proxies сначала, миграции после) — принимается?
+- [ ] **`profiles` staff SELECT policy в 020** (full row, column-level REVOKE из 019 остаётся независимым слоем) — принимается?
+- [ ] **9 dispatcher proxy actions в Step 0** — принимается список?
