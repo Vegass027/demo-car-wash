@@ -1802,6 +1802,8 @@ async function updateAdminAction(_claims: StaffClaims, body: AnyObj): Promise<Ac
     patch.fixed_salary = v;
   }
   if (body.is_active !== undefined) patch.is_active = !!body.is_active;
+  if (body.payment_comment !== undefined) patch.payment_comment = body.payment_comment;
+  if (body.salary_comment !== undefined) patch.salary_comment = body.salary_comment;
   const { data, error } = await supabaseAdmin
     .from('admins').update(patch).eq('id', admin_id).select().maybeSingle();
   if (error) {
@@ -1863,8 +1865,9 @@ async function adminGiveAdvanceAction(_claims: StaffClaims, body: AnyObj): Promi
   // Direct UPDATE on admins.current_balance + earned_today.
   // Original lib/api/admins.ts:giveAdminAdvance did this in JS with separate
   // SELECT/UPDATE — server-side we combine into one transaction.
+  // worker_name read from admin.full_name for salary_transactions.worker_name NOT NULL.
   const { data: admin, error: fetchErr } = await supabaseAdmin
-    .from('admins').select('current_balance, earned_today').eq('id', admin_id).single();
+    .from('admins').select('current_balance, earned_today, full_name').eq('id', admin_id).single();
   if (fetchErr || !admin) {
     console.error('[staff:admin-give-advance] fetch error:', fetchErr?.message);
     return failAction(404, 'admin_not_found');
@@ -1893,6 +1896,7 @@ async function adminGiveAdvanceAction(_claims: StaffClaims, body: AnyObj): Promi
   const { error: txErr } = await supabaseAdmin.from('salary_transactions').insert({
     worker_type: 'admin',
     worker_id: admin_id,
+    worker_name: admin.full_name,
     amount: amount,
     transaction_type: 'ADVANCE',
     description: `Аванс админу`,
@@ -1919,7 +1923,7 @@ async function adminPayoutSalaryAction(_claims: StaffClaims, body: AnyObj): Prom
     throw new ValidationError('amount_invalid');
   }
   const { data: admin, error: fetchErr } = await supabaseAdmin
-    .from('admins').select('current_balance').eq('id', admin_id).single();
+    .from('admins').select('current_balance, full_name').eq('id', admin_id).single();
   if (fetchErr || !admin) {
     return failAction(404, 'admin_not_found');
   }
@@ -1943,6 +1947,7 @@ async function adminPayoutSalaryAction(_claims: StaffClaims, body: AnyObj): Prom
   const { error: txErr } = await supabaseAdmin.from('salary_transactions').insert({
     worker_type: 'admin',
     worker_id: admin_id,
+    worker_name: admin.full_name,
     amount: amount,
     transaction_type: 'PAYOUT',
     description: `Выплата зарплаты админу`,
@@ -1961,7 +1966,7 @@ async function adminTransferBalanceAction(_claims: StaffClaims, body: AnyObj): P
   requireOwner(_claims);
   const admin_id = readUuidRequired(body, 'admin_id');
   const { data: admin, error: fetchErr } = await supabaseAdmin
-    .from('admins').select('earned_today, current_balance').eq('id', admin_id).single();
+    .from('admins').select('earned_today, current_balance, full_name').eq('id', admin_id).single();
   if (fetchErr || !admin) {
     return failAction(404, 'admin_not_found');
   }
@@ -1990,6 +1995,7 @@ async function adminTransferBalanceAction(_claims: StaffClaims, body: AnyObj): P
   const { error: txErr } = await supabaseAdmin.from('salary_transactions').insert({
     worker_type: 'admin',
     worker_id: admin_id,
+    worker_name: admin.full_name,
     amount: earned,
     transaction_type: 'TRANSFER',
     description: `Перевод earned → balance (admin)`,
