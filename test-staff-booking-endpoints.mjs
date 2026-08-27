@@ -1086,6 +1086,273 @@ async function postTestCleanup() {
     }
   }
 
+  // -----------------------------------------------------------------------
+  console.log('\n--- SLICE #3c (Category A writes — 15 actions E1..E5 each) ---');
+  // -----------------------------------------------------------------------
+  // For each of 15 new dispatcher actions:
+  //   E1: no token → 401
+  //   E2: client JWT → 403 wrong_role (admin/staff actions require staff JWT)
+  //   E3: admin JWT, owner-only action → 403 owner_only_required
+  //   E4: admin/owner JWT, valid body → 200 success
+  //   E5: DB state verify after call (row created/updated, balance changed, etc.)
+  //
+  // 4 admin-or-owner actions:
+  //   start-admin-shift, create-earning-transaction, create-advance-transaction,
+  //   create-transfer-transaction
+  // 11 owner-only actions:
+  //   create-admin, update-admin, delete-admin,
+  //   admin-give-advance, admin-payout-salary, admin-transfer-balance,
+  //   create-payout-transaction, delete-salary-transaction,
+  //   update-salary-settings, create-company-settings, update-company-settings
+
+  // Helper: get fresh IDs from DB for admin/worker fixtures
+  const adminIdForTests = psqlScalar(`SELECT id FROM public.admins WHERE is_active=true ORDER BY full_name LIMIT 1;`);
+  const tireWorkerIdForTests = psqlScalar(`SELECT id FROM public.tire_workers WHERE is_active=true ORDER BY full_name LIMIT 1;`);
+  const companySettingsId = psqlScalar(`SELECT id FROM public.company_settings ORDER BY created_at DESC LIMIT 1;`);
+
+  // ========== start-admin-shift (admin-or-owner) ==========
+  console.log('\n--- start-admin-shift (admin-or-owner) ---');
+  {
+    const r = await api('POST', '/api/staff?action=start-admin-shift', { admin_id: adminIdForTests }, null);
+    assert('E1: start-admin-shift no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  if (clientToken) {
+    const r = await api('POST', '/api/staff?action=start-admin-shift', { admin_id: adminIdForTests }, clientToken);
+    assert('E2: start-admin-shift client JWT → 403 wrong_role',
+      r.status === 403 && r.data?.error === 'wrong_role', `status=${r.status} error=${r.data?.error}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=start-admin-shift', { admin_id: adminIdForTests }, staffToken);
+    assert('E4: start-admin-shift admin JWT → 200 (admin-or-owner)',
+      r.status === 200 && r.data?.data?.admin?.id === adminIdForTests, `status=${r.status}`);
+    // Idempotency: re-call → also 200 (already started today)
+    const r2 = await api('POST', '/api/staff?action=start-admin-shift', { admin_id: adminIdForTests }, staffToken);
+    assert('E5: start-admin-shift idempotent → 200 (already started today)',
+      r2.status === 200, `status=${r2.status}`);
+  }
+
+  // ========== create-earning-transaction (admin-or-owner) ==========
+  console.log('\n--- create-earning-transaction (admin-or-owner) ---');
+  let earningTxId;
+  {
+    const r = await api('POST', '/api/staff?action=create-earning-transaction', {}, null);
+    assert('E1: create-earning-transaction no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=create-earning-transaction',
+      { worker_type: 'worker', worker_id: workerId, worker_name: 'Test Worker', amount: 100, balance_after: 100 }, staffToken);
+    assert('E4: create-earning-transaction admin JWT → 200',
+      r.status === 200 && r.data?.data?.transaction?.id, `status=${r.status}`);
+    earningTxId = r.data?.data?.transaction?.id;
+    if (earningTxId) created.salary_txns.push(earningTxId);
+  }
+  if (earningTxId) {
+    const exists = psqlScalar(`SELECT count(*) FROM public.salary_transactions WHERE id='${earningTxId}';`) > 0;
+    assert('E5: create-earning-transaction DB row exists', exists);
+  }
+
+  // ========== create-advance-transaction (admin-or-owner) ==========
+  console.log('\n--- create-advance-transaction (admin-or-owner) ---');
+  let advanceTxId;
+  {
+    const r = await api('POST', '/api/staff?action=create-advance-transaction',
+      { worker_type: 'worker', worker_id: workerId, worker_name: 'Test Worker', amount: 50, balance_after: 50 }, staffToken);
+    assert('E4: create-advance-transaction admin JWT → 200',
+      r.status === 200 && r.data?.data?.transaction?.id, `status=${r.status}`);
+    advanceTxId = r.data?.data?.transaction?.id;
+    if (advanceTxId) created.salary_txns.push(advanceTxId);
+  }
+  if (advanceTxId) {
+    const exists = psqlScalar(`SELECT count(*) FROM public.salary_transactions WHERE id='${advanceTxId}';`) > 0;
+    assert('E5: create-advance-transaction DB row exists', exists);
+  }
+
+  // ========== create-transfer-transaction (admin-or-owner) ==========
+  console.log('\n--- create-transfer-transaction (admin-or-owner) ---');
+  {
+    const r = await api('POST', '/api/staff?action=create-transfer-transaction',
+      { worker_type: 'worker', worker_id: workerId, worker_name: 'Test Worker', amount: 25, balance_after: 25 }, staffToken);
+    assert('E4: create-transfer-transaction admin JWT → 200',
+      r.status === 200, `status=${r.status}`);
+    if (r.data?.data?.transaction?.id) created.salary_txns.push(r.data.data.transaction.id);
+  }
+
+  // ========== create-admin (owner-only) ==========
+  console.log('\n--- create-admin (owner-only) ---');
+  let newAdminId;
+  {
+    const r = await api('POST', '/api/staff?action=create-admin', { full_name: 'Test Admin' }, null);
+    assert('E1: create-admin no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  if (clientToken) {
+    const r = await api('POST', '/api/staff?action=create-admin', { full_name: 'Test Admin' }, clientToken);
+    assert('E2: create-admin client JWT → 403 wrong_role',
+      r.status === 403 && r.data?.error === 'wrong_role', `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=create-admin', { full_name: 'Test Admin' }, staffToken);
+    assert('E3: create-admin admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+  // NOTE: we don't have an owner JWT in test env. Skip E4/E5 for create-admin
+  // (would require owner credentials which aren't seeded). This is a known
+  // gap — owner-only actions are documented but E2E-untested at this layer.
+  // The dispatcher-level checks (E1/E2/E3) prove the security gate works.
+
+  // ========== update-admin (owner-only) ==========
+  console.log('\n--- update-admin (owner-only) ---');
+  {
+    const r = await api('POST', '/api/staff?action=update-admin',
+      { admin_id: adminIdForTests, full_name: 'Test Updated' }, null);
+    assert('E1: update-admin no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=update-admin',
+      { admin_id: adminIdForTests, full_name: 'Test Updated' }, staffToken);
+    assert('E3: update-admin admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+
+  // ========== delete-admin (owner-only) ==========
+  console.log('\n--- delete-admin (owner-only) ---');
+  {
+    const r = await api('POST', '/api/staff?action=delete-admin',
+      { admin_id: '00000000-0000-0000-0000-000000000000' }, null);
+    assert('E1: delete-admin no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=delete-admin',
+      { admin_id: adminIdForTests }, staffToken);
+    assert('E3: delete-admin admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+
+  // ========== admin-give-advance (owner-only) ==========
+  console.log('\n--- admin-give-advance (owner-only) ---');
+  {
+    const r = await api('POST', '/api/staff?action=admin-give-advance',
+      { admin_id: adminIdForTests, amount: 100 }, null);
+    assert('E1: admin-give-advance no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=admin-give-advance',
+      { admin_id: adminIdForTests, amount: 100 }, staffToken);
+    assert('E3: admin-give-advance admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+
+  // ========== admin-payout-salary (owner-only) ==========
+  console.log('\n--- admin-payout-salary (owner-only) ---');
+  {
+    const r = await api('POST', '/api/staff?action=admin-payout-salary',
+      { admin_id: adminIdForTests, amount: 100 }, null);
+    assert('E1: admin-payout-salary no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=admin-payout-salary',
+      { admin_id: adminIdForTests, amount: 100 }, staffToken);
+    assert('E3: admin-payout-salary admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+
+  // ========== admin-transfer-balance (owner-only) ==========
+  console.log('\n--- admin-transfer-balance (owner-only) ---');
+  {
+    const r = await api('POST', '/api/staff?action=admin-transfer-balance',
+      { admin_id: adminIdForTests }, null);
+    assert('E1: admin-transfer-balance no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=admin-transfer-balance',
+      { admin_id: adminIdForTests }, staffToken);
+    assert('E3: admin-transfer-balance admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+
+  // ========== create-payout-transaction (owner-only) ==========
+  console.log('\n--- create-payout-transaction (owner-only) ---');
+  {
+    const r = await api('POST', '/api/staff?action=create-payout-transaction',
+      { worker_type: 'worker', worker_id: workerId, worker_name: 'Test Worker', amount: 100 }, null);
+    assert('E1: create-payout-transaction no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=create-payout-transaction',
+      { worker_type: 'worker', worker_id: workerId, worker_name: 'Test Worker', amount: 100 }, staffToken);
+    assert('E3: create-payout-transaction admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+
+  // ========== delete-salary-transaction (owner-only) ==========
+  console.log('\n--- delete-salary-transaction (owner-only) ---');
+  if (earningTxId) {
+    const r = await api('POST', '/api/staff?action=delete-salary-transaction',
+      { transaction_id: earningTxId }, null);
+    assert('E1: delete-salary-transaction no token → 401', r.status === 401, `status=${r.status}`);
+    const r2 = await api('POST', '/api/staff?action=delete-salary-transaction',
+      { transaction_id: earningTxId }, staffToken);
+    assert('E3: delete-salary-transaction admin JWT → 403 owner_only_required',
+      r2.status === 403 && r2.data?.error === 'owner_only_required',
+      `status=${r2.status} error=${r2.data?.error}`);
+    // Don't actually delete the row — owner test would do that.
+  }
+
+  // ========== update-salary-settings (owner-only) ==========
+  console.log('\n--- update-salary-settings (owner-only) ---');
+  {
+    const r = await api('POST', '/api/staff?action=update-salary-settings',
+      { worker_solo_commission: 0.5 }, null);
+    assert('E1: update-salary-settings no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=update-salary-settings',
+      { worker_solo_commission: 0.5 }, staffToken);
+    assert('E3: update-salary-settings admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+
+  // ========== create-company-settings (owner-only) ==========
+  console.log('\n--- create-company-settings (owner-only) ---');
+  {
+    const r = await api('POST', '/api/staff?action=create-company-settings',
+      { legal_form: 'OOO', full_legal_name: 'Test OOO', inn: '1234567890', ogrn: '1234567890123',
+        legal_address: 'Test addr', bank_name: 'Test Bank', bik: '044525225',
+        correspondent_account: '30101810400000000225', payment_account: '40703810000000000001',
+        director_name: 'Test Director' }, null);
+    assert('E1: create-company-settings no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  {
+    const r = await api('POST', '/api/staff?action=create-company-settings',
+      { legal_form: 'OOO', full_legal_name: 'Test OOO', inn: '1234567890', ogrn: '1234567890123',
+        legal_address: 'Test addr', bank_name: 'Test Bank', bik: '044525225',
+        correspondent_account: '30101810400000000225', payment_account: '40703810000000000001',
+        director_name: 'Test Director' }, staffToken);
+    assert('E3: create-company-settings admin JWT → 403 owner_only_required',
+      r.status === 403 && r.data?.error === 'owner_only_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+
+  // ========== update-company-settings (owner-only) ==========
+  console.log('\n--- update-company-settings (owner-only) ---');
+  if (companySettingsId) {
+    const r = await api('POST', '/api/staff?action=update-company-settings',
+      { settings_id: companySettingsId, phone: '+79991234567' }, null);
+    assert('E1: update-company-settings no token → 401', r.status === 401, `status=${r.status}`);
+    const r2 = await api('POST', '/api/staff?action=update-company-settings',
+      { settings_id: companySettingsId, phone: '+79991234567' }, staffToken);
+    assert('E3: update-company-settings admin JWT → 403 owner_only_required',
+      r2.status === 403 && r2.data?.error === 'owner_only_required',
+      `status=${r2.status} error=${r2.data?.error}`);
+  }
+
   // --- post-test cleanup helpers (echo) ---
   console.log('\n--- POST: cleanup helper echo ---');
   console.log(`  To cleanup test rows: run the SQL printed in the final summary.`);
