@@ -1653,13 +1653,21 @@ async function changeStaffPasswordAction(claims: StaffClaims, body: AnyObj): Pro
   if (body.p_user_id !== undefined) {
     throw new ValidationError('field_not_allowed_p_user_id');
   }
-  const oldPassword = readString(body, 'p_old_password', { max: 200, required: true });
-  const newPassword = readString(body, 'p_new_password', { max: 200, required: true });
-  if (!oldPassword || !newPassword) {
+  // Validate both passwords before doing anything else. Use direct checks
+  // (not readString) so we can return a single consistent error code
+  // 'password_required' for any missing/empty input — easier for the
+  // frontend to surface one localized string instead of two different
+  // ones (p_old_password_required vs p_new_password_required).
+  const oldPassword = body.p_old_password;
+  const newPassword = body.p_new_password;
+  if (typeof oldPassword !== 'string' || typeof newPassword !== 'string') {
     throw new ValidationError('password_required');
   }
   if (oldPassword.length < 1 || newPassword.length < 1) {
-    throw new ValidationError('password_too_short');
+    throw new ValidationError('password_required');
+  }
+  if (oldPassword.length > 200 || newPassword.length > 200) {
+    throw new ValidationError('password_too_long');
   }
   // Reject same-as-old explicitly (RPC allows it but it's a no-op that
   // wastes a write + bumps updated_at).
