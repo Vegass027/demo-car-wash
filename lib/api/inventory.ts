@@ -4,6 +4,12 @@
 
 import { supabase } from '@/lib/supabase';
 import { generateUUID } from '@/shared/utils/uuid';
+import {
+  addInventoryCategoryViaStaff,
+  deleteInventoryCategoryViaStaff,
+  restockInventoryViaStaff,
+  recordInventoryArrivalViaStaff,
+} from './staff-actions';
 
 // ============================================
 // КАТЕГОРИИ
@@ -21,22 +27,11 @@ export async function getInventoryCategories() {
 }
 
 export async function addInventoryCategory(name: string, unit: string) {
-  const { data, error } = await supabase.rpc('add_inventory_category', {
-    p_name: name,
-    p_unit: unit
-  });
-
-  if (error) throw error;
-  return data;
+  return await addInventoryCategoryViaStaff(name, unit);
 }
 
 export async function deleteInventoryCategory(categoryId: string) {
-  const { data, error } = await supabase.rpc('delete_inventory_category', {
-    p_category_id: categoryId
-  });
-
-  if (error) throw error;
-  return data;
+  return await deleteInventoryCategoryViaStaff(categoryId);
 }
 
 // ============================================
@@ -118,31 +113,19 @@ export async function recordInventoryArrival(params: {
     photoUrls = await uploadInventoryPhotos(params.itemId, params.photos, opId);
   }
 
-  // 3. Вызываем RPC функцию с userId из параметров
-  const { data, error } = await supabase.rpc('inventory_arrival', {
-    p_item_id: params.itemId,
-    p_quantity: params.quantity,
-    p_total_price: params.totalPrice,
-    p_delivery_date: params.deliveryDate,
-    p_photos: photoUrls.length > 0 ? photoUrls : null,
-    p_notes: params.notes || null,
-    p_created_by: params.userId, // ✅ Используем userId из параметров
-    p_operation_id: opId
+  // 3. Вызываем dispatcher proxy (server-stamps p_created_by from JWT).
+  //    Storage photo upload stays browser-direct (Phase 1.8 OUT OF SCOPE).
+  const result = await recordInventoryArrivalViaStaff({
+    itemId: params.itemId,
+    quantity: params.quantity,
+    totalPrice: params.totalPrice,
+    deliveryDate: params.deliveryDate,
+    photos: photoUrls.length > 0 ? photoUrls : null,
+    notes: params.notes || null,
+    operationId: opId,
   });
 
-  // ✅ Обрабатываем race condition (два параллельных запроса)
-  if (error?.code === '23505') {
-    console.log('[recordInventoryArrival] Race condition detected, fetching existing record:', opId);
-    const { data: existing } = await supabase
-      .from('inventory_arrivals')
-      .select('*')
-      .eq('operation_id', opId)
-      .single();
-    return existing;
-  }
-
-  if (error) throw error;
-  return data;
+  return result.arrival;
 }
 
 // ============================================
@@ -153,17 +136,13 @@ export async function recordInventoryRestock(params: {
   itemId: string;
   quantity: number;
   notes?: string;
-  userId: string; // ✅ Добавляем userId как обязательный параметр
+  userId: string; // DEPRECATED in Slice #3d Step 0 — server-stamped from JWT
 }) {
-  const { data, error } = await supabase.rpc('inventory_restock', {
-    p_item_id: params.itemId,
-    p_quantity: params.quantity,
-    p_notes: params.notes || null,
-    p_created_by: params.userId // ✅ Используем userId из параметров
-  });
-
-  if (error) throw error;
-  return data;
+  return await restockInventoryViaStaff(
+    params.itemId,
+    params.quantity,
+    params.notes || null
+  );
 }
 
 // ============================================

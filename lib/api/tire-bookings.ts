@@ -291,15 +291,13 @@ export async function markTireBookingAsReady(id: string): Promise<void> {
   }
 
   // ✅ НАЧИСЛЯЕМ ЗАРАБОТОК МАСТЕРУ если есть worker_id
+  // Slice #3d Step 0: pass ONLY bookingId; dispatcher server-computes worker_id,
+  // total_price, services and final earnings. Old direct .rpc() path removed.
   if (booking.worker_id) {
     try {
       // Импортируем addTireWorkerEarningsForBooking динамически, чтобы избежать циклических зависимостей
       const { addTireWorkerEarningsForBooking } = await import('./tire-workers');
-      await addTireWorkerEarningsForBooking(
-        booking.worker_id,
-        booking.id,
-        booking.total_price
-      );
+      await addTireWorkerEarningsForBooking(booking.id);
       console.log(`[TireBookings] Начислен заработок мастеру ${booking.worker_id} за заказ ${booking.id}`);
     } catch (error) {
       console.error('[TireBookings] Ошибка при начислении заработка мастеру:', error);

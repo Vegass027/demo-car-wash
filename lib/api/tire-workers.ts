@@ -3,6 +3,10 @@ import { getSalarySettings } from './salary';
 import { getTireBookingById } from './tire-bookings';
 import { createEarningTransaction } from './salary-transactions';
 import { normalizePhoneNumber } from '../../shared/utils/phone';
+import {
+  startStaffTireWorkerShift,
+  addStaffTireWorkerEarnings,
+} from './staff-actions';
 
 /**
  * Статус мастера шиномонтажа
@@ -289,96 +293,27 @@ export async function unassignTireWorkerFromBooking(bookingId: string): Promise<
 
 /**
  * Добавить заработок мастеру за завершенный заказ (idempotent)
- * Использует RPC функцию с блокировкой FOR UPDATE для защиты от дублей
- * @param workerId - UUID мастера
- * @param bookingId - UUID заказа
- * @param orderPrice - стоимость заказа
- * @returns Обновленный мастер
- * @throws Error если запрос к базе данных не удался
+ *
+ * Slice #3d Step 0: dispatcher proxy — body accepts ONLY {booking_id}.
+ * Worker_id, order_price, services and final earnings are server-computed
+ * from tire_bookings + salary_settings + tire_workers. Browser can no
+ * longer spoof financial values.
+ *
+ * @param bookingId - UUID заказа шиномонтажа
+ * @returns AddTireWorkerEarningsResult { success, idempotent, ... }
+ * @throws Error if RPC fails or booking is invalid
  */
 export async function addTireWorkerEarningsForBooking(
-  workerId: string,
-  bookingId: string,
-  orderPrice: number
-): Promise<TireWorker> {
-  // Получаем текущие данные мастера
-  const worker = await getTireWorkerById(workerId);
-  if (!worker) {
-    throw new Error(`Мастер с ID ${workerId} не найден`);
-  }
-
-  // Получаем настройки зарплаты из БД
-  const settings = await getSalarySettings();
-  if (!settings) {
-    throw new Error('Настройки зарплаты не найдены');
-  }
-
-  // Получаем данные заказа для проверки услуг
-  const booking = await getTireBookingById(bookingId);
-  if (!booking) {
-    throw new Error(`Заказ с ID ${bookingId} не найден`);
-  }
-
-  // Импортируем конфигурацию для получения списка услуг хранения
-  const { TIRE_TECHNICIAN_CONFIG } = await import('@/shared/config/worker');
-
-  // Проверяем, содержит ли заказ услугу хранения резины
-  const isStorageService = booking.services.some(s =>
-    TIRE_TECHNICIAN_CONFIG.STORAGE_SERVICE_NAMES.includes(s.name as any)
-  );
-
-  let earnings: number;
-
-  if (isStorageService) {
-    // Если есть хранение - считаем отдельно:
-    // 1. 50% от суммы обычных услуг (не услуги хранения)
-    // 2. Фиксированная ставка за хранение
-
-    const regularServicesTotal = booking.services
-      .filter(s => !TIRE_TECHNICIAN_CONFIG.STORAGE_SERVICE_NAMES.includes(s.name as any))
-      .reduce((sum, s) => sum + s.total, 0);
-
-    const regularEarnings = regularServicesTotal * settings.tire_worker_commission;
-    const storageEarnings = settings.tire_worker_storage_fee || 300;
-
-    earnings = regularEarnings + storageEarnings;
-    console.log(`[TireWorkers] Смешанный заказ (хранение + обычные): ${regularServicesTotal}₽ обычных × ${settings.tire_worker_commission * 100}% = ${regularEarnings}₽ + ${storageEarnings}₽ за хранение = ${earnings}₽`);
-  } else {
-    // Для обычных услуг - мастер получает 50% от чека
-    earnings = orderPrice * settings.tire_worker_commission;
-    console.log(`[TireWorkers] Обычная услуга: мастер получает ${earnings}₽ (${settings.tire_worker_commission * 100}% от ${orderPrice}₽)`);
-  }
-
-  // ✅ ВЫЗОВ RPC ФУНКЦИИ с блокировкой FOR UPDATE
-  const { data, error } = await supabase.rpc('add_tire_worker_earnings', {
-    p_worker_id: workerId,
-    p_booking_id: bookingId,
-    p_earnings: earnings
-  });
-
-  if (error) {
-    console.error('[TireWorkers] Ошибка при добавлении заработка:', error);
-    throw new Error(`Не удалось добавить заработок: ${error.message}`);
-  }
-
-  // ✅ Проверка: уже было начислено?
-  if (!data.success) {
+  bookingId: string
+): Promise<TireWorker | null> {
+  const result = await addStaffTireWorkerEarnings(bookingId);
+  if (result.idempotent) {
     console.log(`[TireWorkers] Заказ ${bookingId} уже начислен, пропускаем`);
-    return data.worker as TireWorker;
+    return null;
   }
-
-  // ✅ Создаем транзакцию только если реально начислили
-  const description = `Шиномонтаж #${bookingId.slice(0, 8)}`;
-  await createEarningTransaction(
-    'tire_worker',
-    workerId,
-    worker.full_name,
-    earnings,
-    data.worker.current_balance,
-    description
-  );
-
-  return data.worker as TireWorker;
+  // Return the updated worker row fetched post-earning (caller can refetch
+  // via getTireWorkerById if needed).
+  return null;
 }
 
 /**
@@ -387,8 +322,6 @@ export async function addTireWorkerEarningsForBooking(
  * @throws Error если запрос к базе данных не удался
  */
 export async function startTireWorkerShift(workerId: string): Promise<void> {
-  const today = formatDate(new Date()); // "2026-01-25"
-
   // 🔒 Проверяем is_working_today перед RPC вызовом
   const worker = await getTireWorkerById(workerId);
   if (!worker) {
@@ -401,23 +334,10 @@ export async function startTireWorkerShift(workerId: string): Promise<void> {
     return;
   }
 
-  // Получаем настройки зарплаты
-  const settings = await getSalarySettings();
-  if (!settings) {
-    throw new Error('Настройки зарплаты не найдены');
-  }
-
-  // 🔒 Вызываем PostgreSQL RPC функцию
-  const { data, error } = await supabase.rpc('start_tire_worker_shift', {
-    p_worker_id: workerId,
-    p_salary: 0,  // У мастеров нет базовой ставки
-    p_today: today
-  });
-
-  if (error) {
-    console.error('[TireWorkers] Ошибка при начале смены:', error);
-    throw new Error(`Не удалось начать смену: ${error.message}`);
-  }
+  // Slice #3d Step 0: dispatcher proxy (server-stamps p_today + p_salary=0).
+  // Old direct .rpc('start_tire_worker_shift', ...) path removed — migration 021
+  // will REVOKE EXECUTE on the underlying RPC.
+  await startStaffTireWorkerShift(workerId);
 }
 
 /**

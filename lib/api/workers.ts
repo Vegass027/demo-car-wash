@@ -2,6 +2,7 @@ import { supabase } from '../supabase';
 import { getSalarySettings } from './salary';
 import { createTransferTransaction, createEarningTransaction } from './salary-transactions';
 import { normalizePhoneNumber } from '../../shared/utils/phone';
+import { startStaffWorkerShift } from './staff-actions';
 
 /**
  * Режим работы мойщика
@@ -513,23 +514,10 @@ export async function startWorkerShift(workerId: string): Promise<void> {
     return;
   }
 
-  // Получаем настройки зарплаты
-  const settings = await getSalarySettings();
-  if (!settings) {
-    throw new Error('Настройки зарплаты не найдены');
-  }
-
-  // 🔒 Вызываем PostgreSQL RPC функцию
-  const { data, error } = await supabase.rpc('start_worker_shift', {
-    p_worker_id: workerId,
-    p_salary: settings.worker_solo_base,
-    p_today: today
-  });
-
-  if (error) {
-    console.error('[Workers] Ошибка при начале смены:', error);
-    throw new Error(`Не удалось начать смену: ${error.message}`);
-  }
+  // Slice #3d Step 0: dispatcher proxy (server-stamps p_today + p_salary).
+  // Old direct .rpc('start_worker_shift', ...) path removed — migration 021
+  // will REVOKE EXECUTE on the underlying RPC.
+  await startStaffWorkerShift(workerId);
 }
 
 /**

@@ -1,4 +1,5 @@
 import { supabase } from '../supabase';
+import { getNextDocumentNumberViaStaff } from './staff-actions';
 
 /**
  * Типы сущности "Номер документа"
@@ -24,18 +25,8 @@ export async function getNextDocumentNumber(
   month: number,
   year: number
 ): Promise<number> {
-  const { data, error } = await supabase.rpc('get_next_document_number', {
-    doc_type: documentType,
-    doc_month: month,
-    doc_year: year
-  });
-
-  if (error) {
-    console.error(`[getNextDocumentNumber] Ошибка получения номера для ${documentType}:`, error);
-    throw error;
-  }
-
-  return data as number;
+  // Slice #3d Step 0: dispatcher proxy. 3-arg overload uniquely resolved.
+  return await getNextDocumentNumberViaStaff(documentType, month, year);
 }
 
 /**
