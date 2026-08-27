@@ -39,8 +39,17 @@ import {
   readUuidRequired,
   readCarType,
   readISODate,
+  readTimeHHMM,
+  readPaymentMethod,
+  readBoolean,
 } from './_lib/validation.js';
 import { normalizePhoneNumber } from '../shared/utils/phone.js';
+import { recomputeBookingServices } from './_lib/booking-services.js';
+import {
+  calculateWorkerEarnings,
+  addWorkerEarningAndLedger,
+  addTireWorkerEarningAndLedger,
+} from './_lib/earnings.js';
 
 export const config = { maxDuration: 10 };
 
@@ -81,6 +90,57 @@ function hasAnyField(body: AnyObj, fields: string[]): boolean {
     if (body[f] !== undefined) return true;
   }
   return false;
+}
+
+// =========================================================================
+// Slice #3b — staff booking mutations
+// =========================================================================
+//
+// Shared helpers and 21 actions. Inline to keep the single-serverless-file
+// invariant. Carwash + tire use separate SQL tables (bookings / tire_bookings)
+// with separate state machines (4-state vs 5-state, with 'ПРОСРОЧЕН' on tire)
+// and separate status guards. Tire has a GENERATED end_time column that
+// must NEVER appear in any INSERT/UPDATE body.
+
+const CARWASH_STATUSES = ['ОЖИДАЕТ', 'В РАБОТЕ', 'ГОТОВО', 'ОТМЕНЕНО'] as const;
+const TIRE_STATUSES = ['ОЖИДАЕТ', 'В РАБОТЕ', 'ГОТОВО', 'ОТМЕНЕНО', 'ПРОСРОЧЕН'] as const;
+
+function readBookingStatus(body: AnyObj, field: string): string {
+  const v = body[field];
+  if (typeof v !== 'string' || !CARWASH_STATUSES.includes(v as any)) {
+    throw new ValidationError(`${field}_invalid`);
+  }
+  return v;
+}
+
+function readTireStatus(body: AnyObj, field: string): string {
+  const v = body[field];
+  if (typeof v !== 'string' || !TIRE_STATUSES.includes(v as any)) {
+    throw new ValidationError(`${field}_invalid`);
+  }
+  return v;
+}
+
+async function lockCarwashBooking(id: string): Promise<AnyObj> {
+  const { data, error } = await supabaseAdmin
+    .from('bookings')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(`booking_lookup_failed: ${error.message}`);
+  if (!data) throw new ValidationError('booking_not_found');
+  return data;
+}
+
+async function lockTireBooking(id: string): Promise<AnyObj> {
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(`tire_booking_lookup_failed: ${error.message}`);
+  if (!data) throw new ValidationError('tire_booking_not_found');
+  return data;
 }
 
 // =========================================================================
@@ -618,6 +678,869 @@ async function updateOrgCarAction(_claims: StaffClaims, body: AnyObj): Promise<A
 }
 
 // =========================================================================
+// Slice #3b action implementations (inserted here)
+// =========================================================================
+
+// === C1: create-staff-booking (atomic RPC) ===
+async function createStaffBookingAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const target_date    = readISODate(body, 'booking_date');
+  const box_number     = readNumberInRange(body, 'box_number', 1, 99, true);
+  const start_time     = readTimeHHMM(body, 'start_time');
+  const end_time       = readTimeHHMM(body, 'end_time');
+  const client_name    = readString(body, 'client_name', { max: 200, required: true })!.trim();
+  const car_model      = readString(body, 'car_model', { max: 120, required: true })!.trim();
+  const plate_number   = readString(body, 'plate_number', { max: 16, required: true })!.trim().toUpperCase();
+  const car_type       = readCarType(body, 'car_type');
+  const services       = body.services;
+  if (!Array.isArray(services) || services.length === 0) {
+    throw new ValidationError('services_required');
+  }
+  for (const k of [
+    'services_with_quantities', 'price', 'booking_source', 'created_by_profile_id',
+    'paid_at', 'status', 'worker_name', 'worker_name_2', 'org_name',
+    'signature_data', 'completed_at',
+  ]) {
+    if (body[k] !== undefined) throw new ValidationError(`field_not_allowed_${k}`);
+  }
+
+  const phoneRaw = body.phone;
+  const phone = phoneRaw ? normalizePhoneNumber(String(phoneRaw)) : null;
+
+  const paymentMethod = body.payment_method !== undefined && body.payment_method !== null
+    ? readPaymentMethod(body, 'payment_method')
+    : null;
+
+  const is_paid = readBoolean(body, 'is_paid');
+  const paid_at = is_paid ? new Date().toISOString() : null;
+
+  const is_org = !!body.is_org;
+  const organization_id = is_org ? readUuidOpt(body, 'organization_id') : null;
+  const driver_id       = is_org ? readUuidOpt(body, 'driver_id')       : null;
+  const car_id          = is_org ? readUuidOpt(body, 'car_id')          : null;
+  const client_id       = !is_org ? readUuidOpt(body, 'client_id')      : null;
+  const client_car_id   = !is_org ? readUuidOpt(body, 'client_car_id')  : null;
+  const worker_id       = readUuidOpt(body, 'worker_id');
+  const worker_id_2     = readUuidOpt(body, 'worker_id_2');
+  const working_mode    = (body.working_mode !== undefined && body.working_mode !== null)
+    ? String(body.working_mode) : null;
+  if (working_mode !== null && working_mode !== 'solo' && working_mode !== 'pair') {
+    throw new ValidationError('working_mode_invalid');
+  }
+  if (working_mode === 'pair' && (!worker_id || !worker_id_2)) {
+    throw new ValidationError('worker_id_2_required_when_pair');
+  }
+
+  const is_quick_booking = !!body.is_quick_booking;
+  const discount = body.discount !== undefined
+    ? readNumberInRange(body, 'discount', 0, 1_000_000, true)
+    : 0;
+  const allow_override = !!body.allow_override;
+  const antifreeze_intents = body.antifreeze_intents;
+  if (antifreeze_intents !== undefined && !allow_override) {
+    throw new ValidationError('antifreeze_intents_not_allowed');
+  }
+
+  const recomputed = await recomputeBookingServices(supabaseAdmin, {
+    services: services.map((s: any) => String(s)),
+    car_type,
+    antifreeze_intents: antifreeze_intents ?? [],
+    allow_override,
+    discount,
+  });
+
+  if (!claims.profile_id) throw new ValidationError('missing_profile_id_in_token');
+
+  const { data, error } = await supabaseAdmin.rpc('create_staff_carwash_booking', {
+    p_target_date: target_date,
+    p_box_number: box_number,
+    p_start_time: start_time,
+    p_end_time: end_time,
+    p_client_name: client_name,
+    p_phone: phone,
+    p_car_model: car_model,
+    p_plate_number: plate_number,
+    p_car_type: car_type,
+    p_services: JSON.stringify(recomputed.services),
+    p_services_with_quantities: JSON.stringify(recomputed.services_with_quantities),
+    p_price: recomputed.final_price,
+    p_payment_method: paymentMethod,
+    p_worker_id: worker_id,
+    p_worker_id_2: worker_id_2,
+    p_working_mode: working_mode,
+    p_is_org: is_org,
+    p_organization_id: organization_id,
+    p_driver_id: driver_id,
+    p_car_id: car_id,
+    p_client_id: client_id,
+    p_client_car_id: client_car_id,
+    p_signature_obtained_at: null,
+    p_is_quick_booking: is_quick_booking,
+    p_discount: recomputed.discount,
+    p_is_paid: is_paid,
+    p_paid_at: paid_at,
+    p_created_by_profile_id: claims.profile_id,
+  });
+
+  if (error) {
+    const msg = String(error.message ?? '');
+    if (msg === 'BOX_OVERLAP') return failAction(409, 'box_overlap');
+    if (msg === 'BOX_CLOSED')  return failAction(409, 'box_closed');
+    console.error('[staff:create-staff-booking] rpc error:', error);
+    return failAction(500, 'create_staff_booking_failed', { detail: msg });
+  }
+
+  const booking = (data as any)?.booking ?? null;
+  return { status: 200, body: { data: { booking } } };
+}
+
+// === C2: update-staff-booking ===
+async function updateStaffBookingAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const ALLOWED = [
+    'client_name', 'phone', 'car_model', 'plate_number', 'car_type',
+    'booking_date', 'start_time', 'end_time',
+    'box_number', 'payment_method', 'discount', 'notes', 'is_org',
+  ];
+  const DISALLOWED_NAMES = [
+    'status', 'booking_source', 'created_by_profile_id',
+    'worker_name', 'worker_name_2', 'worker_id', 'worker_id_2',
+    'org_name', 'signature_data', 'signature_obtained_at', 'signature_obtained',
+    'client_id', 'organization_id', 'driver_id', 'car_id', 'client_car_id',
+    'services', 'services_with_quantities', 'price', 'is_paid', 'paid_at',
+    'completed_at', 'work_start_time', 'work_end_time', 'cancel_comment',
+    'is_quick_booking', 'yookassa_payment_id',
+  ];
+  for (const f of DISALLOWED_NAMES) {
+    if (body[f] !== undefined) throw new ValidationError(`field_not_allowed_${f}`);
+  }
+  if (!hasAnyField(body, ALLOWED)) throw new ValidationError('no_fields_to_update');
+
+  const patch: AnyObj = { updated_at: new Date().toISOString() };
+  if (body.client_name !== undefined)  patch.client_name = readString(body, 'client_name', { max: 200, required: true })!.trim();
+  if (body.phone !== undefined)        patch.phone = body.phone ? normalizePhoneNumber(String(body.phone)) : null;
+  if (body.car_model !== undefined)    patch.car_model = readString(body, 'car_model', { max: 120, required: true })!.trim();
+  if (body.plate_number !== undefined) patch.plate_number = readString(body, 'plate_number', { max: 16, required: true })!.trim().toUpperCase();
+  if (body.car_type !== undefined)     patch.car_type = readCarType(body, 'car_type');
+  if (body.booking_date !== undefined) patch.booking_date = readISODate(body, 'booking_date');
+  if (body.start_time !== undefined)   patch.start_time = readTimeHHMM(body, 'start_time');
+  if (body.end_time !== undefined)     patch.end_time = readTimeHHMM(body, 'end_time');
+  if (body.box_number !== undefined)   patch.box_number = readNumberInRange(body, 'box_number', 1, 99, true);
+  if (body.payment_method !== undefined) patch.payment_method = readPaymentMethod(body, 'payment_method');
+  if (body.discount !== undefined)     patch.discount = readNumberInRange(body, 'discount', 0, 1_000_000, true);
+  if (body.notes !== undefined)        patch.notes = body.notes === null ? null : readString(body, 'notes', { max: 4000, required: true });
+  if (body.is_org !== undefined)       patch.is_org = !!body.is_org;
+
+  const { data, error } = await supabaseAdmin
+    .from('bookings')
+    .update(patch)
+    .eq('id', booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:update-staff-booking] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return { status: 404, body: { error: 'booking_not_found' } };
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === C3: add-staff-services ===
+async function addStaffServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const service_ids = body.service_ids;
+  if (!Array.isArray(service_ids) || service_ids.length === 0) {
+    throw new ValidationError('service_ids_required');
+  }
+  const current = await lockCarwashBooking(booking_id);
+  if (current.status === 'ГОТОВО' || current.status === 'ОТМЕНЕНО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  const merged = [...((current.services as string[]) ?? []), ...service_ids.map((s: any) => String(s))];
+  const allow_override = !!body.allow_override;
+  const antifreeze_intents = body.antifreeze_intents ?? [];
+
+  const recomputed = await recomputeBookingServices(supabaseAdmin, {
+    services: merged,
+    car_type: current.car_type,
+    antifreeze_intents,
+    allow_override,
+    discount: Number(current.discount ?? 0),
+  });
+
+  const { data, error } = await supabaseAdmin
+    .from('bookings')
+    .update({
+      services: recomputed.services,
+      services_with_quantities: recomputed.services_with_quantities,
+      price: recomputed.final_price,
+      discount: recomputed.discount,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:add-staff-services] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === C4: remove-staff-services ===
+async function removeStaffServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const service_id = readUuidRequired(body, 'service_id');
+  const current = await lockCarwashBooking(booking_id);
+  if (current.status === 'ГОТОВО' || current.status === 'ОТМЕНЕНО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  const merged = ((current.services as string[]) ?? []).filter((x: string) => x !== service_id);
+  const recomputed = await recomputeBookingServices(supabaseAdmin, {
+    services: merged,
+    car_type: current.car_type,
+    antifreeze_intents: [],
+    allow_override: false,
+    discount: Number(current.discount ?? 0),
+  });
+  const { data, error } = await supabaseAdmin
+    .from('bookings')
+    .update({
+      services: recomputed.services,
+      services_with_quantities: recomputed.services_with_quantities,
+      price: recomputed.final_price,
+      discount: recomputed.discount,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:remove-staff-services] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === C5: assign-staff-worker ===
+async function assignStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const worker_id  = readUuidRequired(body, 'worker_id');
+  const working_mode = body.working_mode;
+  if (working_mode !== 'solo' && working_mode !== 'pair') {
+    throw new ValidationError('working_mode_invalid');
+  }
+  if (body.worker_name !== undefined || body.worker_name_2 !== undefined || body.partner_name !== undefined) {
+    throw new ValidationError('field_not_allowed_worker_name');
+  }
+  let partner_id: string | null = null;
+  if (working_mode === 'pair') {
+    partner_id = readUuidRequired(body, 'partner_id');
+  }
+
+  const { data: w1 } = await supabaseAdmin.from('workers').select('id, full_name').eq('id', worker_id).maybeSingle();
+  if (!w1) return { status: 404, body: { error: 'worker_not_found' } };
+
+  let w2: { id: string; full_name: string } | null = null;
+  if (working_mode === 'pair' && partner_id) {
+    const { data } = await supabaseAdmin.from('workers').select('id, full_name').eq('id', partner_id).maybeSingle();
+    if (!data) return { status: 404, body: { error: 'partner_not_found' } };
+    w2 = data;
+  }
+
+  const patch: AnyObj = {
+    worker_id, worker_name: w1.full_name,
+    working_mode,
+    worker_id_2: w2?.id ?? null,
+    worker_name_2: w2?.full_name ?? null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabaseAdmin
+    .from('bookings').update(patch).eq('id', booking_id).select().maybeSingle();
+  if (error) {
+    console.error('[staff:assign-staff-worker] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return { status: 404, body: { error: 'booking_not_found' } };
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === C6: unassign-staff-worker ===
+async function unassignStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const current = await lockCarwashBooking(booking_id);
+  if (current.status === 'ГОТОВО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  const { data, error } = await supabaseAdmin
+    .from('bookings')
+    .update({
+      worker_id: null, worker_name: null,
+      worker_id_2: null, worker_name_2: null,
+      working_mode: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:unassign-staff-worker] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === C7: start-staff-work ===
+async function startStaffWorkAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const current = await lockCarwashBooking(booking_id);
+  if (current.status === 'В РАБОТЕ') return { status: 200, body: { data: { booking: current, idempotent: true } } };
+  if (current.status !== 'ОЖИДАЕТ') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  const { data, error } = await supabaseAdmin
+    .from('bookings')
+    .update({
+      status: 'В РАБОТЕ',
+      work_start_time: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:start-staff-work] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === C8: mark-staff-paid ===
+async function markStaffPaidAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const current = await lockCarwashBooking(booking_id);
+  if (current.status === 'ГОТОВО' || current.status === 'ОТМЕНЕНО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  if (current.is_paid) {
+    return { status: 200, body: { data: { booking: current, idempotent: true } } };
+  }
+  const { data, error } = await supabaseAdmin
+    .from('bookings')
+    .update({
+      is_paid: true,
+      paid_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:mark-staff-paid] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === C9: mark-staff-ready ===
+async function markStaffReadyAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const current = await lockCarwashBooking(booking_id);
+  if (current.status === 'ГОТОВО') return { status: 200, body: { data: { booking: current, idempotent: true } } };
+  if (current.status !== 'ОЖИДАЕТ' && current.status !== 'В РАБОТЕ') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  if (!current.is_paid) {
+    return failAction(409, 'must_collect_payment_first');
+  }
+
+  const { data: updated, error: updErr } = await supabaseAdmin
+    .from('bookings')
+    .update({
+      status: 'ГОТОВО',
+      completed_at: new Date().toISOString(),
+      work_end_time: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', booking_id)
+    .select()
+    .maybeSingle();
+  if (updErr) {
+    console.error('[staff:mark-staff-ready] update error:', updErr.message);
+    return failAction(500, 'db_error', { detail: updErr.message });
+  }
+
+  if (current.worker_id) {
+    const { data: settings } = await supabaseAdmin
+      .from('salary_settings')
+      .select('worker_solo_commission, worker_pair_commission')
+      .limit(1).maybeSingle();
+    if (!settings) {
+      console.error('[staff:mark-staff-ready] salary_settings missing', { booking_id });
+      return failAction(500, 'salary_settings_missing');
+    }
+    const { earnings, cars } = calculateWorkerEarnings({
+      working_mode: current.working_mode === 'pair' ? 'pair' : 'solo',
+      booking_price: Number(current.price ?? 0),
+      booking_discount: Number(current.discount ?? 0),
+      worker_solo_commission: Number(settings.worker_solo_commission),
+      worker_pair_commission: Number(settings.worker_pair_commission),
+    });
+    const result = await addWorkerEarningAndLedger(supabaseAdmin, {
+      worker_id: current.worker_id,
+      worker_name: current.worker_name ?? '(unknown)',
+      booking_id,
+      earnings,
+      cars,
+    });
+    if (!result.rpc_success && !result.ledger_inserted && result.rpc_message !== 'already_added') {
+      return failAction(500, 'add_worker_earnings_failed', { rpc_message: result.rpc_message });
+    }
+    if (result.rpc_success && !result.ledger_inserted) {
+      console.error('[staff:mark-staff-ready] COMPENSATION ledger_write_failed', {
+        booking_id, worker_id: current.worker_id, worker_name: current.worker_name,
+        amount: earnings, rpc_message: result.rpc_message,
+      });
+      return failAction(500, 'earnings_ledger_write_failed', {
+        booking_id, worker_id: current.worker_id,
+        rpc_success: true, ledger_inserted: false,
+      });
+    }
+  }
+
+  return { status: 200, body: { data: { booking: updated } } };
+}
+
+// === C10: update-staff-payment-method ===
+async function updateStaffPaymentMethodAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const payment_method = readPaymentMethod(body, 'payment_method');
+  const { data, error } = await supabaseAdmin
+    .from('bookings').update({ payment_method, updated_at: new Date().toISOString() })
+    .eq('id', booking_id).select().maybeSingle();
+  if (error) {
+    console.error('[staff:update-staff-payment-method] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return { status: 404, body: { error: 'booking_not_found' } };
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === C11: staff-cancel-booking ===
+async function staffCancelBookingAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const booking_id = readUuidRequired(body, 'booking_id');
+  const cancel_comment = body.cancel_comment !== undefined
+    ? readString(body, 'cancel_comment', { max: 4000, required: false })
+    : null;
+  const current = await lockCarwashBooking(booking_id);
+  if (current.status === 'ГОТОВО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  if (current.status === 'ОТМЕНЕНО') {
+    return { status: 200, body: { data: { booking: current, idempotent: true } } };
+  }
+  await supabaseAdmin
+    .from('worksheet_entries')
+    .delete()
+    .eq('carwash_booking_id', booking_id);
+
+  const { data, error } = await supabaseAdmin
+    .from('bookings')
+    .update({
+      status: 'ОТМЕНЕНО',
+      cancel_comment,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:cancel-booking] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// =========================================================================
+// Tire parallels (10 actions)
+// =========================================================================
+
+// === T1: create-staff-tire-booking ===
+async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  if (!claims.profile_id) throw new ValidationError('missing_profile_id_in_token');
+
+  for (const k of [
+    'end_time', 'booking_source', 'created_by_profile_id', 'status',
+    'paid_at', 'worker_name', 'org_name', 'signature_data', 'completed_at',
+    'services_with_quantities', 'total_price',
+  ]) {
+    if (body[k] !== undefined) throw new ValidationError(`field_not_allowed_${k}`);
+  }
+
+  const target_date    = readISODate(body, 'booking_date');
+  const start_time     = readTimeHHMM(body, 'start_time');
+  const estimated_duration = readNumberInRange(body, 'estimated_duration', 5, 1440, true);
+  const client_name    = readString(body, 'client_name', { max: 200, required: true })!.trim();
+  const phoneRaw = body.phone;
+  if (!phoneRaw) throw new ValidationError('phone_required');
+  const phone = normalizePhoneNumber(String(phoneRaw));
+  const car_model = readString(body, 'car_model', { max: 120, required: true })!.trim();
+  const plate_number = readString(body, 'plate_number', { max: 16, required: true })!.trim().toUpperCase();
+
+  const services_in = body.services;
+  if (!Array.isArray(services_in) || services_in.length === 0) {
+    throw new ValidationError('services_required');
+  }
+  const ids = services_in.map((s: any) => String(s));
+  const idList = ids.map((x) => `'${x.replace(/'/g, "''")}'`).join(',');
+  const { data: tireRows, error: tireErr } = await supabaseAdmin
+    .from('tire_services')
+    .select('id, name, price, duration_minutes, is_custom_price, is_active')
+    .or(`id.in.(${idList})`)
+    .eq('is_active', true);
+  if (tireErr) {
+    console.error('[staff:create-staff-tire-booking] tire_services query error:', tireErr.message);
+    return failAction(500, 'db_error', { detail: tireErr.message });
+  }
+  if (!tireRows || tireRows.length !== ids.length) {
+    const foundIds = new Set((tireRows ?? []).map((r: any) => r.id));
+    const missing = ids.filter((x) => !foundIds.has(x));
+    return failAction(400, `unknown_tire_service_${missing[0]}`);
+  }
+
+  const servicesOut: AnyObj[] = tireRows.map((r: any) => ({
+    id: r.id,
+    name: r.name,
+    price: Number(r.price),
+  }));
+  const total_price = servicesOut.reduce((s, r) => s + Number(r.price), 0);
+
+  const payment_method = body.payment_method !== undefined && body.payment_method !== null
+    ? readPaymentMethod(body, 'payment_method')
+    : null;
+
+  const is_paid = readBoolean(body, 'is_paid');
+  const paid_at = is_paid ? new Date().toISOString() : null;
+  const status = body.status !== undefined
+    ? readTireStatus(body, 'status')
+    : 'ОЖИДАЕТ';
+  const is_org = !!body.is_org;
+  const organization_id = is_org ? readUuidOpt(body, 'organization_id') : null;
+  const driver_id       = is_org ? readUuidOpt(body, 'driver_id')       : null;
+  const car_id          = is_org ? readUuidOpt(body, 'car_id')          : null;
+  const client_id       = !is_org ? readUuidOpt(body, 'client_id')      : null;
+  const client_car_id   = !is_org ? readUuidOpt(body, 'client_car_id')  : null;
+  const worker_id       = readUuidOpt(body, 'worker_id');
+
+  let worker_name: string | null = null;
+  let signature_data: string | null = null;
+  let signature_obtained_at: string | null = null;
+  let org_name: string | null = null;
+
+  if (worker_id) {
+    const { data: w } = await supabaseAdmin.from('tire_workers').select('id, full_name').eq('id', worker_id).maybeSingle();
+    if (!w) return { status: 404, body: { error: 'tire_worker_not_found' } };
+    worker_name = w.full_name;
+  }
+  if (is_org && organization_id) {
+    const { data: o } = await supabaseAdmin.from('organizations').select('id, name').eq('id', organization_id).maybeSingle();
+    if (!o) return { status: 404, body: { error: 'organization_not_found' } };
+    org_name = o.name;
+  }
+  if (is_org && driver_id) {
+    const { data: d } = await supabaseAdmin.from('organization_drivers').select('id, signature_data').eq('id', driver_id).maybeSingle();
+    if (d && d.signature_data) {
+      signature_data = d.signature_data;
+      signature_obtained_at = new Date().toISOString();
+    }
+  }
+
+  const insert: AnyObj = {
+    client_name, phone, car_model, plate_number,
+    booking_date: target_date, start_time, estimated_duration,
+    services: servicesOut, total_price,
+    payment_method, is_paid, paid_at, status,
+    is_org, organization_id, driver_id, car_id, org_name,
+    client_id, client_car_id,
+    worker_id, worker_name,
+    signature_data, signature_obtained_at,
+    booking_source: 'admin',
+    created_by_profile_id: claims.profile_id,
+  };
+  if (body.notes !== undefined) insert.notes = body.notes === null ? null : readString(body, 'notes', { max: 4000, required: false });
+
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings').insert(insert).select().maybeSingle();
+  if (error) {
+    console.error('[staff:create-staff-tire-booking] insert error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === T2: update-staff-tire-booking ===
+async function updateStaffTireBookingAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const ALLOWED = [
+    'client_name', 'phone', 'car_model', 'plate_number',
+    'booking_date', 'start_time', 'estimated_duration',
+    'payment_method', 'notes', 'is_org',
+  ];
+  const DISALLOWED_NAMES = [
+    'status', 'booking_source', 'created_by_profile_id',
+    'total_price', 'services', 'services_with_quantities',
+    'end_time', 'worker_id', 'worker_name', 'org_name',
+    'signature_data', 'signature_obtained_at', 'signature_obtained',
+    'client_id', 'organization_id', 'driver_id', 'car_id', 'client_car_id',
+    'is_paid', 'paid_at', 'completed_at',
+  ];
+  for (const f of DISALLOWED_NAMES) {
+    if (body[f] !== undefined) throw new ValidationError(`field_not_allowed_${f}`);
+  }
+  if (!hasAnyField(body, ALLOWED)) throw new ValidationError('no_fields_to_update');
+
+  const patch: AnyObj = { updated_at: new Date().toISOString() };
+  if (body.client_name !== undefined)  patch.client_name = readString(body, 'client_name', { max: 200, required: true })!.trim();
+  if (body.phone !== undefined)        patch.phone = body.phone ? normalizePhoneNumber(String(body.phone)) : null;
+  if (body.car_model !== undefined)    patch.car_model = readString(body, 'car_model', { max: 120, required: true })!.trim();
+  if (body.plate_number !== undefined) patch.plate_number = readString(body, 'plate_number', { max: 16, required: true })!.trim().toUpperCase();
+  if (body.booking_date !== undefined) patch.booking_date = readISODate(body, 'booking_date');
+  if (body.start_time !== undefined)   patch.start_time = readTimeHHMM(body, 'start_time');
+  if (body.estimated_duration !== undefined) patch.estimated_duration = readNumberInRange(body, 'estimated_duration', 5, 1440, true);
+  if (body.payment_method !== undefined) patch.payment_method = readPaymentMethod(body, 'payment_method');
+  if (body.notes !== undefined)        patch.notes = body.notes === null ? null : readString(body, 'notes', { max: 4000, required: true });
+  if (body.is_org !== undefined)       patch.is_org = !!body.is_org;
+
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings').update(patch).eq('id', tire_booking_id).select().maybeSingle();
+  if (error) {
+    console.error('[staff:update-staff-tire-booking] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return { status: 404, body: { error: 'tire_booking_not_found' } };
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === T3: add-staff-tire-services ===
+async function addStaffTireServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const services_in = body.services;
+  if (!Array.isArray(services_in) || services_in.length === 0) {
+    throw new ValidationError('services_required');
+  }
+  const ids = services_in.map((s: any) => String(s));
+  const idList = ids.map((x) => `'${x.replace(/'/g, "''")}'`).join(',');
+  const current = await lockTireBooking(tire_booking_id);
+  if (current.status === 'ГОТОВО' || current.status === 'ОТМЕНЕНО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  const { data: tireRows, error: tireErr } = await supabaseAdmin
+    .from('tire_services')
+    .select('id, name, price')
+    .or(`id.in.(${idList})`)
+    .eq('is_active', true);
+  if (tireErr) return failAction(500, 'db_error', { detail: tireErr.message });
+  if (!tireRows || tireRows.length !== ids.length) {
+    const foundIds = new Set((tireRows ?? []).map((r: any) => r.id));
+    const missing = ids.filter((x) => !foundIds.has(x));
+    return failAction(400, `unknown_tire_service_${missing[0]}`);
+  }
+  const newOnes = tireRows.map((r: any) => ({ id: r.id, name: r.name, price: Number(r.price) }));
+  const merged = [...((current.services as AnyObj[]) ?? []), ...newOnes];
+  const total_price = merged.reduce((s, r) => s + Number(r.price), 0);
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings')
+    .update({ services: merged, total_price, updated_at: new Date().toISOString() })
+    .eq('id', tire_booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:add-staff-tire-services] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === T4: remove-staff-tire-services ===
+async function removeStaffTireServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const service_id = readUuidRequired(body, 'service_id');
+  const current = await lockTireBooking(tire_booking_id);
+  if (current.status === 'ГОТОВО' || current.status === 'ОТМЕНЕНО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  const merged = ((current.services as AnyObj[]) ?? []).filter((x: any) => x.id !== service_id);
+  const total_price = merged.reduce((s: number, r: any) => s + Number(r.price ?? 0), 0);
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings')
+    .update({ services: merged, total_price, updated_at: new Date().toISOString() })
+    .eq('id', tire_booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:remove-staff-tire-services] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === T5: assign-staff-tire-technician ===
+async function assignStaffTireTechnicianAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const worker_id = readUuidRequired(body, 'worker_id');
+  if (body.worker_name !== undefined) throw new ValidationError('field_not_allowed_worker_name');
+  const { data: w } = await supabaseAdmin.from('tire_workers').select('id, full_name').eq('id', worker_id).maybeSingle();
+  if (!w) return { status: 404, body: { error: 'tire_worker_not_found' } };
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings')
+    .update({ worker_id, worker_name: w.full_name, updated_at: new Date().toISOString() })
+    .eq('id', tire_booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:assign-staff-tire-technician] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return { status: 404, body: { error: 'tire_booking_not_found' } };
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === T6: start-staff-tire-work ===
+// OD#4: tire_bookings has NO work_start_time column. We change status only.
+async function startStaffTireWorkAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const current = await lockTireBooking(tire_booking_id);
+  if (current.status === 'В РАБОТЕ') return { status: 200, body: { data: { booking: current, idempotent: true } } };
+  if (current.status !== 'ОЖИДАЕТ') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings')
+    .update({ status: 'В РАБОТЕ', updated_at: new Date().toISOString() })
+    .eq('id', tire_booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:start-staff-tire-work] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === T7: mark-staff-tire-paid ===
+async function markStaffTirePaidAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const current = await lockTireBooking(tire_booking_id);
+  if (current.status === 'ГОТОВО' || current.status === 'ОТМЕНЕНО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  if (current.is_paid) {
+    return { status: 200, body: { data: { booking: current, idempotent: true } } };
+  }
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings')
+    .update({ is_paid: true, paid_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('id', tire_booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:mark-staff-tire-paid] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === T8: mark-staff-tire-ready ===
+async function markStaffTireReadyAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const current = await lockTireBooking(tire_booking_id);
+  if (current.status === 'ГОТОВО') return { status: 200, body: { data: { booking: current, idempotent: true } } };
+  if (current.status !== 'ОЖИДАЕТ' && current.status !== 'В РАБОТЕ') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  if (!current.is_paid) {
+    return failAction(409, 'must_collect_payment_first');
+  }
+  const { data: updated, error: updErr } = await supabaseAdmin
+    .from('tire_bookings')
+    .update({ status: 'ГОТОВО', updated_at: new Date().toISOString() })
+    .eq('id', tire_booking_id)
+    .select()
+    .maybeSingle();
+  if (updErr) {
+    console.error('[staff:mark-staff-tire-ready] update error:', updErr.message);
+    return failAction(500, 'db_error', { detail: updErr.message });
+  }
+  if (current.worker_id) {
+    const result = await addTireWorkerEarningAndLedger(supabaseAdmin, {
+      worker_id: current.worker_id,
+      worker_name: current.worker_name ?? '(unknown)',
+      booking_id: tire_booking_id,
+      total_price: Number(current.total_price ?? 0),
+      services: ((current.services as AnyObj[]) ?? []) as any,
+    });
+    if (!result.rpc_success && !result.ledger_inserted && result.rpc_message !== 'already_added') {
+      return failAction(500, 'add_tire_worker_earnings_failed', { rpc_message: result.rpc_message });
+    }
+    if (result.rpc_success && !result.ledger_inserted) {
+      console.error('[staff:mark-staff-tire-ready] COMPENSATION ledger_write_failed', {
+        tire_booking_id, worker_id: current.worker_id, worker_name: current.worker_name,
+        rpc_message: result.rpc_message,
+      });
+      return failAction(500, 'earnings_ledger_write_failed', {
+        booking_id: tire_booking_id, worker_id: current.worker_id,
+        rpc_success: true, ledger_inserted: false,
+      });
+    }
+  }
+  return { status: 200, body: { data: { booking: updated } } };
+}
+
+// === T9: update-staff-tire-payment-method ===
+async function updateStaffTirePaymentMethodAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const payment_method = readPaymentMethod(body, 'payment_method');
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings')
+    .update({ payment_method, updated_at: new Date().toISOString() })
+    .eq('id', tire_booking_id)
+    .select()
+    .maybeSingle();
+  if (error) {
+    console.error('[staff:update-staff-tire-payment-method] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  if (!data) return { status: 404, body: { error: 'tire_booking_not_found' } };
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// === T10: staff-cancel-tire-booking ===
+async function staffCancelTireBookingAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
+  const cancel_reason = body.cancel_reason !== undefined
+    ? readString(body, 'cancel_reason', { max: 4000, required: false })
+    : null;
+  const current = await lockTireBooking(tire_booking_id);
+  if (current.status === 'ГОТОВО') {
+    return failAction(409, 'invalid_status_transition', { status: current.status });
+  }
+  if (current.status === 'ОТМЕНЕНО') {
+    return { status: 200, body: { data: { booking: current, idempotent: true } } };
+  }
+  await supabaseAdmin.from('worksheet_entries').delete().eq('tire_booking_id', tire_booking_id);
+
+  const patch: AnyObj = { status: 'ОТМЕНЕНО', updated_at: new Date().toISOString() };
+  if (cancel_reason) patch.notes = cancel_reason;
+  const { data, error } = await supabaseAdmin
+    .from('tire_bookings').update(patch).eq('id', tire_booking_id).select().maybeSingle();
+  if (error) {
+    console.error('[staff:cancel-tire-booking] update error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { booking: data } } };
+}
+
+// =========================================================================
 // Dispatch
 // =========================================================================
 
@@ -674,6 +1597,32 @@ export default async function handler(req: any, res: any) {
       case 'update-driver-signature':      result = await updateDriverSignatureAction(guard.claims, body); break;
       case 'create-org-car':               result = await createOrgCarAction(guard.claims, body); break;
       case 'update-org-car':               result = await updateOrgCarAction(guard.claims, body); break;
+
+      // Slice #3b — carwash:
+      case 'create-staff-booking':         result = await createStaffBookingAction(guard.claims, body); break;
+      case 'update-staff-booking':         result = await updateStaffBookingAction(guard.claims, body); break;
+      case 'add-staff-services':           result = await addStaffServicesAction(guard.claims, body); break;
+      case 'remove-staff-services':        result = await removeStaffServicesAction(guard.claims, body); break;
+      case 'assign-staff-worker':          result = await assignStaffWorkerAction(guard.claims, body); break;
+      case 'unassign-staff-worker':        result = await unassignStaffWorkerAction(guard.claims, body); break;
+      case 'start-staff-work':             result = await startStaffWorkAction(guard.claims, body); break;
+      case 'mark-staff-paid':              result = await markStaffPaidAction(guard.claims, body); break;
+      case 'mark-staff-ready':             result = await markStaffReadyAction(guard.claims, body); break;
+      case 'update-staff-payment-method':  result = await updateStaffPaymentMethodAction(guard.claims, body); break;
+      case 'staff-cancel-booking':         result = await staffCancelBookingAction(guard.claims, body); break;
+
+      // Slice #3b — tire:
+      case 'create-staff-tire-booking':         result = await createStaffTireBookingAction(guard.claims, body); break;
+      case 'update-staff-tire-booking':         result = await updateStaffTireBookingAction(guard.claims, body); break;
+      case 'add-staff-tire-services':           result = await addStaffTireServicesAction(guard.claims, body); break;
+      case 'remove-staff-tire-services':        result = await removeStaffTireServicesAction(guard.claims, body); break;
+      case 'assign-staff-tire-technician':      result = await assignStaffTireTechnicianAction(guard.claims, body); break;
+      case 'start-staff-tire-work':             result = await startStaffTireWorkAction(guard.claims, body); break;
+      case 'mark-staff-tire-paid':              result = await markStaffTirePaidAction(guard.claims, body); break;
+      case 'mark-staff-tire-ready':             result = await markStaffTireReadyAction(guard.claims, body); break;
+      case 'update-staff-tire-payment-method':  result = await updateStaffTirePaymentMethodAction(guard.claims, body); break;
+      case 'staff-cancel-tire-booking':         result = await staffCancelTireBookingAction(guard.claims, body); break;
+
       default:
         return res.status(404).json({ error: 'unknown_action' });
     }
