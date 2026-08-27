@@ -68,7 +68,6 @@ import {
 import { getTireServices } from './lib/api/tire-services';
 import { toggleWorkerWorkingToday, toggleWorkerWorkingMode } from './features/workers/calculateEarnings';
 import { toggleTechnicianWorkingToday } from './features/tire-technicians/calculateEarnings';
-import { addWorkerEarningsForBooking } from './lib/api/workers';
 import { formatDate, addDays } from './shared/utils/date';
 import { Organization, OrganizationDriver, OrganizationCar } from './entities/organization/model';
 
@@ -1310,86 +1309,47 @@ export default function App() {
         return;
       }
 
-      const { getWorkerById, updateWorker } = await import('./lib/api/workers');
-      const updatedWorkers: Worker[] = [];
- 
-      // booking.services - это массив строк (UUID или service_id)
-      // Для обычных услуг хранится UUID (id), для незамерзайки - service_id
+      const { updateWorker, getWorkers } = await import('./lib/api/workers');
+
+      // OD#11: handleMarkAsReady delegates earnings entirely to
+      // mark-staff-ready server-side path (RPC + ledger, race-safe via
+      // R5 cluster). No client-side RPC bypass. Antifreeze-only bookings
+      // ALSO generate earnings — server-side computeWorkerEarnings uses
+      // booking.price + discount × solo/pair rate (no antifreeze-specific
+      // branch, antifreeze services count toward commission just like
+      // regular ones).
+      //
+      // Pre-emptive worker status reset for antifreeze-only bookings
+      // (and only those) is preserved: antifreeze services don't go
+      // through the regular services path that triggers worker status
+      // updates elsewhere, so we reset status here before mark-staff-ready
+      // finalizes the booking. Non-antifreeze bookings' worker status is
+      // already reset by handleAddService / handleRemoveService flow.
       const hasOnlyAntifreeze = booking.services.every(serviceId =>
         ANTIFREEZE_SERVICE_IDS.includes(serviceId)
       );
-
       if (hasOnlyAntifreeze) {
         if (booking.worker_id) {
           await updateWorker(booking.worker_id, {
             status: 'available',
-            current_booking_id: null
+            current_booking_id: null,
           });
         }
         if (booking.worker_id_2) {
           await updateWorker(booking.worker_id_2, {
             status: 'available',
-            current_booking_id: null
+            current_booking_id: null,
           });
-        }
-      } else {
-        if (booking.worker_id && booking.worker_name) {
-          const worker = await getWorkerById(booking.worker_id);
-          if (worker) {
-            const updatedWorker = await addWorkerEarningsForBooking(
-              booking.worker_id,
-              bookingId,
-              booking.price,
-              booking.worker_name_2 || undefined
-            );
-
-            await updateWorker(booking.worker_id, {
-              status: 'available',
-              current_booking_id: null
-            });
-
-            updatedWorkers.push({
-              ...updatedWorker,
-              status: 'available',
-              current_booking_id: null
-            });
-          }
-        }
-
-        if (booking.worker_id_2 && booking.worker_name_2) {
-          const worker2 = await getWorkerById(booking.worker_id_2);
-          if (worker2) {
-            const updatedWorker2 = await addWorkerEarningsForBooking(
-              booking.worker_id_2,
-              bookingId,
-              booking.price,
-              booking.worker_name || undefined
-            );
-
-            await updateWorker(booking.worker_id_2, {
-              status: 'available',
-              current_booking_id: null
-            });
-
-            updatedWorkers.push({
-              ...updatedWorker2,
-              status: 'available',
-              current_booking_id: null
-            });
-          }
-        }
-
-        if (updatedWorkers.length > 0) {
-          setWorkers(currentWorkers =>
-            currentWorkers.map(w => {
-              const updated = updatedWorkers.find(uw => uw.id === w.id);
-              return updated ? updated : w;
-            })
-          );
         }
       }
 
       await markStaffReady(bookingId);
+
+      // Refresh local worker state to reflect mark-staff-ready's
+      // earned_today / completed_bookings / current_balance updates
+      // server-side.
+      const updatedWorkers = await getWorkers();
+      setWorkers(updatedWorkers);
 
       await loadBookings();
       await loadQuickBookings();
