@@ -6,7 +6,8 @@ import { Checkbox } from '../ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { ArrowLeft, Check, Building2, FileText, MapPin, CreditCard, User, Phone, Mail, Globe, AlertCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { getCompanySettings, createCompanySettings, updateCompanySettings } from '../../lib/api/companySettings';
+import { getCompanySettings } from '../../lib/api/companySettings';
+import { createStaffCompanySettings, updateStaffCompanySettings } from '../../lib/api/staff-actions';
 import type { CompanySettings, CompanySettingsInput } from '../../entities/companySettings/model';
 import { normalizePhoneNumber } from '../../shared/utils/phone';
 
@@ -181,10 +182,13 @@ export const CompanySettingsWizard: React.FC<CompanySettingsWizardProps> = ({
 
       if (existingSettings) {
         // Обновляем существующую запись
-        await updateCompanySettings(existingSettings.id, data);
+        await updateStaffCompanySettings({
+          settings_id: existingSettings.id,
+          ...data,
+        });
       } else {
         // Создаем новую запись
-        await createCompanySettings(data);
+        await createStaffCompanySettings(data);
       }
 
       setSaveSuccess(true);

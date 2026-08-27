@@ -10,7 +10,16 @@ import { formatDate } from '../../shared/utils/date';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import type { Admin } from '../../lib/types/admin';
-import { getAdmins, createAdmin, updateAdmin, deleteAdmin, startAdminShift, finishAdminShift, payoutAdminSalary, giveAdminAdvance, transferAdminEarningsToBalance, getAdminById } from '../../lib/api/admins';
+import { getAdmins, getAdminById } from '../../lib/api/admins';
+import {
+  createStaffAdmin,
+  updateStaffAdmin,
+  deleteStaffAdmin,
+  startStaffAdminShift,
+  adminGiveAdvance,
+  adminPayoutSalary,
+  adminTransferBalance,
+} from '../../lib/api/staff-actions';
 import { getSalarySettings } from '../../lib/api/salary';
 import { getTransactionsByWorkerAndType, getWorkerTransfersForPeriod, type SalaryTransaction } from '../../lib/api/salary-transactions';
 import { getWorkShiftsByWorker } from '../../lib/api/work-shifts';
@@ -120,21 +129,15 @@ export const Admins: React.FC<AdminsProps> = ({
 
   const handleAddAdmin = async (adminData: { name: string; phone: string; cardDetails?: string; paymentPhone?: string; paymentComment?: string }) => {
     try {
-      const newAdmin = await createAdmin({
+      // Slice #3c: server-stamped action via dispatcher.
+      // Server ignores browser-supplied numeric/balance/date fields
+      // (server zeros them on INSERT) — only full_name + contact fields
+      // are accepted.
+      const newAdmin = await createStaffAdmin({
         full_name: adminData.name,
         phone: normalizePhoneNumber(adminData.phone),
         card_number: adminData.cardDetails || null,
         payment_phone: adminData.paymentPhone ? normalizePhoneNumber(adminData.paymentPhone) : null,
-        payment_comment: adminData.paymentComment || null,
-        is_active: true,
-        fixed_salary: salarySettings?.admin_fixed_salary || 2000,
-        earned_today: 0,
-        current_balance: 0,
-        is_advance_taken: false,
-        base_rate_taken_today: false,
-        is_working_today: false,
-        days_worked_this_month: 0,
-        last_shift_date: null,
       });
       setAdmins([...admins, newAdmin]);
       setIsAddModalOpen(false);
@@ -155,8 +158,11 @@ export const Admins: React.FC<AdminsProps> = ({
 
     try {
       setStartingShiftAdminId(adminId); // 🔒 УРОВЕНЬ 3: Блокируем кнопку
-      // Начинаем смену (startAdminShift уже обновляет БД и создаёт транзакцию)
-      await startAdminShift(adminId);
+      // Slice #3c: dispatcher proxy for INVOKER start_admin_shift RPC.
+      // After migration 017 (REVOKE INSERT/UPDATE on admins), direct
+      // supabase.rpc('start_admin_shift', ...) from anon/authenticated
+      // fails. Dispatcher calls RPC with service_role (bypasses grant).
+      await startStaffAdminShift(adminId);
       // Перезагружаем админа из БД для получения актуальных данных
       const updatedAdmin = await getAdminById(adminId);
       if (updatedAdmin) {
@@ -185,7 +191,7 @@ export const Admins: React.FC<AdminsProps> = ({
     });
 
     try {
-      const updatedAdmin = await transferAdminEarningsToBalance(adminId);
+      const updatedAdmin = await adminTransferBalance(adminId);
       setAdmins(admins.map(a => a.id === adminId ? updatedAdmin : a));
       // Перезагружаем транзакции для отображения нового начисления
       await loadAdminTransactions(adminId);
@@ -200,7 +206,7 @@ export const Admins: React.FC<AdminsProps> = ({
     if (isNaN(amount) || amount <= 0) return;
 
     try {
-      const updatedAdmin = await payoutAdminSalary(adminId, amount);
+      const updatedAdmin = await adminPayoutSalary(adminId, amount);
       setAdmins(admins.map(a => a.id === adminId ? updatedAdmin : a));
       setPayoutAmounts(prev => ({ ...prev, [adminId]: '' }));
       // Перезагружаем транзакции для отображения новой выплаты
@@ -216,7 +222,7 @@ export const Admins: React.FC<AdminsProps> = ({
     if (isNaN(amount) || amount <= 0) return;
 
     try {
-      const updatedAdmin = await giveAdminAdvance(adminId, amount);
+      const updatedAdmin = await adminGiveAdvance(adminId, amount);
       setAdmins(admins.map(a => a.id === adminId ? updatedAdmin : a));
       setPayoutAmounts(prev => ({ ...prev, [adminId]: '' }));
       // Перезагружаем транзакции для отображения нового аванса
@@ -249,11 +255,15 @@ export const Admins: React.FC<AdminsProps> = ({
     }
   };
 
-  const handleDeleteAdmin = (adminId: string) => {
+  const handleDeleteAdmin = async (adminId: string) => {
     if (window.confirm('Вы уверены, что хотите удалить этого админа?')) {
-      deleteAdmin(adminId).then(() => {
+      try {
+        await deleteStaffAdmin(adminId);
         setAdmins(admins.filter(a => a.id !== adminId));
-      });
+      } catch (error) {
+        console.error('Ошибка при удалении админа:', error);
+        alert(error instanceof Error ? error.message : 'Не удалось удалить админа');
+      }
     }
   };
 
@@ -272,7 +282,7 @@ export const Admins: React.FC<AdminsProps> = ({
 
   const handleSaveCardDetails = async (adminId: string) => {
     try {
-      const updatedAdmin = await updateAdmin(adminId, {
+      const updatedAdmin = await updateStaffAdmin(adminId, {
         card_number: editingCardDetails,
       });
       setAdmins(admins.map(a => a.id === adminId ? updatedAdmin : a));
@@ -280,7 +290,7 @@ export const Admins: React.FC<AdminsProps> = ({
       setEditingCardDetails('');
     } catch (error) {
       console.error('Ошибка при сохранении реквизитов:', error);
-      alert('Не удалось сохранить реквизиты');
+      alert(error instanceof Error ? error.message : 'Не удалось сохранить реквизиты');
     }
   };
 
@@ -321,7 +331,7 @@ export const Admins: React.FC<AdminsProps> = ({
 
   const handleSavePayment = async (adminId: string) => {
     try {
-      const updatedAdmin = await updateAdmin(adminId, {
+      const updatedAdmin = await updateStaffAdmin(adminId, {
         payment_phone: normalizePhoneNumber(editingPaymentPhone),
         payment_comment: editingPaymentComment,
       });
@@ -331,7 +341,7 @@ export const Admins: React.FC<AdminsProps> = ({
       setEditingPaymentComment('');
     } catch (error) {
       console.error('Ошибка при сохранении телефона и комментария:', error);
-      alert('Не удалось сохранить телефон и комментарий');
+      alert(error instanceof Error ? error.message : 'Не удалось сохранить телефон и комментарий');
     }
   };
 
@@ -348,7 +358,7 @@ export const Admins: React.FC<AdminsProps> = ({
 
   const handleSaveSalaryComment = async (adminId: string) => {
     try {
-      const updatedAdmin = await updateAdmin(adminId, {
+      const updatedAdmin = await updateStaffAdmin(adminId, {
         salary_comment: editingSalaryComment,
       });
       setAdmins(admins.map(a => a.id === adminId ? updatedAdmin : a));
@@ -356,7 +366,7 @@ export const Admins: React.FC<AdminsProps> = ({
       setEditingSalaryComment('');
     } catch (error) {
       console.error('Ошибка при сохранении комментария к выплате:', error);
-      alert('Не удалось сохранить комментарий');
+      alert(error instanceof Error ? error.message : 'Не удалось сохранить комментарий');
     }
   };
 

@@ -4,7 +4,8 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { ArrowLeft, Check, AlertCircle, User, Wrench, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { getSalarySettings, updateSalarySettings } from '../../lib/api/salary';
+import { getSalarySettings } from '../../lib/api/salary';
+import { updateStaffSalarySettings } from '../../lib/api/staff-actions';
 import type { SalarySettings } from '../../lib/types/salary';
 
 interface SalarySettingsWizardProps {
@@ -135,7 +136,7 @@ export const SalarySettingsWizard: React.FC<SalarySettingsWizardProps> = ({
         tire_worker_storage_fee: tireWorkerStorageFee,
       };
 
-      await updateSalarySettings(updates);
+      await updateStaffSalarySettings(updates);
 
       setSaveSuccess(true);
 
