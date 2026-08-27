@@ -1921,6 +1921,12 @@ async function startWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promi
 // server-side SELECT of the active shift row (no promise in RPC response).
 async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const worker_id = readUuidRequired(body, 'worker_id');
+
+  // Pre-flight: worker must exist (RPC returns no-row silently otherwise).
+  const { data: pre } = await supabaseAdmin
+    .from('tire_workers').select('id').eq('id', worker_id).maybeSingle();
+  if (!pre) return failAction(404, 'tire_worker_not_found');
+
   const today = new Date().toISOString().slice(0, 10);
   const { data: worker, error } = await supabaseAdmin.rpc('start_tire_worker_shift', {
     p_worker_id: worker_id,
@@ -1976,6 +1982,12 @@ async function startTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): P
 // RPC returns tire_workers; dispatcher enriches with the just-closed shift row.
 async function stopTireWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const worker_id = readUuidRequired(body, 'worker_id');
+
+  // Pre-flight: worker must exist (RPC returns no-row silently otherwise).
+  const { data: pre } = await supabaseAdmin
+    .from('tire_workers').select('id').eq('id', worker_id).maybeSingle();
+  if (!pre) return failAction(404, 'tire_worker_not_found');
+
   const { data: worker, error } = await supabaseAdmin.rpc('stop_tire_worker_shift', {
     p_worker_id: worker_id,
   });
