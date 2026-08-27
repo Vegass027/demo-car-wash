@@ -673,6 +673,89 @@ async function postTestCleanup() {
   }
 
   // -----------------------------------------------------------------------
+  console.log('\n--- CHANGE-PASSWORD (Phase 2.1a E1..E7) ---');
+  // Phase 2.1a contract for change-password:
+  //   E1: no token → 401
+  //   E2: client JWT → 403 wrong_role
+  //   E3: missing old/new password → 400 password_required
+  //   E4: same old=new → 400 password_same_as_old
+  //   E5: wrong old password → 400 invalid_credentials (RPC returns false)
+  //   E6: p_user_id in body → 400 field_not_allowed_p_user_id (server-stamped)
+  //   E7: valid old + new (the demo_admin/demo_admin123 password pair)
+  //       → 200 success. Restore password to demo_admin12345 (or known good)
+  //       so subsequent test runs don't break.
+  //
+  // Note: demo_admin password in test-DB is 'test1234'. We change to
+  // a test-only password, run E5 (wrong old), then change BACK to
+  // test1234 to leave the seed intact for other tests.
+  const TEST_NEW_PASSWORD = 'demo_test_e7_new_pwd_' + Date.now();
+  {
+    // E1: no token
+    const r = await api('POST', '/api/staff?action=change-password',
+      { p_old_password: 'test1234', p_new_password: TEST_NEW_PASSWORD }, null);
+    assert('E1: change-password no token → 401', r.status === 401, `status=${r.status}`);
+  }
+  if (clientToken) {
+    // E2: client JWT (wrong role)
+    const r = await api('POST', '/api/staff?action=change-password',
+      { p_old_password: 'test1234', p_new_password: TEST_NEW_PASSWORD }, clientToken);
+    assert('E2: change-password client JWT → 403 wrong_role',
+      r.status === 403 && r.data?.error === 'wrong_role',
+      `status=${r.status} error=${r.data?.error}`);
+  } else {
+    console.log('  SKIP E2 (change-password): client JWT unavailable');
+  }
+  {
+    // E3: missing fields
+    const r = await api('POST', '/api/staff?action=change-password', {}, staffToken);
+    assert('E3: change-password missing fields → 400 password_required',
+      r.status === 400 && r.data?.error === 'password_required',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+  {
+    // E4: same-as-old
+    const r = await api('POST', '/api/staff?action=change-password',
+      { p_old_password: 'test1234', p_new_password: 'test1234' }, staffToken);
+    assert('E4: change-password same-as-old → 400 password_same_as_old',
+      r.status === 400 && r.data?.error === 'password_same_as_old',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+  {
+    // E5: wrong old password
+    const r = await api('POST', '/api/staff?action=change-password',
+      { p_old_password: 'definitely-wrong-old-pwd', p_new_password: TEST_NEW_PASSWORD }, staffToken);
+    assert('E5: change-password wrong old → 400 invalid_credentials',
+      r.status === 400 && r.data?.error === 'invalid_credentials',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+  {
+    // E6: p_user_id in body must be rejected (server-stamped)
+    const r = await api('POST', '/api/staff?action=change-password',
+      {
+        p_user_id: '00000000-0000-0000-0000-000000000000',
+        p_old_password: 'test1234',
+        p_new_password: TEST_NEW_PASSWORD,
+      }, staffToken);
+    assert('E6: change-password p_user_id in body → 400 field_not_allowed_p_user_id',
+      r.status === 400 && r.data?.error === 'field_not_allowed_p_user_id',
+      `status=${r.status} error=${r.data?.error}`);
+  }
+  {
+    // E7: valid change + restore. We change demo_admin to TEST_NEW_PASSWORD
+    // and then back to test1234 to keep test data stable.
+    const r1 = await api('POST', '/api/staff?action=change-password',
+      { p_old_password: 'test1234', p_new_password: TEST_NEW_PASSWORD }, staffToken);
+    assert('E7a: change-password valid → 200 success',
+      r1.status === 200 && r1.data?.data?.success === true,
+      `status=${r1.status} body=${JSON.stringify(r1.data)}`);
+    const r2 = await api('POST', '/api/staff?action=change-password',
+      { p_old_password: TEST_NEW_PASSWORD, p_new_password: 'test1234' }, staffToken);
+    assert('E7b: change-password restore to test1234 → 200',
+      r2.status === 200 && r2.data?.data?.success === true,
+      `status=${r2.status} body=${JSON.stringify(r2.data)}`);
+  }
+
+  // -----------------------------------------------------------------------
   console.log('\n--- EARNINGS + RACE / IDEMPOTENCY CLUSTER (R1..R8) ---');
   // Read-only psql helpers — resolve real worker_id / tire_worker_id so we
   // can exercise the two-step earnings pipeline end-to-end.
