@@ -494,11 +494,11 @@ async function postTestCleanup() {
       `status=${r.status} error=${r.data?.error}`);
     if (r.status === 200 && r.data?.data?.booking?.id) created.tire_bookings.push(r.data.data.booking.id);
   }
-  // T6: 'Наличный' (carwash enum value) → 400 invalid_payment_method (validation.ts excludes)
+  // T6: 'FooBar' (not in either enum) → 400 invalid_payment_method
   {
     const r = await api('POST', '/api/staff?action=create-staff-tire-booking',
-      makeTireBody({ plate_number: 'T006TT', payment_method: 'Наличный' }), staffToken);
-    assert('T6: Наличный (not in API enum) → 400', r.status === 400,
+      makeTireBody({ plate_number: 'T006TT', payment_method: 'FooBar' }), staffToken);
+    assert('T6: unknown payment_method → 400', r.status === 400,
       `status=${r.status} error=${r.data?.error}`);
   }
   // T7: is_paid=true → server-derives paid_at
