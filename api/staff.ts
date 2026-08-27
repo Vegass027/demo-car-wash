@@ -96,6 +96,9 @@ const ALLOWED_ACTIONS = new Set([
   'mark-staff-tire-ready',
   'update-staff-tire-payment-method',
   'staff-cancel-tire-booking',
+
+  // Phase 2.1a — staff self-service password change:
+  'change-password',
 ]);
 
 const supabaseAdmin = createClient(
@@ -1620,6 +1623,68 @@ async function staffCancelTireBookingAction(_claims: StaffClaims, body: AnyObj):
 }
 
 // =========================================================================
+// Phase 2.1a — change-password (staff self-service)
+// =========================================================================
+//
+// Server-side action replacing the legacy direct supabase.rpc('change_password')
+// call in components/admin/ChangePasswordWizard.tsx.
+//
+// Contract:
+//   requireStaff (admin OR owner) — verified by caller-side guard.
+//   p_user_id is server-stamped from claims.profile_id — NEVER from body.
+//     An admin changing another admin's password requires a separate admin
+//     action (not in scope for Phase 2.1a — owner self-service is enough
+//     for now since ChangePasswordWizard only changes the OWN profile's
+//     password).
+//   p_old_password and p_new_password validated (1..200 chars).
+//   Reject same-as-old to prevent no-op writes (RPC doesn't check this).
+//
+// RPC `change_password` returns boolean:
+//   true  → password updated
+//   false → either profile not found OR old_password mismatch
+//           (don't leak which — both → 400 invalid_credentials).
+//
+// After Phase 2.1a is deployed + smoke-tested, this is followed by:
+//   migration 016_revoke_change_password.sql
+//   REVOKE EXECUTE FROM PUBLIC + FROM anon + FROM authenticated
+//   on public.change_password(...) — service_role EXEC preserved.
+async function changeStaffPasswordAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  // Reject any attempt to specify p_user_id — must be server-stamped.
+  if (body.p_user_id !== undefined) {
+    throw new ValidationError('field_not_allowed_p_user_id');
+  }
+  const oldPassword = readString(body, 'p_old_password', { max: 200, required: true });
+  const newPassword = readString(body, 'p_new_password', { max: 200, required: true });
+  if (!oldPassword || !newPassword) {
+    throw new ValidationError('password_required');
+  }
+  if (oldPassword.length < 1 || newPassword.length < 1) {
+    throw new ValidationError('password_too_short');
+  }
+  // Reject same-as-old explicitly (RPC allows it but it's a no-op that
+  // wastes a write + bumps updated_at).
+  if (oldPassword === newPassword) {
+    return failAction(400, 'password_same_as_old');
+  }
+
+  const { data, error } = await supabaseAdmin.rpc('change_password', {
+    p_user_id: claims.profile_id,
+    p_old_password: oldPassword,
+    p_new_password: newPassword,
+  });
+  if (error) {
+    console.error('[staff:change-password] rpc error:', error.message);
+    return failAction(500, 'change_password_failed', { detail: error.message });
+  }
+  if (data !== true) {
+    // RPC returned false — covers both "profile not found" and
+    // "old_password mismatch". Don't leak which case.
+    return failAction(400, 'invalid_credentials');
+  }
+  return { status: 200, body: { data: { success: true } } };
+}
+
+// =========================================================================
 // Dispatch
 // =========================================================================
 
@@ -1701,6 +1766,9 @@ export default async function handler(req: any, res: any) {
       case 'mark-staff-tire-ready':             result = await markStaffTireReadyAction(guard.claims, body); break;
       case 'update-staff-tire-payment-method':  result = await updateStaffTirePaymentMethodAction(guard.claims, body); break;
       case 'staff-cancel-tire-booking':         result = await staffCancelTireBookingAction(guard.claims, body); break;
+
+      // Phase 2.1a — staff self-service password change:
+      case 'change-password':                    result = await changeStaffPasswordAction(guard.claims, body); break;
 
       default:
         return res.status(404).json({ error: 'unknown_action' });

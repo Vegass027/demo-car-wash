@@ -5,6 +5,7 @@ import { Label } from '../ui/label';
 import { ArrowLeft, Check, AlertCircle, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { supabase } from '../../lib/supabase';
+import { changeStaffPassword } from '../../lib/api/staff-actions';
 import {
   Accordion,
   AccordionContent,
@@ -74,38 +75,37 @@ const PasswordChangeForm: React.FC<PasswordChangeFormProps> = ({
     setSaveSuccess(false);
 
     try {
-      const { data, error } = await supabase.rpc('change_password', {
-        p_user_id: userId,
-        p_old_password: oldPassword,
-        p_new_password: newPassword,
-      });
-
-      if (error) {
-        console.error('[PasswordChangeForm] Error:', error);
-        setSaveError('Ошибка при смене пароля');
-        setSaving(false);
-        return;
-      }
-
-      if (data === false) {
-        setSaveError('Неверный старый пароль');
-        setSaving(false);
-        return;
-      }
+      // Phase 2.1a: change-password is now a server-stamped dispatcher
+      // action. p_user_id is taken from JWT claims.profile_id server-side
+      // (admin/owner changes THEIR OWN password only). Caller cannot
+      // specify another user's id.
+      await changeStaffPassword(oldPassword, newPassword);
 
       setSaveSuccess(true);
       // Очищаем форму
       setOldPassword('');
       setNewPassword('');
       setConfirmPassword('');
-      
+
       // Скрываем сообщение об успехе через 2 секунды
       setTimeout(() => {
         setSaveSuccess(false);
       }, 2000);
-    } catch (error) {
-      console.error('[PasswordChangeForm] Error:', error);
-      setSaveError('Неожиданная ошибка');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Map known server error codes to user-friendly Russian messages.
+      if (msg.startsWith('invalid_credentials')) {
+        setSaveError('Неверный старый пароль');
+      } else if (msg.startsWith('password_same_as_old')) {
+        setSaveError('Новый пароль совпадает со старым');
+      } else if (msg.startsWith('field_not_allowed_p_user_id')) {
+        setSaveError('Внутренняя ошибка: попытка смены чужого пароля');
+      } else if (msg.startsWith('password_required')) {
+        setSaveError('Введите старый и новый пароль');
+      } else {
+        console.error('[PasswordChangeForm] Error:', err);
+        setSaveError('Ошибка при смене пароля');
+      }
     } finally {
       setSaving(false);
     }
