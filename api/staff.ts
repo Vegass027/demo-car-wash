@@ -2012,7 +2012,12 @@ async function createEarningTransactionAction(_claims: StaffClaims, body: AnyObj
   const worker_name = readString(body, 'worker_name', { max: 200, required: true });
   const amount = Number(body.amount);
   if (!Number.isFinite(amount)) throw new ValidationError('amount_invalid');
-  const balance_after = body.balance_after !== undefined ? Number(body.balance_after) : null;
+  // balance_after is NOT NULL in DB — make it required.
+  if (body.balance_after === undefined || body.balance_after === null) {
+    throw new ValidationError('balance_after_required');
+  }
+  const balance_after = Number(body.balance_after);
+  if (!Number.isFinite(balance_after)) throw new ValidationError('balance_after_invalid');
   const description = body.description !== undefined ? body.description : null;
   const { data, error } = await supabaseAdmin.from('salary_transactions').insert({
     worker_type,
@@ -2038,7 +2043,11 @@ async function createAdvanceTransactionAction(_claims: StaffClaims, body: AnyObj
   const worker_name = readString(body, 'worker_name', { max: 200, required: true });
   const amount = Number(body.amount);
   if (!Number.isFinite(amount) || amount <= 0) throw new ValidationError('amount_invalid');
-  const balance_after = body.balance_after !== undefined ? Number(body.balance_after) : null;
+  if (body.balance_after === undefined || body.balance_after === null) {
+    throw new ValidationError('balance_after_required');
+  }
+  const balance_after = Number(body.balance_after);
+  if (!Number.isFinite(balance_after)) throw new ValidationError('balance_after_invalid');
   const description = body.description !== undefined ? body.description : null;
   const notes = body.notes !== undefined ? body.notes : null;
   const { data, error } = await supabaseAdmin.from('salary_transactions').insert({
@@ -2066,7 +2075,11 @@ async function createPayoutTransactionAction(_claims: StaffClaims, body: AnyObj)
   const worker_name = readString(body, 'worker_name', { max: 200, required: true });
   const amount = Number(body.amount);
   if (!Number.isFinite(amount) || amount <= 0) throw new ValidationError('amount_invalid');
-  const balance_after = body.balance_after !== undefined ? Number(body.balance_after) : null;
+  if (body.balance_after === undefined || body.balance_after === null) {
+    throw new ValidationError('balance_after_required');
+  }
+  const balance_after = Number(body.balance_after);
+  if (!Number.isFinite(balance_after)) throw new ValidationError('balance_after_invalid');
   const description = body.description !== undefined ? body.description : null;
   const notes = body.notes !== undefined ? body.notes : null;
   const { data, error } = await supabaseAdmin.from('salary_transactions').insert({
@@ -2094,7 +2107,11 @@ async function createTransferTransactionAction(_claims: StaffClaims, body: AnyOb
   const worker_name = readString(body, 'worker_name', { max: 200, required: true });
   const amount = Number(body.amount);
   if (!Number.isFinite(amount) || amount <= 0) throw new ValidationError('amount_invalid');
-  const balance_after = body.balance_after !== undefined ? Number(body.balance_after) : null;
+  if (body.balance_after === undefined || body.balance_after === null) {
+    throw new ValidationError('balance_after_required');
+  }
+  const balance_after = Number(body.balance_after);
+  if (!Number.isFinite(balance_after)) throw new ValidationError('balance_after_invalid');
   const description = body.description !== undefined ? body.description : null;
   const { data, error } = await supabaseAdmin.from('salary_transactions').insert({
     worker_type,
