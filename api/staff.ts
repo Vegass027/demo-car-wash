@@ -153,6 +153,11 @@ const ALLOWED_ACTIONS = new Set([
   // Slice #3e Phase A follow-up: admin Boxes toggle.
   // Closes Slice #3d migration 019 anon INSERT/UPDATE/DELETE grant revoke gap.
   'toggle-box',
+
+  // Slice #3e Phase A follow-up: admin Boxes per-hour open/close.
+  // Closes DayTimeline.tsx anon-key 42501 permission denied gap.
+  'open-box-for-hour',
+  'close-box-for-hour',
 ]);
 
 const supabaseAdmin = createClient(
@@ -428,6 +433,167 @@ async function toggleBoxAction(_claims: StaffClaims, body: AnyObj): Promise<Acti
   }
 
   return { status: 200, body: { data: { closedBox: result, toggled: true } } };
+}
+
+// === action: open-box-for-hour ===
+//
+// Slice #3e Phase A follow-up: ports lib/api/boxes.ts:openBoxForHour anon-side
+// admin per-hour operation to dispatcher with service_role bypass.
+//
+// Body:
+//   box_number: integer 1-3
+//   closed_date: string YYYY-MM-DD
+//   hour: integer 0-23
+//   profile_id: string UUID (admin/owner)
+//
+// Logic (mirrors original openBoxForHour):
+//   1. SELECT existing row WHERE box_number AND closed_date
+//   2a. exists + is_closed=true AND hour NOT in open_hours →
+//       UPDATE open_hours to include hour (append+sort)
+//   2b. else return existing (hour already open)
+//   3. no row → INSERT is_closed=true + open_hours=[hour]
+async function openBoxForHourAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const box_number = readNumberInRange(body, 'box_number', 1, 99);
+  if (box_number === null || box_number === undefined) {
+    return failAction(400, 'box_number_required');
+  }
+  const closed_date = readISODate(body, 'closed_date');
+  const hourRaw = body.hour;
+  const hour = typeof hourRaw === 'number' ? hourRaw : parseInt(String(hourRaw), 10);
+  if (typeof hour !== 'number' || isNaN(hour) || hour < 0 || hour > 23) {
+    return failAction(400, 'hour_required_0_23');
+  }
+  const profile_id = readUuidRequired(body, 'profile_id');
+
+  const { data: existing, error: exErr } = await supabaseAdmin
+    .from('closed_boxes')
+    .select('*')
+    .eq('box_number', box_number)
+    .eq('closed_date', closed_date)
+    .maybeSingle();
+
+  if (exErr) {
+    console.error('[staff:open-box-for-hour] lookup error:', exErr.message);
+    return failAction(500, 'db_error', { detail: exErr.message });
+  }
+
+  let result;
+  if (existing) {
+    const currentOpenHours = existing.open_hours || [];
+    if (existing.is_closed && !currentOpenHours.includes(hour)) {
+      const newOpenHours = [...currentOpenHours, hour].sort((a: number, b: number) => a - b);
+      const { data, error } = await supabaseAdmin
+        .from('closed_boxes')
+        .update({
+          open_hours: newOpenHours,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('box_number', box_number)
+        .eq('closed_date', closed_date)
+        .select()
+        .maybeSingle();
+
+      if (error) {
+        console.error('[staff:open-box-for-hour] update error:', error.message);
+        return failAction(500, 'db_error', { detail: error.message });
+      }
+      result = data;
+    } else {
+      result = existing; // hour already open, or box is fully open
+    }
+  } else {
+    // No row → create closed box with single open hour
+    const { data, error } = await supabaseAdmin
+      .from('closed_boxes')
+      .insert({
+        box_number,
+        closed_date,
+        is_closed: true,
+        open_hours: [hour],
+        closed_at: new Date().toISOString(),
+        closed_by: profile_id,
+      })
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      console.error('[staff:open-box-for-hour] insert error:', error.message);
+      return failAction(500, 'db_error', { detail: error.message });
+    }
+    result = data;
+  }
+
+  return { status: 200, body: { data: { closedBox: result, hour_opened: hour } } };
+}
+
+// === action: close-box-for-hour ===
+//
+// Slice #3e Phase A follow-up: ports lib/api/boxes.ts:closeBoxForHour anon-side
+// admin per-hour operation to dispatcher with service_role bypass.
+//
+// Body:
+//   box_number: integer 1-3
+//   closed_date: string YYYY-MM-DD
+//   hour: integer 0-23
+//   profile_id: string UUID (admin/owner)
+//
+// Logic:
+//   1. SELECT existing row WHERE box_number AND closed_date
+//   2a. exists + hour in open_hours → UPDATE open_hours remove hour
+//   2b. exists + hour NOT in open_hours (fully closed) → return existing
+//   3. no row → return 404 box_not_found_for_date
+async function closeBoxForHourAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const box_number = readNumberInRange(body, 'box_number', 1, 99);
+  if (box_number === null || box_number === undefined) {
+    return failAction(400, 'box_number_required');
+  }
+  const closed_date = readISODate(body, 'closed_date');
+  const hourRaw = body.hour;
+  const hour = typeof hourRaw === 'number' ? hourRaw : parseInt(String(hourRaw), 10);
+  if (typeof hour !== 'number' || isNaN(hour) || hour < 0 || hour > 23) {
+    return failAction(400, 'hour_required_0_23');
+  }
+  const profile_id = readUuidRequired(body, 'profile_id');
+
+  const { data: existing, error: exErr } = await supabaseAdmin
+    .from('closed_boxes')
+    .select('*')
+    .eq('box_number', box_number)
+    .eq('closed_date', closed_date)
+    .maybeSingle();
+
+  if (exErr) {
+    console.error('[staff:close-box-for-hour] lookup error:', exErr.message);
+    return failAction(500, 'db_error', { detail: exErr.message });
+  }
+
+  if (!existing) {
+    return failAction(404, 'box_not_found_for_date');
+  }
+
+  const currentOpenHours = existing.open_hours || [];
+  let result = existing;
+  if (currentOpenHours.includes(hour)) {
+    const newOpenHours = currentOpenHours.filter((h: number) => h !== hour);
+    const { data, error } = await supabaseAdmin
+      .from('closed_boxes')
+      .update({
+        open_hours: newOpenHours,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('box_number', box_number)
+      .eq('closed_date', closed_date)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      console.error('[staff:close-box-for-hour] update error:', error.message);
+      return failAction(500, 'db_error', { detail: error.message });
+    }
+    result = data;
+  }
+
+  return { status: 200, body: { data: { closedBox: result, hour_closed: hour } } };
 }
 
 async function searchClientByPhone(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
@@ -2918,6 +3084,8 @@ export default async function handler(req: any, res: any) {
       case 'list-clients-with-cars':       result = await listClientsWithCarsAction(guard.claims, body); break;
       case 'get-client-cars-by-client-id': result = await getClientCarsByClientIdAction(guard.claims, body); break;
       case 'toggle-box':                   result = await toggleBoxAction(guard.claims, body); break;
+      case 'open-box-for-hour':           result = await openBoxForHourAction(guard.claims, body); break;
+      case 'close-box-for-hour':          result = await closeBoxForHourAction(guard.claims, body); break;
       case 'create-client':                result = await createClientAction(guard.claims, body); break;
       case 'update-client':                result = await updateClientAction(guard.claims, body); break;
       case 'unblock-client':               result = await unblockClientAction(guard.claims, body); break;

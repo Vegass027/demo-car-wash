@@ -91,73 +91,13 @@ export async function getClosedBoxesForDate(date: string): Promise<ClosedBox[]> 
 }
 
 /**
- * Временно открыть бокс на конкретный час
- * @param boxNumber - Номер бокса (1, 2 или 3)
- * @param date - Дата (YYYY-MM-DD)
- * @param hour - Час для открытия (8-18)
- * @param profileId - ID профиля админа
- * @returns Обновленный объект бокса
- * @throws Error если запрос к базе данных не удался
+ * DEPRECATED Slice #3e Phase A follow-up: was anon-side UPDATE on
+ * closed_boxes via supabase. After Slice #3d migration 019 anon grants
+ * revoked, this fails with 42501 permission_denied. Replaced by
+ * openBoxForHourActionDispatcher() (api/staff.ts) which uses service_role.
  */
-export async function openBoxForHour(boxNumber: number, date: string, hour: number, profileId: string): Promise<ClosedBox> {
-  console.log('[openBoxForHour] Открываем бокс', boxNumber, 'на дату:', date, 'час:', hour, 'профиль:', profileId);
-
-  // Проверяем, существует ли запись для этой даты
-  const { data: existingBox } = await supabase
-    .from('closed_boxes')
-    .select('*')
-    .eq('box_number', boxNumber)
-    .eq('closed_date', date)
-    .single();
-
-  if (existingBox) {
-    console.log('[openBoxForHour] Существующий бокс:', existingBox);
-    // Запись существует - добавляем час в open_hours
-    const currentOpenHours = existingBox.open_hours || [];
-
-    // Если бокс закрыт, добавляем час в open_hours
-    if (existingBox.is_closed && !currentOpenHours.includes(hour)) {
-      console.log('[openBoxForHour] Добавляем час', hour, 'к open_hours:', currentOpenHours);
-      const newOpenHours = [...currentOpenHours, hour].sort((a, b) => a - b);
-
-      const { data, error } = await supabase
-        .from('closed_boxes')
-        .update({
-          open_hours: newOpenHours,
-          updated_at: new Date().toISOString()
-        })
-        .eq('box_number', boxNumber)
-        .eq('closed_date', date)
-        .select()
-        .single();
-
-      if (error) throw error;
-      console.log('[openBoxForHour] Бокс успешно открыт:', data);
-      return data;
-    }
-
-    console.log('[openBoxForHour] Бокс уже открыт на этот час или не закрыт');
-    return existingBox;
-  } else {
-    console.log('[openBoxForHour] Создаем новый закрытый бокс с открытым часом:', hour);
-    // Записи нет - создаем новую с закрытым боксом
-    const { data, error } = await supabase
-      .from('closed_boxes')
-      .insert({
-        box_number: boxNumber,
-        is_closed: true,
-        closed_at: new Date().toISOString(),
-        closed_by: profileId,
-        closed_date: date,
-        open_hours: [hour]  // Бокс закрыт, но открыт на этот час
-      })
-      .select()
-      .single();
-
-    if (error) throw error;
-    console.log('[openBoxForHour] Новый бокс создан:', data);
-    return data;
-  }
+export async function openBoxForHour(_boxNumber: number, _date: string, _hour: number, _profileId: string): Promise<ClosedBox> {
+  throw new Error('openBoxForHour: deprecated, use openBoxForHourActionDispatcher');
 }
 
 /**

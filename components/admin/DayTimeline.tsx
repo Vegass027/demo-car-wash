@@ -6,7 +6,7 @@ import { Booking } from '../../lib/api/bookings';
 import { DateSelector } from './DateSelector';
 import { isCarWashBookingActive } from '../../shared/utils/time';
 import { QuickBookingCell } from './QuickBookingCell';
-import { openBoxForHour } from '../../lib/api/boxes';
+import { openBoxForHourActionDispatcher } from '../../lib/api/staff-actions';
 
 interface DayTimelineProps {
   bookings: Booking[];
@@ -301,7 +301,7 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                         // ✅ Если бокс закрыт и админ кликает - открываем на этот час
                         if (isBoxClosedForHour(1, hour) && userRole === 'admin' && adminId && selectedDate) {
                           console.log('[DayTimeline] Открываем бокс 1 на час:', hour);
-                          openBoxForHour(1, selectedDate, hour, adminId)
+                          openBoxForHourActionDispatcher(1, selectedDate, hour, adminId)
                             .then(() => {
                               console.log('[DayTimeline] Бокс открыт, перезагружаем');
                               // Перезагружаем закрытые боксы
@@ -390,7 +390,7 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                      onClick={() => {
                        // ✅ Если бокс закрыт и админ кликает - открываем на этот час
                        if (isBoxClosedForHour(2, hour) && userRole === 'admin' && adminId && selectedDate) {
-                         openBoxForHour(2, selectedDate, hour, adminId)
+                         openBoxForHourActionDispatcher(2, selectedDate, hour, adminId)
                            .then(() => {
                              // Перезагружаем закрытые боксы
                              onReloadClosedBoxes?.();
@@ -476,7 +476,7 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                      onClick={() => {
                        // ✅ Если бокс закрыт и админ кликает - открываем на этот час
                        if (isBoxClosedForHour(3, hour) && userRole === 'admin' && adminId && selectedDate) {
-                         openBoxForHour(3, selectedDate, hour, adminId)
+                         openBoxForHourActionDispatcher(3, selectedDate, hour, adminId)
                            .then(() => {
                              // Перезагружаем закрытые боксы
                              onReloadClosedBoxes?.();

@@ -2301,6 +2301,228 @@ async function postTestCleanup() {
     execSync(`PGPASSWORD=YVJlmcibmLQYBtRM psql -h aws-1-eu-west-1.pooler.supabase.com -p 5432 -U postgres.danobongqzbxilyvdwig -d postgres -c "DELETE FROM public.closed_boxes WHERE box_number=99 AND closed_date='${testBoxDate}';"`, { stdio: 'ignore' });
   } catch (e) { /* ignore */ }
 
+  // ==========================================================================
+  // Slice #3e Phase A follow-up: open-box-for-hour / close-box-for-hour
+  // dispatcher (closes DayTimeline 42501 anon grant gap)
+  // ==========================================================================
+  console.log('\n--- Slice #3e Phase A follow-up: open-box-for-hour / close-box-for-hour ---');
+
+  // Use a fresh test date to avoid interference with TB fixture
+  const hourBoxDate = '2031-01-15';
+
+  // Pre-cleanup
+  try {
+    execSync(`PGPASSWORD=YVJlmcibmLQYBtRM psql -h aws-1-eu-west-1.pooler.supabase.com -p 5432 -U postgres.danobongqzbxilyvdwig -d postgres -c "DELETE FROM public.closed_boxes WHERE box_number=99 AND closed_date='${hourBoxDate}';"`, { stdio: 'ignore' });
+  } catch (e) { /* ignore */ }
+
+  // --- HB0: 401 no_token ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=open-box-for-hour`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ box_number: 99, closed_date: hourBoxDate, hour: 10, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'HB0: open-box-for-hour no token → 401',
+      r.status === 401 && (typeof json.error === 'string'),
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('HB0: open-box-for-hour no token → threw', false, e.message);
+  }
+
+  // --- HB1: admin → 200 INSERT new closed_boxes with open_hours=[10] ---
+  let hb1_id = null;
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=open-box-for-hour`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: hourBoxDate, hour: 10, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    hb1_id = json?.data?.closedBox?.id;
+    assert(
+      'HB1: open-box-for-hour admin → 200 INSERT, open_hours=[10]',
+      r.status === 200 && hb1_id && Array.isArray(json.data.closedBox.open_hours) &&
+        json.data.closedBox.open_hours.length === 1 && json.data.closedBox.open_hours[0] === 10,
+      `got ${r.status} ${JSON.stringify(json).slice(0,300)}`
+    );
+  } catch (e) {
+    assert('HB1: open-box-for-hour admin → threw', false, e.message);
+  }
+
+  // --- HB2: admin → 200 UPDATE adding hour 11 (existing row) ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=open-box-for-hour`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: hourBoxDate, hour: 11, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    const oh = json?.data?.closedBox?.open_hours;
+    assert(
+      'HB2: open-box-for-hour admin add hour 11 → open_hours=[10,11]',
+      r.status === 200 && Array.isArray(oh) && oh.length === 2 && oh[0] === 10 && oh[1] === 11,
+      `got ${r.status} ${JSON.stringify(json).slice(0,300)}`
+    );
+  } catch (e) {
+    assert('HB2: open-box-for-hour add hour 11 → threw', false, e.message);
+  }
+
+  // --- HB3: close-box-for-hour admin remove hour 10 → open_hours=[11] ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=close-box-for-hour`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: hourBoxDate, hour: 10, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    const oh = json?.data?.closedBox?.open_hours;
+    assert(
+      'HB3: close-box-for-hour admin remove hour 10 → open_hours=[11]',
+      r.status === 200 && Array.isArray(oh) && oh.length === 1 && oh[0] === 11,
+      `got ${r.status} ${JSON.stringify(json).slice(0,300)}`
+    );
+  } catch (e) {
+    assert('HB3: close-box-for-hour → threw', false, e.message);
+  }
+
+  // --- HB4: invalid hour (24) → 400 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=open-box-for-hour`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: hourBoxDate, hour: 24, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'HB4: open-box-for-hour hour=24 → 400 hour_required_0_23',
+      r.status === 400 && json.error === 'hour_required_0_23',
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('HB4: invalid hour → threw', false, e.message);
+  }
+
+  // --- HB5: missing profile_id → 400 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=open-box-for-hour`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: hourBoxDate, hour: 12 }),
+    });
+    const json = await r.json();
+    assert(
+      'HB5: open-box-for-hour missing profile_id → 400',
+      r.status === 400,
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('HB5: missing profile_id → threw', false, e.message);
+  }
+
+  // --- HB6: close-box-for-hour no row → 404 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=close-box-for-hour`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 50, closed_date: '2031-02-15', hour: 10, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'HB6: close-box-for-hour no row → 404 box_not_found_for_date',
+      r.status === 404 && json.error === 'box_not_found_for_date',
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('HB6: close-box-for-hour no row → threw', false, e.message);
+  }
+
+  // Cleanup HB fixture
+  try {
+    execSync(`PGPASSWORD=YVJlmcibmLQYBtRM psql -h aws-1-eu-west-1.pooler.supabase.com -p 5432 -U postgres.danobongqzbxilyvdwig -d postgres -c "DELETE FROM public.closed_boxes WHERE box_number=99 AND closed_date='${hourBoxDate}';"`, { stdio: 'ignore' });
+  } catch (e) { /* ignore */ }
+
+  // ==========================================================================
+  // Slice #3e Phase A follow-up fix A: end_time carwash strip
+  // (was: delete out.end_time applied to all bookings, breaking carwash create)
+  // ==========================================================================
+  console.log('\n--- Slice #3e Phase A follow-up fix A: create-staff-booking end_time ---');
+
+  // --- ET0: carwash create-staff-booking WITH end_time (regular path) → 200 ---
+  let carwashEndtimeBookingId = null;
+  const futureCarwashDate = '2031-03-15';
+  const futureCarwashBox = 77;
+  try {
+    // Pre-cleanup any leftover
+    try {
+      execSync(`PGPASSWORD=YVJlmcibmLQYBtRM psql -h aws-1-eu-west-1.pooler.supabase.com -p 5432 -U postgres.danobongqzbxilyvdwig -d postgres -c "DELETE FROM public.bookings WHERE booking_date='${futureCarwashDate}' AND box_number=${futureCarwashBox};"`, { stdio: 'ignore' });
+    } catch {}
+    const r = await fetch(`${BASE}/api/staff?action=create-staff-booking`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({
+        booking_date: futureCarwashDate,
+        box_number: futureCarwashBox,
+        start_time: '10:00',
+        end_time: '11:00',
+        client_name: 'TEST_CARWASH_ENDTIME',
+        car_model: 'TestCar',
+        plate_number: 'A999AA',
+        car_type: 'SEDAN',
+        services: ['Ручная мойка'],
+        price: 500,
+        payment_method: 'Наличный',
+      }),
+    });
+    const json = await r.json();
+    carwashEndtimeBookingId = json?.data?.booking?.id;
+    assert(
+      'ET0: create-staff-booking with end_time → 200',
+      r.status === 200 && carwashEndtimeBookingId,
+      `got ${r.status} ${JSON.stringify(json).slice(0,300)}`
+    );
+  } catch (e) {
+    assert('ET0: create-staff-booking → threw', false, e.message);
+  }
+
+  // --- ET1: carwash create-staff-booking WITHOUT end_time → 400 end_time_bad_format ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=create-staff-booking`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({
+        booking_date: '2031-03-15',
+        box_number: 78,
+        start_time: '10:00',
+        // end_time intentionally missing
+        client_name: 'TEST_NO_ENDTIME',
+        car_model: 'TestCar',
+        plate_number: 'A888AA',
+        car_type: 'SEDAN',
+        services: ['Ручная мойка'],
+        price: 500,
+        payment_method: 'Наличный',
+      }),
+    });
+    const json = await r.json();
+    assert(
+      'ET1: create-staff-booking missing end_time → 400 end_time_bad_format',
+      r.status === 400 && json.error === 'end_time_bad_format',
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('ET1: create-staff-booking missing end_time → threw', false, e.message);
+  }
+
+  // Cleanup ET0 booking
+  if (carwashEndtimeBookingId) {
+    try {
+      execSync(`PGPASSWORD=YVJlmcibmLQYBtRM psql -h aws-1-eu-west-1.pooler.supabase.com -p 5432 -U postgres.danobongqzbxilyvdwig -d postgres -c "DELETE FROM public.bookings WHERE id='${carwashEndtimeBookingId}';"`, { stdio: 'ignore' });
+    } catch (e) { /* ignore */ }
+  }
+
   // --- post-test cleanup helpers (echo) ---
   console.log('\n--- POST: cleanup helper echo ---');
   console.log(`  To cleanup test rows: run the SQL printed in the final summary.`);
