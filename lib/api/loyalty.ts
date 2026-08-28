@@ -1,4 +1,21 @@
-import { supabase } from '../supabase';
+/**
+ * Loyalty-related pure helpers and types.
+ *
+ * Phase B (Slice #3e): browser-side reads (getClientLoyaltyProgress,
+ * getLoyaltyProgressByProfileId, hasFreeBodyWashAvailable,
+ * hasFreeBodyWashAvailableByProfileId, getWashesUntilNextFreeWash,
+ * getWashesUntilNextFreeWashByProfileId) have been ported to
+ * api/client.ts dispatcher (see lib/api/client-actions.ts for typed
+ * wrappers). What remains here is the pure-logic eligibility check
+ * (no DB reads) and the LoyaltyProgress type.
+ *
+ * Do NOT import this file from browser/client code for loyalty reads —
+ * RLS changes in Slice #3e Phase D will revoke anon access to
+ * loyalty_carwash_progress. Use lib/api/client-actions.ts
+ * getMyLoyaltyProgressAction() / getMyFreeWashStatusAction() /
+ * getMyWashesUntilNextFreeWashAction() instead.
+ */
+
 import { LOYALTY_CONFIG } from '../../shared/config/loyalty';
 
 /**
@@ -49,107 +66,4 @@ export function isBookingEligibleForLoyalty(serviceIds: string[]): boolean {
   }
 
   return false;
-}
-
-/**
- * Получить прогресс лояльности клиента
- */
-export async function getClientLoyaltyProgress(clientId: string): Promise<LoyaltyProgress | null> {
-  const { data, error } = await supabase
-    .from('loyalty_carwash_progress')
-    .select('*')
-    .eq('client_id', clientId)
-    .single();
-
-  if (error) {
-    if (error.code === 'PGRST116') {
-      // Запись не найдена - возвращаем null
-      return null;
-    }
-    console.error('Error fetching loyalty progress:', error);
-    return null;
-  }
-
-  return data;
-}
-
-/**
- * Получить прогресс лояльности по profile_id
- */
-export async function getLoyaltyProgressByProfileId(profileId: string): Promise<LoyaltyProgress | null> {
-  // Сначала находим client_id по profile_id
-  const { data: clientData, error: clientError } = await supabase
-    .from('clients')
-    .select('id')
-    .eq('profile_id', profileId)
-    .single();
-
-  if (clientError || !clientData) {
-    console.error('Error fetching client by profile_id:', clientError);
-    return null;
-  }
-
-  return getClientLoyaltyProgress(clientData.id);
-}
-
-/**
- * Проверить доступна ли бесплатная мойка кузова
- * ✅ Теперь проверяем поле free_wash_pending вместо вычисления
- */
-export async function hasFreeBodyWashAvailable(clientId: string): Promise<boolean> {
-  const progress = await getClientLoyaltyProgress(clientId);
-
-  if (!progress) {
-    return false;
-  }
-
-  // ✅ Проверяем флаг free_wash_pending из БД
-  return progress.free_wash_pending === true;
-}
-
-/**
- * Проверить доступна ли бесплатная мойка по profile_id
- * ✅ Теперь проверяем поле free_wash_pending вместо вычисления
- */
-export async function hasFreeBodyWashAvailableByProfileId(profileId: string): Promise<boolean> {
-  const progress = await getLoyaltyProgressByProfileId(profileId);
-
-  if (!progress) {
-    return false;
-  }
-
-  // ✅ Проверяем флаг free_wash_pending из БД
-  return progress.free_wash_pending === true;
-}
-
-/**
- * Получить количество моек до следующей бесплатной мойки
- */
-export async function getWashesUntilNextFreeWash(clientId: string): Promise<number> {
-  const progress = await getClientLoyaltyProgress(clientId);
-
-  if (!progress) {
-    return 10; // Первая бесплатная мойка через 10 моек
-  }
-
-  const currentCount = progress.total_washes_with_body;
-  const nextFree = Math.ceil(currentCount / 10) * 10;
-
-  return nextFree - currentCount;
-}
-
-/**
- * Получить количество моек до следующей бесплатной мойки по profile_id
- */
-export async function getWashesUntilNextFreeWashByProfileId(profileId: string): Promise<number> {
-  const progress = await getLoyaltyProgressByProfileId(profileId);
-
-  if (!progress) {
-    return 10; // Первая бесплатная мойка через 10 моек
-  }
-
-  const currentCount = progress.total_washes_with_body;
-  const nextFree = Math.ceil(currentCount / 10) * 10;
-
-  return nextFree - currentCount;
 }

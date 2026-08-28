@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { getLoyaltyProgressByProfileId, getWashesUntilNextFreeWashByProfileId } from '../../lib/api/loyalty';
+import { getMyLoyaltyProgressAction, getMyWashesUntilNextFreeWashAction } from '../../lib/api/client-actions';
 import { LOYALTY_CONFIG } from '../config/loyalty';
 
 export interface LoyaltyProgressData {
@@ -31,12 +31,13 @@ export function useLoyaltyProgress(profileId: string | null | undefined): Loyalt
         setIsLoading(true);
         setError(null);
 
-        const progress = await getLoyaltyProgressByProfileId(profileId);
+        // Phase B: dispatcher reads via /api/client, identity from JWT (no profileId param).
+        const { progress } = await getMyLoyaltyProgressAction();
 
         if (progress) {
           setCurrentWashes(progress.total_washes_with_body);
           setFreeWashPending(progress.free_wash_pending || false); // ✅ Загружаем флаг
-          const washesUntilFree = await getWashesUntilNextFreeWashByProfileId(profileId);
+          const { remaining: washesUntilFree } = await getMyWashesUntilNextFreeWashAction();
           setWashesUntilFree(washesUntilFree);
         } else {
           // Если прогресса нет - первая мойка через 10

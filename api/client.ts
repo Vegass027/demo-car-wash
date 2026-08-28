@@ -27,6 +27,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { verifyJwt } from './_lib/jwt.js';
+import { LOYALTY_CONFIG } from '../shared/config/loyalty';
 import {
   ValidationError,
   readBody,
@@ -61,6 +62,15 @@ const ALLOWED_ACTIONS = new Set([
   'get-tire-bookings',
   'create-tire-booking',
   'cancel-tire-booking',
+  // Phase B — client-side cancellation/loyalty reads (server-side identity only):
+  'get-my-cancellation-count',
+  'get-my-block-status',
+  'get-my-loyalty-progress',
+  'get-my-free-wash-status',
+  'get-my-washes-until-next-free-wash',
+  'get-my-profile',
+  'get-my-client',
+  'get-my-client-email',
 ]);
 
 const ACTIVE_STATUSES = ['ОЖИДАЕТ', 'В РАБОТЕ'] as const;
@@ -856,6 +866,151 @@ function extractAction(req: any): string | null {
   return null;
 }
 
+// =========================================================================
+// Phase B — client-side cancellation / loyalty reads.
+// All 8 handlers take (claims) ONLY. Identity = claims.profile_id from JWT.
+// Zero reads of body.profile_id (defense in depth + consistency with
+// existing Slice #1/#2 handler pattern).
+// =========================================================================
+
+// === Phase B action: get-my-cancellation-count ===
+async function getMyCancellationCount(claims: { profile_id: string }): Promise<ActionResult> {
+  const { data: clientRow, error: clientErr } = await supabaseAdmin
+    .from('clients')
+    .select('id')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (clientErr) return failAction(500, 'db_error', { detail: clientErr.message });
+  if (!clientRow) return { status: 200, body: { data: { count: 0 } } };
+
+  const startDate = new Date();
+  startDate.setTime(startDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const { count, error } = await supabaseAdmin
+    .from('booking_cancellations')
+    .select('id', { count: 'exact', head: true })
+    .eq('client_id', clientRow.id)
+    .gte('cancelled_at', startDate.toISOString());
+  if (error) return failAction(500, 'db_error', { detail: error.message });
+  return { status: 200, body: { data: { count: count || 0 } } };
+}
+
+// === Phase B action: get-my-block-status ===
+async function getMyBlockStatus(claims: { profile_id: string }): Promise<ActionResult> {
+  const { data, error } = await supabaseAdmin
+    .from('clients')
+    .select('online_booking_blocked_until')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (error) return failAction(500, 'db_error', { detail: error.message });
+  if (!data) return { status: 200, body: { data: { blocked: false, until: null } } };
+
+  const blockedUntil = data.online_booking_blocked_until;
+  let isBlocked = false;
+  if (blockedUntil) {
+    const blockedDate = new Date(blockedUntil);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    isBlocked = blockedDate >= today;
+  }
+  return { status: 200, body: { data: { blocked: isBlocked, until: blockedUntil } } };
+}
+
+// === Phase B action: get-my-loyalty-progress ===
+async function getMyLoyaltyProgress(claims: { profile_id: string }): Promise<ActionResult> {
+  const { data: clientRow, error: clientErr } = await supabaseAdmin
+    .from('clients')
+    .select('id')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (clientErr) return failAction(500, 'db_error', { detail: clientErr.message });
+  if (!clientRow) return { status: 200, body: { data: { progress: null } } };
+
+  const { data, error } = await supabaseAdmin
+    .from('loyalty_carwash_progress')
+    .select('*')
+    .eq('client_id', clientRow.id)
+    .maybeSingle();
+  if (error) return failAction(500, 'db_error', { detail: error.message });
+  return { status: 200, body: { data: { progress: data } } };
+}
+
+// === Phase B action: get-my-free-wash-status ===
+async function getMyFreeWashStatus(claims: { profile_id: string }): Promise<ActionResult> {
+  const { data: clientRow, error: clientErr } = await supabaseAdmin
+    .from('clients')
+    .select('id')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (clientErr) return failAction(500, 'db_error', { detail: clientErr.message });
+  if (!clientRow) return { status: 200, body: { data: { hasFreeWash: false } } };
+
+  const { data, error } = await supabaseAdmin
+    .from('loyalty_carwash_progress')
+    .select('free_wash_pending')
+    .eq('client_id', clientRow.id)
+    .maybeSingle();
+  if (error) return failAction(500, 'db_error', { detail: error.message });
+  return { status: 200, body: { data: { hasFreeWash: data?.free_wash_pending === true } } };
+}
+
+// === Phase B action: get-my-washes-until-next-free-wash ===
+async function getMyWashesUntilNextFreeWash(claims: { profile_id: string }): Promise<ActionResult> {
+  const { data: clientRow, error: clientErr } = await supabaseAdmin
+    .from('clients')
+    .select('id')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (clientErr) return failAction(500, 'db_error', { detail: clientErr.message });
+  if (!clientRow) return { status: 200, body: { data: { remaining: LOYALTY_CONFIG.FREE_WASH_AFTER } } };
+
+  const { data, error } = await supabaseAdmin
+    .from('loyalty_carwash_progress')
+    .select('total_washes_with_body')
+    .eq('client_id', clientRow.id)
+    .maybeSingle();
+  if (error) return failAction(500, 'db_error', { detail: error.message });
+  if (!data) return { status: 200, body: { data: { remaining: LOYALTY_CONFIG.FREE_WASH_AFTER } } };
+
+  const current = data.total_washes_with_body;
+  const nextFree = Math.ceil(current / LOYALTY_CONFIG.FREE_WASH_AFTER) * LOYALTY_CONFIG.FREE_WASH_AFTER;
+  return { status: 200, body: { data: { remaining: nextFree - current } } };
+}
+
+// === Phase B action: get-my-profile ===
+async function getMyProfile(claims: { profile_id: string }): Promise<ActionResult> {
+  const { data, error } = await supabaseAdmin
+    .from('profiles')
+    .select('id, role, full_name, phone, telegram_id, last_auth_method, created_at')
+    .eq('id', claims.profile_id)
+    .maybeSingle();
+  if (error) return failAction(500, 'db_error', { detail: error.message });
+  if (!data) return failAction(404, 'profile_not_found');
+  return { status: 200, body: { data: { profile: data } } };
+}
+
+// === Phase B action: get-my-client ===
+async function getMyClient(claims: { profile_id: string }): Promise<ActionResult> {
+  const { data, error } = await supabaseAdmin
+    .from('clients')
+    .select('id, full_name, phone, email, online_booking_blocked_until, profile_id, is_active, notes, created_at, updated_at')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (error) return failAction(500, 'db_error', { detail: error.message });
+  if (!data) return failAction(404, 'client_not_found');
+  return { status: 200, body: { data: { client: data } } };
+}
+
+// === Phase B action: get-my-client-email ===
+async function getMyClientEmail(claims: { profile_id: string }): Promise<ActionResult> {
+  const { data, error } = await supabaseAdmin
+    .from('clients')
+    .select('email')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (error) return failAction(500, 'db_error', { detail: error.message });
+  return { status: 200, body: { data: { email: data?.email ?? null } } };
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'method_not_allowed' });
@@ -922,6 +1077,39 @@ export default async function handler(req: any, res: any) {
       }
       case 'cancel-tire-booking': {
         result = await cancelTireBooking(guard.claims, body);
+        break;
+      }
+      // ---- Phase B: client-side cancellation/loyalty reads ----
+      case 'get-my-cancellation-count': {
+        result = await getMyCancellationCount(guard.claims);
+        break;
+      }
+      case 'get-my-block-status': {
+        result = await getMyBlockStatus(guard.claims);
+        break;
+      }
+      case 'get-my-loyalty-progress': {
+        result = await getMyLoyaltyProgress(guard.claims);
+        break;
+      }
+      case 'get-my-free-wash-status': {
+        result = await getMyFreeWashStatus(guard.claims);
+        break;
+      }
+      case 'get-my-washes-until-next-free-wash': {
+        result = await getMyWashesUntilNextFreeWash(guard.claims);
+        break;
+      }
+      case 'get-my-profile': {
+        result = await getMyProfile(guard.claims);
+        break;
+      }
+      case 'get-my-client': {
+        result = await getMyClient(guard.claims);
+        break;
+      }
+      case 'get-my-client-email': {
+        result = await getMyClientEmail(guard.claims);
         break;
       }
       default:
