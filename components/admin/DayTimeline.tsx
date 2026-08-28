@@ -123,12 +123,9 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
       if (booking.client_name === 'Занято') {
         return 'Занято';
       }
-      // Своя запись (или запись организации-водителя): показать статус,
-      // если он есть и не равен 'ОТМЕНЕНО'.
-      if (booking.status && booking.status !== 'ОТМЕНЕНО') {
-        return booking.status;
-      }
-      // Фоллбэк: пусто (ниже рендерим car_model/plate_number).
+      // Косметика: на клиентском таймлайне статус «ОЖИДАЕТ» не показываем —
+      // рендерим только car_model/plate_number как у админа. Чужие записи
+      // остаются «Занято» (см. выше). Фоллбэк: пусто.
       return '';
     }
     // Админ/владелец: status показывается из booking_status_color, текст в отдельном badge.

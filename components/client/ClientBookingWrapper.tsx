@@ -184,19 +184,19 @@ export function ClientBookingWrapper({
         const bookingDate = payload.new?.booking_date || payload.old?.booking_date;
         if (!bookingDate) return;
 
-        // We can't add 'optimistic' data here since we don't know client_id
-        // chain. Defer to a full re-load for the affected date.
-        if (bookingsByDate[bookingDate]) {
-          loadOccupancyForDate(bookingDate);
-          loadOwnBookingsForDate(bookingDate);
-        }
+        // Bug-fix: was guarded by `if (bookingsByDate[bookingDate])` which
+        // silently dropped events when the affected date hadn't been loaded
+        // yet (e.g. wizard-created booking before any date click). Now we
+        // always re-load for the affected date so the row appears without
+        // requiring a manual F5.
+        loadOccupancyForDate(bookingDate);
       })
       .subscribe();
 
     return () => {
       subscription.unsubscribe();
     };
-  }, [profileId, selectedDate])
+  }, [profileId])
 
   // --------- Realtime: closed_boxes (still anon-channel for now) ---------
   useEffect(() => {
