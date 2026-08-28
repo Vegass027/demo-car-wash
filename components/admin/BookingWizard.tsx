@@ -75,6 +75,30 @@ const CAR_TYPE_LABELS: Record<string, string> = {
   'MINIVAN': 'Минивэн',
 };
 
+// Legacy DB values (sedan lowercase, suv) → canonical CAR_TYPES enum.
+// dispatcher (api/staff.ts:createStaffBookingAction readCarType) rejects anything not in CAR_TYPES.
+// Fix: normalize BEFORE sending, so wizard works with existing client_cars / bookings rows.
+const CAR_TYPE_NORMALIZE: Record<string, CarType> = {
+  'SEDAN': CarType.SEDAN,
+  'sedan': CarType.SEDAN,
+  'CROSSOVER': CarType.CROSSOVER,
+  'crossover': CarType.CROSSOVER,
+  'JEEP': CarType.JEEP,
+  'jeep': CarType.JEEP,
+  'LARGE_SUV': CarType.LARGE_SUV,
+  'large_suv': CarType.LARGE_SUV,
+  'SUV': CarType.LARGE_SUV,
+  'suv': CarType.LARGE_SUV,
+  'MINIVAN': CarType.MINIVAN,
+  'minivan': CarType.MINIVAN,
+};
+
+function normalizeCarType(v: CarType | string | null | undefined): CarType {
+  if (!v) return CarType.SEDAN;
+  const mapped = CAR_TYPE_NORMALIZE[String(v).toUpperCase()];
+  return mapped ?? CarType.SEDAN;
+}
+
 export interface BookingWizardData {
   clientName: string;
   phone: string;
@@ -146,7 +170,7 @@ export function mapWizardDataToBooking(
     phone: data.phone && data.phone.trim() !== '+7 ' ? normalizePhoneNumber(data.phone) : null,
     car_model: data.carModel,
     plate_number: data.carNumber,
-    car_type: data.carType ?? 'SEDAN',
+    car_type: normalizeCarType(data.carType),
     services: data.services,
     price: data.price,
     payment_method: data.paymentType,
