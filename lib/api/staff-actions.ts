@@ -72,7 +72,11 @@ type WizardBookingShape = {
   end_time?: unknown;  // tire-bookings has GENERATED end_time
 };
 
-function stripServerDerivedBookingFields(input: WizardBookingShape): Record<string, unknown> {
+// Carwash variant: keep end_time (regular column, NOT GENERATED).
+// mapWizardDataToBooking always supplies a valid end_time
+// (start+30min for quick bookings, start+1h for regular).
+// Dispatcher trusts client-supplied end_time for staff path.
+function stripServerDerivedBookingFieldsCarwash(input: WizardBookingShape): Record<string, unknown> {
   const out: Record<string, unknown> = { ...input };
   // Server recomputes these — must NEVER come from the browser.
   delete out.id;
@@ -90,7 +94,32 @@ function stripServerDerivedBookingFields(input: WizardBookingShape): Record<stri
   delete out.org_name;
   delete out.signature_data;
   delete out.completed_at;
-  // tire-only: end_time is GENERATED.
+  // NOTE: end_time is preserved for carwash (regular column).
+  // mapWizardDataToBooking always sets it correctly (start+30m quick, start+1h regular).
+  // Dispatcher (api/staff.ts:createStaffBookingAction line 964) requires it.
+  return out;
+}
+
+// Tire variant: strip end_time (tire_bookings.end_time is GENERATED ALWAYS AS).
+function stripServerDerivedBookingFieldsTire(input: WizardBookingShape): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...input };
+  // Server recomputes these — must NEVER come from the browser.
+  delete out.id;
+  delete out.created_at;
+  delete out.updated_at;
+  delete out.price;
+  delete out.services_with_quantities;
+  delete out.booking_source;
+  delete out.signature_obtained;
+  delete out.created_by_profile_id;
+  delete out.status;
+  delete out.paid_at;
+  delete out.worker_name;
+  delete out.worker_name_2;
+  delete out.org_name;
+  delete out.signature_data;
+  delete out.completed_at;
+  // tire-only: end_time is GENERATED ALWAYS AS — strip it.
   delete out.end_time;
   return out;
 }
@@ -98,7 +127,7 @@ function stripServerDerivedBookingFields(input: WizardBookingShape): Record<stri
 export async function createStaffBooking(
   input: Omit<Booking, 'id' | 'created_at' | 'updated_at'>,
 ): Promise<Booking> {
-  const body = stripServerDerivedBookingFields(input as WizardBookingShape);
+  const body = stripServerDerivedBookingFieldsCarwash(input as WizardBookingShape);
   const res = await dispatchStaffCall<BookingResponse<Booking>>('create-staff-booking', body);
   return unwrapBooking(res);
 }
@@ -112,7 +141,7 @@ export async function createStaffTireBooking(
     services: string[];
   },
 ): Promise<TireBooking> {
-  const body = stripServerDerivedBookingFields(input as unknown as WizardBookingShape);
+  const body = stripServerDerivedBookingFieldsTire(input as unknown as WizardBookingShape);
   const res = await dispatchStaffCall<BookingResponse<TireBooking>>('create-staff-tire-booking', body);
   return unwrapBooking(res);
 }
@@ -934,5 +963,50 @@ export async function toggleBoxActionDispatcher(
     profile_id: profileId,
   });
   if (!res.data) throw new Error('toggle-box: no data in response');
+  return res.data;
+}
+
+// === open-box-for-hour / close-box-for-hour (Phase A follow-up) ===
+// Replaces lib/api/boxes.ts:openBoxForHour / closeBoxForHour anon-side
+// admin per-hour operations. Closes DayTimeline 42501 anon grant gap.
+export interface OpenCloseBoxForHourResult {
+  closedBox: ClosedBox;
+  hour_opened?: number;
+  hour_closed?: number;
+}
+export async function openBoxForHourActionDispatcher(
+  boxNumber: number,
+  closedDate: string,
+  hour: number,
+  profileId: string,
+): Promise<OpenCloseBoxForHourResult> {
+  const res = await dispatchStaffCall<{
+    data?: OpenCloseBoxForHourResult;
+    error?: string;
+  }>('open-box-for-hour', {
+    box_number: boxNumber,
+    closed_date: closedDate,
+    hour,
+    profile_id: profileId,
+  });
+  if (!res.data) throw new Error('open-box-for-hour: no data in response');
+  return res.data;
+}
+export async function closeBoxForHourActionDispatcher(
+  boxNumber: number,
+  closedDate: string,
+  hour: number,
+  profileId: string,
+): Promise<OpenCloseBoxForHourResult> {
+  const res = await dispatchStaffCall<{
+    data?: OpenCloseBoxForHourResult;
+    error?: string;
+  }>('close-box-for-hour', {
+    box_number: boxNumber,
+    closed_date: closedDate,
+    hour,
+    profile_id: profileId,
+  });
+  if (!res.data) throw new Error('close-box-for-hour: no data in response');
   return res.data;
 }
