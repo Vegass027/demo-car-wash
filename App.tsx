@@ -31,8 +31,8 @@ import { initTelegramWebApp, getTelegramId } from './shared/telegram/telegram';
 import { getServices, getServicesWithPrices, Service, getServicePrice } from './lib/api/services';
 import { getOrganizations, getOrganizationDrivers, getOrganizationCars } from './lib/api/organizations';
 import { Client } from './lib/api/clients';
-import { listClientsAction } from './lib/api/staff-actions';
-import { getBoxes, toggleBox as toggleBoxApi, toggleBoxWithReset, getClosedBoxesForDate } from './lib/api/boxes';
+import { listClientsAction, toggleBoxActionDispatcher } from './lib/api/staff-actions';
+import { getBoxes, getClosedBoxesForDate } from './lib/api/boxes';
 import { getSalarySettings } from './lib/api/salary';
 import { createWorksheetEntry, updateWorksheetEntryByBookingId } from './lib/api/worksheets';
 import {
@@ -503,8 +503,9 @@ export default function App() {
   // Функция переключения состояния бокса (с полным сбросом open_hours)
   const toggleBox = async (boxNumber: number) => {
     try {
-      // Используем toggleBoxWithReset для полного сброса при переключении
-      await toggleBoxWithReset(boxNumber, selectedDate, userId);
+      // Slice #3e Phase A follow-up: ports to dispatcher with service_role.
+      // Closes Slice #3d migration 019 anon INSERT/UPDATE/DELETE grant revoke gap.
+      await toggleBoxActionDispatcher(boxNumber, selectedDate, userId);
 
       // Перезагружаем боксы из БД
       await loadClosedBoxes();

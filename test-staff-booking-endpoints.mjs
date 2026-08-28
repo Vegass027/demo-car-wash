@@ -2142,6 +2142,165 @@ async function postTestCleanup() {
     assert('A10: get-client-cars filter → threw', false, e.message);
   }
 
+  // ==========================================================================
+  // Slice #3e Phase A follow-up: toggle-box dispatcher (closes anon INSERT/
+  // UPDATE/DELETE grant revoke gap from Slice #3d migration 019)
+  // ========================================================================= = 
+  console.log('\n--- Slice #3e Phase A follow-up: toggle-box dispatcher ---');
+
+  // Use a real profile_id from demo profiles (admin's own profile)
+  const adminProfileId = '55555555-5555-5555-5555-555555555555';
+  // Use a unique test date to avoid conflicts with existing rows
+  const testBoxDate = '2030-12-31';
+
+  // Cleanup any leftover test row for this box/date combo BEFORE test
+  try {
+    execSync(`PGPASSWORD=YVJlmcibmLQYBtRM psql -h aws-1-eu-west-1.pooler.supabase.com -p 5432 -U postgres.danobongqzbxilyvdwig -d postgres -c "DELETE FROM public.closed_boxes WHERE box_number=99 AND closed_date='${testBoxDate}';"`, { stdio: 'ignore' });
+  } catch (e) { /* ignore */ }
+
+  // --- TB0: 401 no_token ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=toggle-box`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ box_number: 99, closed_date: testBoxDate, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'TB0: toggle-box no token → 401',
+      r.status === 401 && (typeof json.error === 'string'),
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('TB0: toggle-box no token → threw', false, e.message);
+  }
+
+  // --- TB1: admin JWT, INSERT new row (no existing) → 200 is_closed=true ---
+  let tb1_closure_id = null;
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=toggle-box`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: testBoxDate, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    tb1_closure_id = json?.data?.closedBox?.id;
+    assert(
+      'TB1: toggle-box admin → 200, new row inserted is_closed=true',
+      r.status === 200 && tb1_closure_id && json.data.closedBox.is_closed === true,
+      `got ${r.status} ${JSON.stringify(json).slice(0,300)}`
+    );
+  } catch (e) {
+    assert('TB1: toggle-box admin → threw', false, e.message);
+  }
+
+  // --- TB2: admin JWT, repeat toggle (existing + is_closed=true) → 200 is_closed=false ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=toggle-box`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: testBoxDate, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'TB2: toggle-box repeat admin → 200, flipped to is_closed=false',
+      r.status === 200 && json?.data?.closedBox?.is_closed === false,
+      `got ${r.status} ${JSON.stringify(json).slice(0,300)}`
+    );
+  } catch (e) {
+    assert('TB2: toggle-box repeat admin → threw', false, e.message);
+  }
+
+  // --- TB3: admin JWT, third toggle → 200 is_closed=true again ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=toggle-box`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: testBoxDate, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'TB3: toggle-box admin third call → 200, flipped back to is_closed=true',
+      r.status === 200 && json?.data?.closedBox?.is_closed === true,
+      `got ${r.status} ${JSON.stringify(json).slice(0,300)}`
+    );
+  } catch (e) {
+    assert('TB3: toggle-box admin third → threw', false, e.message);
+  }
+
+  // --- TB4: missing box_number → 400 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=toggle-box`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ closed_date: testBoxDate, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'TB4: toggle-box missing box_number → 400 box_number_required',
+      r.status === 400 && json.error === 'box_number_required',
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('TB4: missing box_number → threw', false, e.message);
+  }
+
+  // --- TB5: bad closed_date format → 400 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=toggle-box`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: 'not-a-date', profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'TB5: toggle-box bad closed_date format → 400 closed_date_bad_format',
+      r.status === 400 && json.error === 'closed_date_bad_format',
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('TB5: bad closed_date → threw', false, e.message);
+  }
+
+  // --- TB6: bad profile_id uuid → 400 ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=toggle-box`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${staffToken}` },
+      body: JSON.stringify({ box_number: 99, closed_date: testBoxDate, profile_id: 'not-a-uuid' }),
+    });
+    const json = await r.json();
+    assert(
+      'TB6: toggle-box bad profile_id uuid → 400',
+      r.status === 400,
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('TB6: bad profile_id → threw', false, e.message);
+  }
+
+  // --- TB7: anon key (no Authorization) → 401 missing_authorization ---
+  try {
+    const r = await fetch(`${BASE}/api/staff?action=toggle-box`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ box_number: 99, closed_date: testBoxDate, profile_id: adminProfileId }),
+    });
+    const json = await r.json();
+    assert(
+      'TB7: toggle-box anon (no auth) → 401',
+      r.status === 401,
+      `got ${r.status} ${JSON.stringify(json).slice(0,200)}`
+    );
+  } catch (e) {
+    assert('TB7: anon toggle-box → threw', false, e.message);
+  }
+
+  // Cleanup TB fixture
+  try {
+    execSync(`PGPASSWORD=YVJlmcibmLQYBtRM psql -h aws-1-eu-west-1.pooler.supabase.com -p 5432 -U postgres.danobongqzbxilyvdwig -d postgres -c "DELETE FROM public.closed_boxes WHERE box_number=99 AND closed_date='${testBoxDate}';"`, { stdio: 'ignore' });
+  } catch (e) { /* ignore */ }
+
   // --- post-test cleanup helpers (echo) ---
   console.log('\n--- POST: cleanup helper echo ---');
   console.log(`  To cleanup test rows: run the SQL printed in the final summary.`);
