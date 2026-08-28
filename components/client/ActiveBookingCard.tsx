@@ -8,9 +8,11 @@ import { Service } from '../../lib/api/services';
 import { getServices } from '../../lib/api/services';
 import { getTireServices } from '../../lib/api/tire-services';
 import { formatTimeWithoutSeconds, calculateEndTime } from '../../shared/utils/time';
-import { cancelOnlineBooking } from '../../lib/api/bookings';
-import { getMyCancellationCountAction } from '../../lib/api/client-actions';
-import { getSessionToken } from '../../lib/supabase';
+import {
+  getMyCancellationCountAction,
+  cancelBookingAction,
+  cancelTireBookingAction,
+} from '../../lib/api/client-actions';
 
 interface ActiveBookingCardProps {
   booking: Booking | TireBooking;
@@ -63,50 +65,42 @@ export const ActiveBookingCard: React.FC<ActiveBookingCardProps> = ({ booking, t
 
     if (confirm(message)) {
       try {
+        // Phase C fix: both carwash and tire cancel now go through api/client
+        // dispatcher (service_role), which calls RPC cancel_own_booking /
+        // cancel_own_tire_booking. Both RPCs have built-in 30-day rolling
+        // count + block-after-3 logic. Previous carwash path used anon
+        // handleClientCancellation → INSERT into booking_cancellations was
+        // RLS-blocked → count never incremented → block never applied.
+        let result: { blocked: boolean; blocked_until: string | null };
         if (isCarwash) {
-          await cancelOnlineBooking((booking as Booking).id, clientId);
+          result = await cancelBookingAction((booking as Booking).id, 'client_self_cancel');
         } else {
-          // Slice #2: tire cancel now routes through service_role-owned RPC
-          // via /api/client dispatcher (cancel_own_tire_booking). Replaces
-          // the previous anon UPDATE path that leaked cross-tenant UPDATE
-          // permissions on tire_bookings.
-          const token = getSessionToken();
-          if (!token) throw new Error('Missing session token (reopen Mini App)');
-
-          const res = await fetch('/api/client?action=cancel-tire-booking', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              tire_booking_id: (booking as TireBooking).id,
-              reason: 'client_self_cancel',
-            }),
-          });
-
-          if (!res.ok) {
-            const errBody = await res.json().catch(() => ({}));
-            const errStatus = res.status;
-            const errCode = errBody?.error || 'http_error';
-            if (errStatus === 404) {
-              throw new Error('Бронирование не найдено или вам не принадлежит');
-            }
-            if (errStatus === 409 && errBody?.current_status) {
-              throw new Error(`Нельзя отменить (текущий статус: ${errBody.current_status})`);
-            }
-            throw new Error(`Не удалось отменить (${errStatus} ${errCode})`);
-          }
-
-          await res.json().catch(() => ({}));
+          result = await cancelTireBookingAction((booking as TireBooking).id, 'client_self_cancel');
         }
+
+        if (result.blocked) {
+          const untilStr = result.blocked_until
+            ? new Date(result.blocked_until).toLocaleDateString('ru-RU')
+            : '30 дней';
+          alert(
+            `⛔ После 3-х отмен онлайн-запись заблокирована до ${untilStr}. ` +
+            `Для разблокировки обратитесь к администратору.`,
+          );
+        }
+
         if (onDelete) {
           onDelete(booking.id);
         }
       } catch (error) {
         console.error('Ошибка при удалении заказа:', error);
-        const message = (error as Error)?.message || 'Не удалось удалить заказ';
-        alert(message);
+        const errMsg = (error as Error)?.message || 'Не удалось удалить заказ';
+        if (errMsg.includes('booking_not_found_or_not_owned')) {
+          alert('Бронирование не найдено или вам не принадлежит');
+        } else if (errMsg.includes('cannot_cancel')) {
+          alert(`Нельзя отменить: ${errMsg}`);
+        } else {
+          alert(errMsg);
+        }
       }
     }
   };
