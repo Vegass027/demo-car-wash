@@ -149,6 +149,10 @@ const ALLOWED_ACTIONS = new Set([
   'list-clients',
   'list-clients-with-cars',
   'get-client-cars-by-client-id',
+
+  // Slice #3e Phase A follow-up: admin Boxes toggle.
+  // Closes Slice #3d migration 019 anon INSERT/UPDATE/DELETE grant revoke gap.
+  'toggle-box',
 ]);
 
 const supabaseAdmin = createClient(
@@ -338,6 +342,92 @@ async function getClientCarsByClientIdAction(_claims: StaffClaims, body: AnyObj)
     return failAction(500, 'db_error', { detail: error.message });
   }
   return { status: 200, body: { data: { cars: data || [] } } };
+}
+
+// === action: toggle-box ===
+//
+// Slice #3e Phase A follow-up: ports lib/api/boxes.ts:toggleBoxWithReset()
+// anon-side admin operation to dispatcher with service_role bypass.
+//
+// Closes Slice #3d migration 019 anon INSERT/UPDATE/DELETE grant revoke gap
+// that broke admin Boxes UI toggle.
+//
+// Body:
+//   box_number: integer 1-3
+//   closed_date: string YYYY-MM-DD
+//   profile_id: string UUID (admin/owner doing the action)
+//
+// Logic (mirrors original toggleBoxWithReset):
+//   1. SELECT existing row WHERE box_number AND closed_date
+//   2a. exists + is_closed=true → UPDATE: is_closed=false, open_hours=null
+//   2b. exists + is_closed=false → UPDATE: is_closed=true, open_hours=[]
+//   2c. not exists → INSERT: is_closed=true, open_hours=[]
+async function toggleBoxAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const box_number = readNumberInRange(body, 'box_number', 1, 99);
+  if (box_number === null || box_number === undefined) {
+    return failAction(400, 'box_number_required');
+  }
+  const closed_date = readISODate(body, 'closed_date');
+  const profile_id = readUuidRequired(body, 'profile_id');
+
+  const { data: existing, error: exErr } = await supabaseAdmin
+    .from('closed_boxes')
+    .select('*')
+    .eq('box_number', box_number)
+    .eq('closed_date', closed_date)
+    .maybeSingle();
+
+  if (exErr) {
+    console.error('[staff:toggle-box] lookup error:', exErr.message);
+    return failAction(500, 'db_error', { detail: exErr.message });
+  }
+
+  let result;
+  if (existing) {
+    // Toggle: flip is_closed + reset open_hours accordingly
+    const willClose = !existing.is_closed;
+    const { data, error } = await supabaseAdmin
+      .from('closed_boxes')
+      .update({
+        is_closed: willClose,
+        open_hours: willClose ? [] : null,
+        closed_at: willClose ? new Date().toISOString() : null,
+        closed_by: willClose ? profile_id : null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('box_number', box_number)
+      .eq('closed_date', closed_date)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      console.error('[staff:toggle-box] update error:', error.message);
+      return failAction(500, 'db_error', { detail: error.message });
+    }
+    result = data;
+  } else {
+    // Insert new closed=true record
+    const { data, error } = await supabaseAdmin
+      .from('closed_boxes')
+      .insert({
+        box_number,
+        closed_date,
+        is_closed: true,
+        open_hours: [],
+        closed_at: new Date().toISOString(),
+        closed_by: profile_id,
+      })
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      console.error('[staff:toggle-box] insert error:', error.message);
+      return failAction(500, 'db_error', { detail: error.message });
+    }
+    result = data;
+  }
+
+  return { status: 200, body: { data: { closedBox: result, toggled: true } } };
 }
 
 async function searchClientByPhone(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
@@ -2827,6 +2917,7 @@ export default async function handler(req: any, res: any) {
       case 'list-clients':                 result = await listClientsAction(guard.claims, body); break;
       case 'list-clients-with-cars':       result = await listClientsWithCarsAction(guard.claims, body); break;
       case 'get-client-cars-by-client-id': result = await getClientCarsByClientIdAction(guard.claims, body); break;
+      case 'toggle-box':                   result = await toggleBoxAction(guard.claims, body); break;
       case 'create-client':                result = await createClientAction(guard.claims, body); break;
       case 'update-client':                result = await updateClientAction(guard.claims, body); break;
       case 'unblock-client':               result = await unblockClientAction(guard.claims, body); break;

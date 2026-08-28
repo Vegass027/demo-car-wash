@@ -901,3 +901,38 @@ export async function getClientCarsByClientIdAction(clientId: string): Promise<C
   }>('get-client-cars-by-client-id', { client_id: clientId });
   return res.data?.cars || [];
 }
+
+// === toggle-box (Phase A follow-up) ===
+// Replaces lib/api/boxes.ts:toggleBoxWithReset() anon-side admin operation.
+// Closes Slice #3d migration 019 anon INSERT/UPDATE/DELETE grant revoke gap.
+export interface ClosedBox {
+  id: string;
+  box_number: number;
+  closed_date: string;
+  is_closed: boolean;
+  open_hours: number[] | null;
+  closed_at: string | null;
+  closed_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface ToggleBoxResult {
+  closedBox: ClosedBox;
+  toggled: boolean;
+}
+export async function toggleBoxActionDispatcher(
+  boxNumber: number,
+  closedDate: string,
+  profileId: string,
+): Promise<ToggleBoxResult> {
+  const res = await dispatchStaffCall<{
+    data?: ToggleBoxResult;
+    error?: string;
+  }>('toggle-box', {
+    box_number: boxNumber,
+    closed_date: closedDate,
+    profile_id: profileId,
+  });
+  if (!res.data) throw new Error('toggle-box: no data in response');
+  return res.data;
+}
