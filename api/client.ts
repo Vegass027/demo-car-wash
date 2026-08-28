@@ -27,7 +27,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { verifyJwt } from './_lib/jwt.js';
-import { LOYALTY_CONFIG } from '../shared/config/loyalty';
+import { LOYALTY_CONFIG } from '../shared/config/loyalty.js';
 import {
   ValidationError,
   readBody,
