@@ -155,6 +155,13 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
 
   // Определяем цвет статуса записи (без автоматического переключения)
   const getStatusColor = (booking: Booking): string => {
+    // Косметика: на клиентском таймлайне «Занято» (redacted чужой слот)
+    // рендерим серым (bg-gray-300). Свои записи клиента остаются по status
+    // ниже — оранжевый для ОЖИДАЕТ и т.д. Админ/owner эту ветку не
+    // используют: для них весь DayTimeline раскрашен по booking.status.
+    if (userRole === 'client' && booking.client_name === 'Занято') {
+      return 'bg-gray-300';
+    }
     switch (booking.status) {
       case 'В РАБОТЕ':
         return 'bg-green-400'; // В РАБОТЕ = зеленый
