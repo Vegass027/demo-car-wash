@@ -2,6 +2,7 @@ import type { Booking } from './bookings';
 import type { TireBooking } from './tire-bookings';
 import type { Worker } from './workers';
 import type { TireWorker } from './tire-workers';
+import { getSessionToken } from '../_supabase-wrapper';
 
 type BookingResponse<T> = { data?: { booking?: T; idempotent?: boolean } };
 
@@ -10,10 +11,23 @@ async function dispatchStaffCall<T>(
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
+  // Phase A Slice #3e critical fix: inject Bearer token from
+  // module-level currentToken (set by setSessionToken on login).
+  // Without this, /api/staff returns 401 missing_authorization
+  // for every browser-side dispatcher call (anon-key raw fetch
+  // never had a session token). After Slice #3d migrations closed
+  // anon grants on staff-only tables, this surfaces as a hard 401
+  // on the very first call after login (e.g. ClientDatabaseAccordion
+  // useEffect→listClientsWithCarsAction on mount).
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = getSessionToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
   const res = await fetch(`/api/staff?action=${encodeURIComponent(action)}`, {
     method: 'POST',
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
     ...(signal ? { signal } : {}),
   });
