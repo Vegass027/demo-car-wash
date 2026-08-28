@@ -841,41 +841,6 @@ export async function getBookingsBySourceAndDate(
 }
 
 /**
- * Отменить онлайн-запись с логированием
- */
-export async function cancelOnlineBooking(
-  id: string,
-  clientId: string,
-  reason?: string
-): Promise<Booking> {
-  // Импортируем handleClientCancellation
-  const { handleClientCancellation } = await import('./booking-cancellations');
-
-  // Создаём запись об отмене и проверяем блокировку
-  const result = await handleClientCancellation({
-    client_id: clientId,
-    booking_id: id,
-    reason
-  });
-
-  if (result.blocked) {
-    console.log(`Client ${clientId} has been blocked for online booking until ${result.blockedUntil}`);
-  }
-
-  // ✅ Удаляем запись из ведомости перед отменой
-  try {
-    const { deleteWorksheetEntryByBookingId } = await import('./worksheets');
-    await deleteWorksheetEntryByBookingId(id, 'carwash');
-  } catch (error) {
-    console.error('[cancelOnlineBooking] Ошибка удаления записи ведомости:', error);
-    // Не прерываем отмену заказа
-  }
-
-  // Отменяем заказ
-  return updateBooking(id, { status: 'ОТМЕНЕНО' });
-}
-
-/**
  * Обновить тип автомобиля в записи
  * Синхронизирует тип авто, услуги и сумму с ведомостью
  * @param bookingId ID записи

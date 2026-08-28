@@ -835,41 +835,6 @@ export async function getTireBookingsBySourceAndDate(
 }
 
 /**
- * Отменить онлайн-запись шиномонтажа с логированием
- */
-export async function cancelOnlineTireBooking(
-  id: string,
-  clientId: string,
-  reason?: string
-): Promise<void> {
-  // Импортируем handleClientCancellation
-  const { handleClientCancellation } = await import('./booking-cancellations');
-
-  // Создаём запись об отмене и проверяем блокировку
-  const result = await handleClientCancellation({
-    client_id: clientId,
-    tire_booking_id: id,
-    reason
-  });
-
-  if (result.blocked) {
-    console.log(`[TireBookings] Client ${clientId} has been blocked for online booking until ${result.blockedUntil}`);
-  }
-
-  // ✅ Удаляем запись из ведомости перед отменой
-  try {
-    const { deleteWorksheetEntryByBookingId } = await import('./worksheets');
-    await deleteWorksheetEntryByBookingId(id, 'tire');
-  } catch (error) {
-    console.error('[cancelOnlineTireBooking] Ошибка удаления записи ведомости:', error);
-    // Не прерываем отмену заказа
-  }
-
-  // Отменяем заказ
-  await updateTireBookingStatus(id, 'ОТМЕНЕНО');
-}
-
-/**
  * Отменить заказ шиномонтажа
  * @param id ID заказа
  * @returns Обновленный заказ
