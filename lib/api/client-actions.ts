@@ -132,3 +132,54 @@ export async function getMyClientAction(): Promise<MyClientResponse> {
 export async function getMyClientEmailAction(): Promise<MyClientEmailResponse> {
   return (await dispatchClientCall<{ data: MyClientEmailResponse }>('get-my-client-email')).data;
 }
+
+// ---------- cancel-booking / cancel-tire-booking (Phase C fix) ----------
+//
+// Reason: ActiveBookingCard.tsx carwash cancel previously routed through
+// lib/api/bookings.ts:cancelOnlineBooking() which called handleClientCancellation
+// → createCancellation anon-INSERT into booking_cancellations. RLS policy
+// staff_insert_booking_cancellations only allows app_role IN ('admin','owner'),
+// so anon INSERT returned null → count never incremented → block-after-3
+// threshold never triggered. Tire already used dispatcher (RPC has built-in
+// block check); carwash was the broken path.
+//
+// Both wrappers now go through api/client.ts dispatcher (service_role), which
+// calls RPC cancel_own_booking / cancel_own_tire_booking. Both RPCs have
+// the 30-day rolling count + block-after-3 logic in SQL, so the previous
+// 3-cancellation threshold works end-to-end.
+
+export interface CancelBookingResult {
+  booking: any;
+  already_cancelled: boolean;
+  blocked: boolean;
+  blocked_until: string | null;
+}
+
+export interface CancelTireBookingResult {
+  booking: any;
+  already_cancelled: boolean;
+  blocked: boolean;
+  blocked_until: string | null;
+}
+
+export async function cancelBookingAction(
+  bookingId: string,
+  reason?: string,
+): Promise<CancelBookingResult> {
+  const res = await dispatchClientCall<{ data: CancelBookingResult }>('cancel-booking', {
+    booking_id: bookingId,
+    ...(reason ? { cancel_comment: reason } : {}),
+  });
+  return res.data;
+}
+
+export async function cancelTireBookingAction(
+  tireBookingId: string,
+  reason?: string,
+): Promise<CancelTireBookingResult> {
+  const res = await dispatchClientCall<{ data: CancelTireBookingResult }>('cancel-tire-booking', {
+    tire_booking_id: tireBookingId,
+    ...(reason ? { reason } : {}),
+  });
+  return res.data;
+}
