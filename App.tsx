@@ -273,8 +273,15 @@ export default function App() {
   }, []);
 
   // Загрузка организаций, водителей, автомобилей, клиентов и персонала из БД
+  // Auth-gated (Bug #3): mounts-only deps=[] fired anon -> RLS permission denied for
+  // staff-only tables. Now waits for valid JWT in lib/_supabase-wrapper currentToken
+  // and re-runs on identity change (logout -> re-login as another staff).
+  // cancelled flag drops late responses when identity changed mid-flight.
   useEffect(() => {
-    const loadData = async () => {
+    if (!isAuthenticated || !userId) return;
+    if (userRole !== 'admin' && userRole !== 'owner') return;
+    let cancelled = false;
+    (async () => {
       try {
         const [orgs, drivers, cars, clientsData] = await Promise.all([
           getOrganizations(),
@@ -282,35 +289,43 @@ export default function App() {
           getOrganizationCars(),
           listClientsAction()
         ]);
+        if (cancelled) return;
         setOrganizations(orgs);
         setOrganizationDrivers(drivers);
         setOrganizationCars(cars);
         setClients(clientsData);
       } catch (error) {
-        console.error('Ошибка загрузки данных:', error);
+        if (cancelled) return;
+        console.error('[App] org/client staff data load:', error);
       }
-    };
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthenticated, userId, userRole]);
 
-    loadData();
-  }, []);
-
-  // Загрузка настроек зарплаты из БД
+  // Загрузка настроек зарплаты из БД — auth-gated (Bug #3).
   useEffect(() => {
-    const loadSalarySettingsData = async () => {
+    if (!isAuthenticated || !userId) return;
+    if (userRole !== 'admin' && userRole !== 'owner') return;
+    let cancelled = false;
+    (async () => {
       try {
         const settings = await getSalarySettings();
+        if (cancelled) return;
         setSalarySettings(settings);
       } catch (error) {
-        console.error('Ошибка загрузки настроек зарплаты:', error);
+        if (cancelled) return;
+        console.error('[App] salary settings load:', error);
       }
-    };
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthenticated, userId, userRole]);
 
-    loadSalarySettingsData();
-  }, []);
-
-  // Загрузка персонала из БД
+  // Загрузка персонала из БД — auth-gated (Bug #3).
   useEffect(() => {
-    const loadWorkers = async () => {
+    if (!isAuthenticated || !userId) return;
+    if (userRole !== 'admin' && userRole !== 'owner') return;
+    let cancelled = false;
+    (async () => {
       try {
         const { getWorkers } = await import('./lib/api/workers');
         const { getTireWorkers } = await import('./lib/api/tire-workers');
@@ -320,16 +335,17 @@ export default function App() {
           getTireWorkers(),
           getAdmins()
         ]);
+        if (cancelled) return;
         setWorkers(workersData);
         setTireTechnicians(techniciansData);
         setAdmins(adminsData);
       } catch (error) {
-        console.error('Ошибка загрузки персонала:', error);
+        if (cancelled) return;
+        console.error('[App] staff (workers/tireWorkers/admins) load:', error);
       }
-    };
-
-    loadWorkers();
-  }, []);
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthenticated, userId, userRole]);
 
   // ✅ Отслеживание загрузки всех клиентских данных
   useEffect(() => {
@@ -650,37 +666,9 @@ export default function App() {
   // Admins state - загружаем из БД
   const [admins, setAdmins] = useState<Admin[]>([]);
 
-  // Инициализация и сохранение workers в localStorage
-  useEffect(() => {
-    const initWorkers = async () => {
-      const savedWorkersState = localStorage.getItem('workersState');
-      const today = formatDate(new Date());
-
-      if (savedWorkersState) {
-        const { date, workers: savedWorkers } = JSON.parse(savedWorkersState);
-
-        // Миграция данных: добавляем новые поля если их нет
-        const migratedWorkers = savedWorkers.map((worker: Worker) => ({
-          ...worker,
-          current_balance: worker.current_balance ?? 0,
-          is_advance_taken: worker.is_advance_taken ?? false,
-        }));
-
-        // Если сохраненная дата совпадает с сегодняшней - восстанавливаем состояние
-        // Если дата другая - значит наступил новый день (00:00), api/reset-daily.ts уже перенес деньги и сбросил статистику
-        if (date === today) {
-          setWorkers(migratedWorkers);
-        } else {
-          // Новый день - api/reset-daily.ts уже перенес деньги и сбросил статистику
-          // Просто перезагружаем работников из БД
-          const { getWorkers } = await import('./lib/api/workers');
-          const workersData = await getWorkers();
-          setWorkers(workersData);
-        }
-      }
-    };
-    initWorkers();
-  }, []);
+  // Инициализация workers теперь через auth-gated loadWorkers effect выше.
+  // localStorage 'workersState' продолжает обновляться ниже (сохранение при изменении),
+  // но не служит источником данных при старте: истина только в БД после валидного login (Bug #3).
 
   // Загрузка закрытых боксов из БД при старте
   useEffect(() => {
@@ -981,37 +969,9 @@ export default function App() {
     }));
   }, [workers]);
 
-  // Инициализация и сохранение tireTechnicians в localStorage
-  useEffect(() => {
-    const initTechnicians = async () => {
-      const savedTechniciansState = localStorage.getItem('tireTechniciansState');
-      const today = formatDate(new Date());
-
-      if (savedTechniciansState) {
-        const { date, technicians: savedTechnicians } = JSON.parse(savedTechniciansState);
-
-        // Миграция данных: добавляем новые поля если их нет
-        const migratedTechnicians = savedTechnicians.map((technician: TireWorker) => ({
-          ...technician,
-          current_balance: technician.current_balance ?? 0,
-          is_advance_taken: technician.is_advance_taken ?? false,
-        }));
-
-        // Если сохраненная дата совпадает с сегодняшней - восстанавливаем состояние
-        // Если дата другая - значит наступил новый день (00:00), api/reset-daily.ts уже перенес деньги и сбросил статистику
-        if (date === today) {
-          setTireTechnicians(migratedTechnicians);
-        } else {
-          // Новый день - api/reset-daily.ts уже перенес деньги и сбросил статистику
-          // Просто перезагружаем шиномонтажников из БД
-          const { getTireWorkers } = await import('./lib/api/tire-workers');
-          const techniciansData = await getTireWorkers();
-          setTireTechnicians(techniciansData);
-        }
-      }
-    };
-    initTechnicians();
-  }, []);
+  // Инициализация tireTechnicians теперь через auth-gated loadWorkers effect выше.
+  // localStorage 'tireTechniciansState' продолжает обновляться ниже (сохранение при изменении),
+  // но не служит источником данных при старте: истина только в БД после валидного login (Bug #3).
 
   // Сохранение tireTechnicians в localStorage при изменении
   useEffect(() => {
@@ -1056,6 +1016,17 @@ export default function App() {
     setUserId('');
     setUserRole('admin');
     setIsAuthenticated(false);
+    // Bug #3: очищаем in-memory staff state, чтобы следующий пользователь
+    // не увидел данные предыдущего на login screen / dashboard.
+    // Public/reference resources (services, tireServices, clients) и client-only
+    // state не очищаются в этом узком фиксе.
+    setWorkers([]);
+    setTireTechnicians([]);
+    setAdmins([]);
+    setOrganizations([]);
+    setOrganizationDrivers([]);
+    setOrganizationCars([]);
+    setSalarySettings(null);
     // Очищаем localStorage
     localStorage.removeItem('userId');
     localStorage.removeItem('userRole');
