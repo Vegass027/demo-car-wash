@@ -114,9 +114,11 @@ interface BookingsListProps {
   initialTab?: string;
   workers?: any[];
   services?: any[];
+  onAddService?: (bookingId: string, serviceIds: string[], discount: number) => void;
+  onRemoveService?: (bookingId: string, serviceId: string) => void;
 }
 
-export const BookingsList: React.FC<BookingsListProps> = ({ bookings, onAssignWorker, onCancelBooking, onChangePaymentMethod, onNavigate, initialTab = 'waiting', workers = [], services = [] }) => {
+export const BookingsList: React.FC<BookingsListProps> = ({ bookings, onAssignWorker, onCancelBooking, onChangePaymentMethod, onNavigate, initialTab = 'waiting', workers = [], services = [], onAddService, onRemoveService }) => {
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null);
   
   // Сортируем bookings по времени
@@ -157,6 +159,8 @@ export const BookingsList: React.FC<BookingsListProps> = ({ bookings, onAssignWo
           setSelectedBookingId(null);
           onCancelBooking(bookingId);
         }}
+        onAddService={onAddService}
+        onRemoveService={onRemoveService}
       />
     </div>
   );
