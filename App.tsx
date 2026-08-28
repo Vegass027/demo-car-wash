@@ -1012,6 +1012,16 @@ export default function App() {
 
   // --- ACTIONS ---
   const handleLogout = () => {
+    // Phase D: REST JWT clear через централизованный setSessionToken
+    // (тот же синкает WebSocket через setRealtimeAuth внутри — no-op для
+    // cleared cached value, но консистентно с остальными lifecycle-путями).
+    setSessionToken(null);
+    // Phase D: реальный WS teardown. setRealtimeAuth(null) в realtime-js 2.93.3
+    // сохраняет cached token (см. lib/realtime-auth.ts комментарий), поэтому
+    // для очистки активных WS-подписок нужен removeAllChannels. Caller-side
+    // здесь; централизованный setSessionToken этого делать не может (не владеет
+    // ссылкой на supabase.realtime без цикла).
+    void supabase.removeAllChannels().catch(() => {});
     // Очищаем состояние авторизации
     setUserId('');
     setUserRole('admin');

@@ -20,6 +20,8 @@
  * between concurrent awaits.
  */
 
+import { setRealtimeAuth } from './realtime-auth';
+
 const SESSION_STORAGE_KEY = 'sb_token';
 
 // Module-level singleton — the only place the current JWT lives.
@@ -36,21 +38,23 @@ export function registerSessionExpiredHandler(cb: (() => void) | null): void {
   onSessionExpired = cb;
 }
 
-// Restore on first module load (browser only). sessionStorage may throw in
-// private mode or if disabled — swallow silently. Staff never writes here.
-if (typeof window !== 'undefined') {
-  try {
-    const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
-    if (stored) currentToken = stored;
-  } catch {
-    /* sessionStorage недоступен — staff-only path */
-  }
-}
-
 /**
- * Set or clear the current session token.
- * Passing null ALWAYS clears sessionStorage too — defends against stale
- * client tokens being auto-restored in the next tab after logout.
+ * Single source of truth for the JWT lifecycle (Phase D).
+ * Every REST + Realtime auth path goes through here:
+ *   - Staff login (Login.tsx)
+ *   - Telegram client login (lib/client-auth.ts)
+ *   - Silent Telegram re-auth (wrappedFetch 401-retry)
+ *   - Staff 401-expiry clear (wrappedFetch cleanup branch)
+ *   - Manual logout (App.tsx handleLogout)
+ *   - Future refresh flow
+ *
+ * Centralizing `void setRealtimeAuth(t)` here means future lifecycle code
+ * that touches auth will see realtime WS get sync'd automatically without
+ * having to remember to wire it.
+ *
+ * Logout semantics: setSessionToken(null) syncs WebSocket (no-op in our
+ * realtime-js config because cached fallback) and the caller is responsible
+ * for `supabase.removeAllChannels()` to actually tear down active WS.
  */
 export function setSessionToken(t: string | null): void {
   currentToken = t;
@@ -61,6 +65,7 @@ export function setSessionToken(t: string | null): void {
       /* ignore */
     }
   }
+  void setRealtimeAuth(t);
 }
 
 /**
@@ -69,6 +74,19 @@ export function setSessionToken(t: string | null): void {
  */
 export function getSessionToken(): string | null {
   return currentToken;
+}
+
+// Restore on first module load (browser only). sessionStorage may throw in
+// private mode or if disabled — swallow silently. Staff never writes here.
+// Run AFTER setSessionToken declaration so we go through the same
+// centralized lifecycle (and trigger a single setRealtimeAuth attempt).
+if (typeof window !== 'undefined') {
+  try {
+    const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (stored) setSessionToken(stored);
+  } catch {
+    /* sessionStorage недоступен — staff-only path */
+  }
 }
 
 function injectAuth(options: RequestInit = {}): RequestInit {

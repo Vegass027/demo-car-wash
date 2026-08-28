@@ -15,11 +15,12 @@
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { wrappedFetch, setSessionToken, registerSessionExpiredHandler, getSessionToken } from './_supabase-wrapper';
+import { registerRealtimeClient, setRealtimeAuth, getRealtimeClient } from './realtime-auth';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL!;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY!;
 
-export { setSessionToken, registerSessionExpiredHandler, getSessionToken };
+export { setSessionToken, registerSessionExpiredHandler, getSessionToken, setRealtimeAuth, getRealtimeClient };
 
 export const supabase: SupabaseClient = createClient(
   supabaseUrl,
@@ -36,3 +37,12 @@ export const supabase: SupabaseClient = createClient(
     },
   }
 );
+
+// Realtime auth lifecycle (Phase D, see lib/realtime-auth.ts):
+// Register the client AFTER createClient so lib/realtime-auth has a stable
+// reference to dispatch setAuth() to. Passing current getSessionToken()
+// synchronizes the page-reload case (sessionStorage restore already set
+// currentToken via setSessionToken(stored) inside _supabase-wrapper's
+// module-eval). If restore was empty (admin F5, anonymous, etc.),
+// initialToken is null and WS auth starts anon.
+registerRealtimeClient(supabase.realtime, getSessionToken());
