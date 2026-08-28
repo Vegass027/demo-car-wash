@@ -1136,6 +1136,20 @@ async function createStaffBookingAction(claims: StaffClaims, body: AnyObj): Prom
   if (!Array.isArray(services) || services.length === 0) {
     throw new ValidationError('services_required');
   }
+  // Drop any null/undefined/non-string entries before they reach
+  // recomputeBookingServices — passing "null" string into a UUID .in()
+  // triggers PG error 'invalid input syntax for type uuid: "null"'
+  // (Vercel log 2026-08-28 10:07:57 from create-staff-booking path).
+  const cleanServices = services.filter((s: unknown): s is string => typeof s === 'string' && s.length > 0);
+  if (cleanServices.length === 0) {
+    throw new ValidationError('services_required');
+  }
+  // Replace local reference so callers see the sanitized array.
+  // (Caller is `recomputeBookingServices(supabaseAdmin, { services: services.map(...) })`
+  //  — we replace `services` in scope.)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (services as any).length = 0;
+  for (const s of cleanServices) services.push(s);
   for (const k of [
     'services_with_quantities', 'price', 'booking_source', 'created_by_profile_id',
     'paid_at', 'status', 'worker_name', 'worker_name_2', 'org_name',
