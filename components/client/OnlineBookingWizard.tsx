@@ -11,13 +11,12 @@ import { formatDate } from '../../shared/utils/date';
 import { Service, getServicePrice } from '../../lib/api/services';
 import { getBookingsByProfileId } from '../../lib/api/bookings';
 import { SERVICE_CATEGORIES, isBonusService } from '../../lib/config/serviceCategories';
-import { hasFreeBodyWashAvailable, hasFreeBodyWashAvailableByProfileId, getWashesUntilNextFreeWash, getWashesUntilNextFreeWashByProfileId } from '../../lib/api/loyalty';
 import { LOYALTY_CONFIG } from '../../shared/config/loyalty';
 import { Client, ClientCar } from '../../lib/api/clients';
 import { Booking } from '../../lib/api/bookings';
 import { CombinedCar, getClientCombinedCars } from '../../lib/api/combined-cars';
 import { findDriversByPhone } from '../../lib/api/organizations';
-import { isProfileBlockedForOnlineBooking } from '../../lib/api/booking-cancellations';
+import { getMyBlockStatusAction, getMyFreeWashStatusAction, getMyWashesUntilNextFreeWashAction } from '../../lib/api/client-actions';
 import { BankSelectionStep } from './BankSelectionStep';
 
 export interface OnlineBookingWizardData {
@@ -127,8 +126,8 @@ export const OnlineBookingWizard: React.FC<OnlineBookingWizardProps> = ({
       setIsLoadingHistory(true);
       setIsLoadingBlocked(true);
       try {
-        // ✅ Проверяем блокировку
-        const blocked = await isProfileBlockedForOnlineBooking(profileId);
+        // ✅ Проверяем блокировку (Phase B: dispatcher reads via /api/client, identity from JWT)
+        const { blocked } = await getMyBlockStatusAction();
         setIsBlocked(blocked);
 
         // ✅ Используем данные из props вместо загрузки из API
@@ -144,11 +143,11 @@ export const OnlineBookingWizard: React.FC<OnlineBookingWizardProps> = ({
         const history = await getBookingsByProfileId(profileId);
         setBookingHistory(history);
 
-        // Проверяем лояльность
-        const freeWash = await hasFreeBodyWashAvailableByProfileId(profileId);
-        setHasFreeWash(freeWash);
+        // Проверяем лояльность (Phase B: dispatcher reads)
+        const { hasFreeWash } = await getMyFreeWashStatusAction();
+        setHasFreeWash(hasFreeWash);
 
-        const untilFree = await getWashesUntilNextFreeWashByProfileId(profileId);
+        const { remaining: untilFree } = await getMyWashesUntilNextFreeWashAction();
         setWashesUntilFree(untilFree);
       } catch (error) {
         console.error('Ошибка при загрузке данных:', error);

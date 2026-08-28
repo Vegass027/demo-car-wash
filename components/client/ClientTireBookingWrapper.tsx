@@ -11,7 +11,6 @@ import { formatDate, addDays } from '../../shared/utils/date'
 import { TireBooking } from '../../lib/api/tire-bookings'
 import { Organization, OrganizationDriver, OrganizationCar } from '../../entities/organization/model'
 import { Client } from '../../lib/api/clients'
-import { isProfileBlockedForOnlineBooking } from '../../lib/api/booking-cancellations'
 import { getTireServiceDayStatus, getNextOpenTireServiceDate } from '../../lib/api/tire-service-days'
 import { Lock, Clock } from 'lucide-react'
 

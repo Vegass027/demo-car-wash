@@ -9,7 +9,7 @@ import { getServices } from '../../lib/api/services';
 import { getTireServices } from '../../lib/api/tire-services';
 import { formatTimeWithoutSeconds, calculateEndTime } from '../../shared/utils/time';
 import { cancelOnlineBooking } from '../../lib/api/bookings';
-import { getCancellationCountByProfileId } from '../../lib/api/booking-cancellations';
+import { getMyCancellationCountAction } from '../../lib/api/client-actions';
 import { getSessionToken } from '../../lib/supabase';
 
 interface ActiveBookingCardProps {
@@ -50,10 +50,11 @@ export const ActiveBookingCard: React.FC<ActiveBookingCardProps> = ({ booking, t
       return;
     }
 
-    // Проверяем количество отмен
+    // Проверяем количество отмен (Phase B: dispatcher reads via /api/client, identity from JWT)
     let cancellationCount = 0;
     if (profileId) {
-      cancellationCount = await getCancellationCountByProfileId(profileId, 30);
+      const { count } = await getMyCancellationCountAction();
+      cancellationCount = count;
     }
 
     const message = cancellationCount >= 2

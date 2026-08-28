@@ -4,7 +4,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { ArrowLeft, AlertCircle, Building2, QrCode, Clock, CheckCircle, Smartphone, Mail } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { supabase } from '../../lib/supabase';
+import { getMyClientEmailAction } from '../../lib/api/client-actions';
 
 interface BankSelectionStepProps {
   bookingDetails: {
@@ -54,24 +54,14 @@ export const BankSelectionStep: React.FC<BankSelectionStepProps> = ({
     return emailRegex.test(email);
   };
 
-  // Загружаем email клиента из БД при монтировании компонента
+  // Загружаем email клиента из БД при монтировании компонента (Phase B: dispatcher reads)
   useEffect(() => {
     const loadClientEmail = async () => {
       try {
-        const { data: client, error } = await supabase
-          .from('clients')
-          .select('email')
-          .eq('profile_id', profileId)
-          .single();
-
-        if (error) {
-          console.error('[BankSelectionStep] Error loading client email:', error);
-          return;
-        }
-
-        if (client?.email) {
-          setClientEmail(client.email);
-          console.log('[BankSelectionStep] Loaded client email:', client.email);
+        const { email } = await getMyClientEmailAction();
+        if (email) {
+          setClientEmail(email);
+          console.log('[BankSelectionStep] Loaded client email:', email);
         }
       } catch (err) {
         console.error('[BankSelectionStep] Error loading client email:', err);
