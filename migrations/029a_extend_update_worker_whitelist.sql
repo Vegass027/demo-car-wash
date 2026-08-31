@@ -83,12 +83,22 @@ BEGIN
   IF p_updates ? 'completed_bookings' THEN
     -- ✅ completed_bookings is text[] (PostgreSQL _text array), NOT jsonb.
     -- Convert JSON array of strings to PostgreSQL text[].
-    -- For empty/null → empty array `{}` (cleared, NOT preserve).
+    -- For empty array → empty text[] (cleared).
+    -- For JSON null → empty text[] (cleared, NOT preserve — CLEARABLE semantics).
     -- For absent key → v_completed_bookings stays NULL → COALESCE preserves.
-    v_completed_bookings := COALESCE(
-      ARRAY(SELECT jsonb_array_elements_text(p_updates->'completed_bookings')),
-      ARRAY[]::text[]
-    );
+    -- For other JSON types (object, scalar) → throw to surface UI bugs.
+    --
+    -- ⚠️ DEVIATION from v2 (commit 1a1634a): jsonb_array_elements_text throws
+    -- SQLSTATE 22023 on JSON null (treated as scalar). Must check jsonb_typeof
+    -- first and route null→empty-array, non-array→throw. Caught by post-deploy
+    -- smoke test 4 (`completed_bookings: null` → 22023 without this guard).
+    IF jsonb_typeof(p_updates->'completed_bookings') = 'array' THEN
+      v_completed_bookings := ARRAY(SELECT jsonb_array_elements_text(p_updates->'completed_bookings'));
+    ELSIF jsonb_typeof(p_updates->'completed_bookings') = 'null' THEN
+      v_completed_bookings := ARRAY[]::text[];
+    ELSE
+      RAISE EXCEPTION 'completed_bookings_must_be_array' USING ERRCODE = 'P0001';
+    END IF;
   END IF;
 
   SELECT * INTO v_worker FROM workers WHERE id = p_worker_id FOR UPDATE;
