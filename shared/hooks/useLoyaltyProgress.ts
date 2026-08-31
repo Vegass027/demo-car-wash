@@ -19,6 +19,14 @@ export function useLoyaltyProgress(profileId: string | null | undefined): Loyalt
   const [freeWashPending, setFreeWashPending] = useState<boolean>(false); // ✅ Новый state
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  // ✅ Phase E (a) P0: own client_id for Realtime filter narrowing.
+  //    loyalty_carwash_progress table has only `client_id` as ownership column
+  //    (no `profile_id`/`created_by_profile_id`). Without this filter, the
+  //    subscription receives every client's loyalty row — payload.new flows
+  //    directly into setCurrentWashes / setFreeWashPending, leaking client B's
+  //    data into client A's UI. With filter `client_id=eq.<own>`, Supabase WS
+  //    applies narrowing server-side (verified in realtime-p2-smoke.mjs).
+  const [ownClientId, setOwnClientId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!profileId) {
@@ -35,12 +43,14 @@ export function useLoyaltyProgress(profileId: string | null | undefined): Loyalt
         const { progress } = await getMyLoyaltyProgressAction();
 
         if (progress) {
+          setOwnClientId(progress.client_id); // capture for Realtime filter
           setCurrentWashes(progress.total_washes_with_body);
           setFreeWashPending(progress.free_wash_pending || false); // ✅ Загружаем флаг
           const { remaining: washesUntilFree } = await getMyWashesUntilNextFreeWashAction();
           setWashesUntilFree(washesUntilFree);
         } else {
           // Если прогресса нет - первая мойка через 10
+          setOwnClientId(null);
           setCurrentWashes(0);
           setFreeWashPending(false);
           setWashesUntilFree(LOYALTY_CONFIG.FREE_WASH_AFTER);
@@ -57,46 +67,63 @@ export function useLoyaltyProgress(profileId: string | null | undefined): Loyalt
     fetchLoyaltyProgress();
 
     // ✅ Supabase Realtime подписка на изменения в loyalty_carwash_progress
-    const subscription = supabase
-      .channel('loyalty-progress:updates')
-      .on('postgres_changes', {
-        event: '*', // Все события: INSERT, UPDATE, DELETE
-        schema: 'public',
-        table: 'loyalty_carwash_progress'
-      }, async (payload: any) => {
-        console.log('[useLoyaltyProgress] Изменение в loyalty_carwash_progress:', payload);
-        
-        // ✅ Мгновенное обновление без мигания
-        if (payload.eventType === 'UPDATE' && payload.new) {
-          // Для UPDATE обновляем состояние напрямую из payload (без запроса к БД)
-          const newProgress = payload.new;
-          setCurrentWashes(newProgress.total_washes_with_body);
-          setFreeWashPending(newProgress.free_wash_pending || false); // ✅ Обновляем флаг
-          
-          // Вычисляем washesUntilFree локально без запроса к БД
-          const nextFree = Math.ceil(newProgress.total_washes_with_body / LOYALTY_CONFIG.FREE_WASH_AFTER) * LOYALTY_CONFIG.FREE_WASH_AFTER;
-          setWashesUntilFree(nextFree - newProgress.total_washes_with_body);
-        } else if (payload.eventType === 'INSERT' && payload.new) {
-          // Для INSERT загружаем данные полностью (первичная загрузка)
-          await fetchLoyaltyProgress();
-        } else if (payload.eventType === 'DELETE') {
-          // Для DELETE сбрасываем состояние
-          setCurrentWashes(0);
-          setFreeWashPending(false);
-          setWashesUntilFree(LOYALTY_CONFIG.FREE_WASH_AFTER);
-        }
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('[useLoyaltyProgress] Подписано на loyalty_carwash_progress');
-        }
-      });
+    //    ✅ Phase E (a) P0: filter narrowed to own client_id — server-side
+    //       blocking of foreign rows (P2 smoke verified narrowing works).
+    //       Without this filter, payload.new for client B's row flows into
+    //       setCurrentWashes/setFreeWashPending — a functionally-visible bug
+    //       where client A sees "you have a free wash" + client B's counter.
+    //    ⚠️ Until ownClientId is resolved (progress loaded), we do NOT
+    //       subscribe at all — avoids a window where the subscription would
+    //       accept any row. Client without progress row cannot have one
+    //       created via Realtime path; if a row is INSERTed, the next
+    //       poll/refetch picks it up via the dispatcher.
+    const subscription = ownClientId
+      ? supabase
+          .channel('loyalty-progress:updates')
+          .on(
+            'postgres_changes',
+            {
+              event: '*', // Все события: INSERT, UPDATE, DELETE
+              schema: 'public',
+              table: 'loyalty_carwash_progress',
+              filter: `client_id=eq.${ownClientId}`,
+            },
+            async (payload: any) => {
+              console.log('[useLoyaltyProgress] Изменение в loyalty_carwash_progress:', payload);
+
+              // ✅ Мгновенное обновление без мигания
+              if (payload.eventType === 'UPDATE' && payload.new) {
+                // Для UPDATE обновляем состояние напрямую из payload (без запроса к БД)
+                const newProgress = payload.new;
+                setCurrentWashes(newProgress.total_washes_with_body);
+                setFreeWashPending(newProgress.free_wash_pending || false); // ✅ Обновляем флаг
+
+                // Вычисляем washesUntilFree локально без запроса к БД
+                const nextFree = Math.ceil(newProgress.total_washes_with_body / LOYALTY_CONFIG.FREE_WASH_AFTER) * LOYALTY_CONFIG.FREE_WASH_AFTER;
+                setWashesUntilFree(nextFree - newProgress.total_washes_with_body);
+              } else if (payload.eventType === 'INSERT' && payload.new) {
+                // Для INSERT загружаем данные полностью (первичная загрузка)
+                await fetchLoyaltyProgress();
+              } else if (payload.eventType === 'DELETE') {
+                // Для DELETE сбрасываем состояние
+                setCurrentWashes(0);
+                setFreeWashPending(false);
+                setWashesUntilFree(LOYALTY_CONFIG.FREE_WASH_AFTER);
+              }
+            }
+          )
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              console.log('[useLoyaltyProgress] Подписано на loyalty_carwash_progress (filter: client_id=eq.' + ownClientId + ')');
+            }
+          })
+      : null;
 
     return () => {
       console.log('[useLoyaltyProgress] Отключение от Realtime');
-      subscription.unsubscribe();
+      if (subscription) subscription.unsubscribe();
     };
-  }, [profileId]);
+  }, [profileId, ownClientId]);
 
   // Вычисляем процент прогресса
   const progressPercentage = Math.min(

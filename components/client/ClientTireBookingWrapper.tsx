@@ -295,20 +295,26 @@ export function ClientTireBookingWrapper({
     return cache
   }
 
-  // ✅ Supabase Realtime подписка на изменения в tire_bookings (postgres_changes)
+  // ✅ Phase E (a) P1: filter `client_id=eq.${ownClientId}` narrows the
+  //    Realtime stream to own tire_bookings only — server-side (P2 smoke
+  //    confirmed). Without filter, payload.new for every tire booking in
+  //    the publication arrives in this client (including client B's full
+  //    PII: client_name, phone, plate_number, services, payment_method) —
+  //    leaked via console.log + JS memory.
   useEffect(() => {
-    if (!profileId) return
+    if (!profileId || !clientId) return
 
-    console.log('[ClientTireBookingWrapper] Подключение к Realtime для tire_bookings (postgres_changes)')
+    console.log('[ClientTireBookingWrapper] Подключение к Realtime для tire_bookings (own only)')
 
     const subscription = supabase
       .channel('client-tire-booking:tire_bookings')
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
-        table: 'tire_bookings'
+        table: 'tire_bookings',
+        filter: `client_id=eq.${clientId}`,
       }, async (payload: any) => {
-        console.log('[ClientTireBookingWrapper] Изменение в tire_bookings:', payload)
+        console.log('[ClientTireBookingWrapper] Изменение в tire_bookings (own only):', payload)
 
         const bookingDate = payload.new?.booking_date || payload.old?.booking_date;
 
@@ -327,7 +333,7 @@ export function ClientTireBookingWrapper({
       })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
-          console.log('[ClientTireBookingWrapper] Подписано на client-tire-booking:tire_bookings')
+          console.log('[ClientTireBookingWrapper] Подписано на client-tire-booking:tire_bookings (filter: client_id=eq.' + clientId + ')')
         }
       })
 
@@ -335,7 +341,7 @@ export function ClientTireBookingWrapper({
       console.log('[ClientTireBookingWrapper] Отключение от Realtime')
       subscription.unsubscribe()
     }
-  }, [profileId])
+  }, [profileId, clientId])
 
   // ✅ Проверка блокировки клиента
   useEffect(() => {

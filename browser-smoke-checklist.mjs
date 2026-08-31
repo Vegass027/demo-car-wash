@@ -6,7 +6,7 @@ import { execSync } from 'child_process';
 
 const DEMO_URL = 'https://demo-car-wash.vercel.app';
 const SUPABASE_URL = 'https://danobongqzbxilyvdwig.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRhbm9ib25ncXpieGlseXZkd2lnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI4OTU4MTcsImV4cCI6MjA1ODQ3MTgxN30.E3aRuEDGtCJLkWuR7plg7G6Q0_QwGIZYb9uJvAyktSI';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRhbm9ib25ncXpieGlseXZkd2lnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2NzI2OTQsImV4cCI6MjEwMzI0ODY5NH0.IY8b5-izkcW2HgLf-N1QyXHGjccVP1NXjUV_I0sThAI';
 const PG_CONN = 'postgresql://postgres.danobongqzbxilyvdwig:YVJlmcibmLQYBtRM@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?options=-c%20project%3Dpostgres';
 
 function pg(sql) {
