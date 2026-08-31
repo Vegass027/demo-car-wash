@@ -138,6 +138,10 @@ const ALLOWED_ACTIONS = new Set([
   'start-tire-worker-shift',
   'stop-tire-worker-shift',     // NEW: OFF path — atomic, last_shift_date preserved
   'update-tire-worker',         // Hotfix B: whitelisted generic update via update_tire_worker RPC
+  'create-worker',              // Hotfix C: INSERT worker via create_worker RPC
+  'delete-worker',              // Hotfix C: DELETE worker via delete_worker RPC
+  'create-tire-worker',         // Hotfix C: INSERT tire_worker via create_tire_worker RPC
+  'delete-tire-worker',         // Hotfix C: DELETE tire_worker via delete_tire_worker RPC
   'add-tire-worker-earnings',  // SECURITY: server-computes earnings from booking_id only
   'inventory-usage',
   'inventory-restock',
@@ -2223,6 +2227,53 @@ async function deleteAdminAction(_claims: StaffClaims, body: AnyObj): Promise<Ac
 }
 
 // =========================================================================
+// workers + tire_workers CRUD (4 actions) — Hotfix C
+// =========================================================================
+//
+// Migration 029c — RPCs for INSERT/DELETE on workers + tire_workers.
+// 1:1 mirror of prod JS behavior:
+//   - create_worker / create_tire_worker: requires full_name (NOT NULL no default)
+//   - delete_worker / delete_tire_worker: bare DELETE — FK violations surface
+//     naturally (NO ACTION), pre-existing gaps documented (see migration header).
+async function createStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const { data, error } = await supabaseAdmin.rpc('create_worker', { p_data: body });
+  if (error) {
+    console.error('[staff:create-worker] rpc error:', error.message);
+    return failAction(500, 'create_worker_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { worker: data } } };
+}
+
+async function deleteStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const { error } = await supabaseAdmin.rpc('delete_worker', { p_worker_id: worker_id });
+  if (error) {
+    console.error('[staff:delete-worker] rpc error:', error.message);
+    return failAction(500, 'delete_worker_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { success: true } } };
+}
+
+async function createStaffTireWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const { data, error } = await supabaseAdmin.rpc('create_tire_worker', { p_data: body });
+  if (error) {
+    console.error('[staff:create-tire-worker] rpc error:', error.message);
+    return failAction(500, 'create_tire_worker_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { worker: data } } };
+}
+
+async function deleteStaffTireWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const { error } = await supabaseAdmin.rpc('delete_tire_worker', { p_worker_id: worker_id });
+  if (error) {
+    console.error('[staff:delete-tire-worker] rpc error:', error.message);
+    return failAction(500, 'delete_tire_worker_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { success: true } } };
+}
+
+// =========================================================================
 // start-admin-shift (admin-or-owner, dispatcher proxy for INVOKER RPC)
 // =========================================================================
 async function startAdminShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
@@ -3334,6 +3385,10 @@ export default async function handler(req: any, res: any) {
       case 'start-worker-shift':                result = await startWorkerShiftAction(guard.claims, body); break;
       case 'update-worker':                     result = await updateStaffWorkerAction(guard.claims, body); break;
       case 'update-tire-worker':               result = await updateStaffTireWorkerAction(guard.claims, body); break;
+      case 'create-worker':                      result = await createStaffWorkerAction(guard.claims, body); break;
+      case 'delete-worker':                      result = await deleteStaffWorkerAction(guard.claims, body); break;
+      case 'create-tire-worker':                 result = await createStaffTireWorkerAction(guard.claims, body); break;
+      case 'delete-tire-worker':                 result = await deleteStaffTireWorkerAction(guard.claims, body); break;
       case 'select-worker-mode-solo':           result = await selectStaffWorkerModeSoloAction(guard.claims, body); break;
       case 'select-worker-pair-mode':           result = await selectStaffWorkerPairModeAction(guard.claims, body); break;
       case 'change-worker-mode':                result = await changeStaffWorkerModeAction(guard.claims, body); break;

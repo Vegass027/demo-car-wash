@@ -783,6 +783,52 @@ export async function updateStaffTireWorker(
   return res.data.worker;
 }
 
+// === create-worker (Hotfix C — migration 029c) ===
+//
+// RPC INSERT worker. Required: full_name. All other fields use defaults/null.
+export async function createStaffWorker(
+  input: Pick<Worker, 'full_name'> & Partial<Omit<Worker, 'id'|'full_name'|'created_at'|'updated_at'>>
+): Promise<Worker> {
+  const res = await dispatchStaffCall<{
+    data?: { worker: Worker };
+    error?: string;
+  }>('create-worker', input as unknown as Record<string, unknown>);
+  if (!res?.data?.worker) throw new Error('staff_create_worker_no_worker_in_response');
+  return res.data.worker;
+}
+
+// === delete-worker (Hotfix C — migration 029c) ===
+//
+// RPC DELETE worker. FK violations surface naturally (NO ACTION).
+// Pre-existing gap #2: bookings.worker_id has no FK → silent orphans on
+// DELETE worker with active bookings (same behavior as prod pre-lockdown).
+export async function deleteStaffWorker(workerId: string): Promise<void> {
+  await dispatchStaffCall<{ data?: { success: boolean } }>(
+    'delete-worker',
+    { worker_id: workerId },
+  );
+}
+
+// === create-tire-worker (Hotfix C — migration 029c) ===
+export async function createStaffTireWorker(
+  input: Pick<TireWorker, 'full_name'> & Partial<Omit<TireWorker, 'id'|'full_name'|'created_at'|'updated_at'>>
+): Promise<TireWorker> {
+  const res = await dispatchStaffCall<{
+    data?: { worker: TireWorker };
+    error?: string;
+  }>('create-tire-worker', input as unknown as Record<string, unknown>);
+  if (!res?.data?.worker) throw new Error('staff_create_tire_worker_no_worker_in_response');
+  return res.data.worker;
+}
+
+// === delete-tire-worker (Hotfix C — migration 029c) ===
+export async function deleteStaffTireWorker(workerId: string): Promise<void> {
+  await dispatchStaffCall<{ data?: { success: boolean } }>(
+    'delete-tire-worker',
+    { worker_id: workerId },
+  );
+}
+
 // === select-worker-mode-solo (admin/owner) ===
 //
 // Migration 027 — atomic RPC for solo mode + base_rate accrual.

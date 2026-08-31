@@ -194,25 +194,15 @@ export async function getWorkerById(id: string): Promise<Worker | null> {
 export async function createWorker(
   data: Omit<Worker, 'id' | 'created_at' | 'updated_at'>
 ): Promise<Worker> {
-  // ✅ Нормализуем телефоны
+  // ✅ Hotfix C: route through dispatcher + create_worker RPC (migration 029c).
+  // 1:1 mirror of prod JS — anon INSERT was 403 after Commit 1 lockdown.
   const workerData = {
     ...data,
     phone: data.phone ? normalizePhoneNumber(data.phone) : null,
     payment_phone: data.payment_phone ? normalizePhoneNumber(data.payment_phone) : null
   };
-
-  const { data: worker, error } = await supabase
-    .from('workers')
-    .insert(workerData)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[Workers] Ошибка при создании мойщика:', error);
-    throw new Error(`Не удалось создать мойщика: ${error.message}`);
-  }
-
-  return worker as Worker;
+  const { createStaffWorker } = await import('./staff-actions');
+  return await createStaffWorker(workerData);
 }
 
 /**
@@ -247,15 +237,12 @@ export async function updateWorker(
  * @throws Error если запрос к базе данных не удался
  */
 export async function deleteWorker(id: string): Promise<void> {
-  const { error } = await supabase
-    .from('workers')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
-    console.error('[Workers] Ошибка при удалении мойщика:', error);
-    throw new Error(`Не удалось удалить мойщика: ${error.message}`);
-  }
+  // ✅ Hotfix C: route through dispatcher + delete_worker RPC (migration 029c).
+  // 1:1 mirror of prod JS — anon DELETE was 403 after Commit 1 lockdown.
+  // Pre-existing gap #2: bookings.worker_id has no FK → silent orphans on
+  // DELETE worker with active bookings (same as prod pre-lockdown).
+  const { deleteStaffWorker } = await import('./staff-actions');
+  await deleteStaffWorker(id);
 }
 
 /**
