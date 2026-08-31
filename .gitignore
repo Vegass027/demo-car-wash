@@ -40,3 +40,12 @@ dump/
 
 # Supabase CLI temp
 supabase/.temp/
+
+# Local smoke/test scripts (NEVER commit — review with owner first)
+realtime-smoke.mjs
+*-smoke.mjs
+*smoke-checklist.mjs
+*diag*.mjs
+*isolation*.mjs
+*get-client-jwt.mjs
+*realtime-diag2.mjs

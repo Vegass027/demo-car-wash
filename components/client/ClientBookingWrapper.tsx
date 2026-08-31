@@ -167,19 +167,28 @@ export function ClientBookingWrapper({
 
   // --------- Realtime: bookings changes (own only via RLS) ---------
   // Note: This still uses anon channel list (Bookings is a public schema
-  // table). When Category C RLS lands on bookings this naturally filters
-  // to own rows. Until then, refresh fires on any booking change.
+  // ✅ Phase E (a) P1: filter `client_id=eq.${ownClientId}` narrows the
+  //    Realtime stream to own bookings only — server-side (P2 smoke
+  //    confirmed). Without filter, payload.new for every booking in the
+  //    publication arrives in this client (including client B's full
+  //    PII: client_name, phone, car_model, services) — leaked via
+  //    console.log + JS memory.
+  //    UX-trade-off: redacted `rpc/get_public_booking_slots` still loads
+  //    "Занято" for any box, including foreign bookings, on first render
+  //    and on date click. Realtime only updates the timeline for *own*
+  //    bookings now — foreign bookings still appear on first render/refresh.
   useEffect(() => {
-    if (!profileId) return;
+    if (!profileId || !clientId) return;
 
     const subscription = supabase
       .channel(`client-booking:bookings:${profileId}`)
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
-        table: 'bookings'
+        table: 'bookings',
+        filter: `client_id=eq.${clientId}`,
       }, (payload: any) => {
-        console.log('[ClientBookingWrapper] Изменение в bookings:', payload);
+        console.log('[ClientBookingWrapper] Изменение в bookings (own only):', payload);
 
         const bookingDate = payload.new?.booking_date || payload.old?.booking_date;
         if (!bookingDate) return;
@@ -231,7 +240,7 @@ export function ClientBookingWrapper({
     return () => {
       subscription.unsubscribe();
     };
-  }, [profileId])
+  }, [profileId, clientId])
 
   // --------- API helpers ---------
   // POST /api/client-* with Bearer client JWT.
