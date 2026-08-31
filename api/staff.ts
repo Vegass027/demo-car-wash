@@ -2290,14 +2290,30 @@ async function startAdminShiftAction(_claims: StaffClaims, body: AnyObj): Promis
   if (body.p_admin_id !== undefined && body.p_admin_id !== undefined) {
     // already covered by readUuidRequired above
   }
+
+  // ✅ Hotfix E: fetch admin_fixed_salary from salary_settings (singleton row).
+  // 1:1 mirror prod lib/api/admins.ts:246-256 — was hardcoded 0 (bug).
+  // Prod behavior: every admin shift start credits admin_fixed_salary to
+  // earned_today via start_admin_shift RPC (which inserts salary_transactions
+  // EARNING row).
+  const { data: settings, error: settingsErr } = await supabaseAdmin
+    .from('salary_settings')
+    .select('admin_fixed_salary')
+    .limit(1)
+    .maybeSingle();
+  if (settingsErr) {
+    return failAction(500, 'salary_settings_query_failed', { detail: settingsErr.message });
+  }
+  if (!settings || settings.admin_fixed_salary === null || settings.admin_fixed_salary === undefined) {
+    return failAction(500, 'salary_settings_missing');
+  }
+
   // p_salary and p_today are server-derived. Caller doesn't pass them.
   // p_today = today date in YYYY-MM-DD format.
   const today = new Date().toISOString().slice(0, 10);
-  // p_salary = 0 default; admin shift start doesn't carry a salary param in
-  // our admin dashboard (no fixed_salary increase on shift start).
   const { data, error } = await supabaseAdmin.rpc('start_admin_shift', {
     p_admin_id: admin_id,
-    p_salary: 0,
+    p_salary: Number(settings.admin_fixed_salary),
     p_today: today,
   });
   if (error) {
