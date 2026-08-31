@@ -68,56 +68,6 @@ export async function getAdminById(id: string): Promise<Admin | null> {
   return data as Admin;
 }
 
-/**
- * Начать смену админа с защитой от двойного начисления
- * @param adminId - UUID админа
- * @throws Error если запрос к базе данных не удался
- */
-export async function startAdminShift(adminId: string): Promise<void> {
-  const today = formatDate(new Date()); // "2026-01-25"
-
-  // 🔒 УРОВЕНЬ 2: Проверяем last_shift_date перед RPC вызовом
-  const admin = await getAdminById(adminId);
-  if (!admin) {
-    throw new Error(`Админ с ID ${adminId} не найден`);
-  }
-
-  // ✅ УЖЕ начислено сегодня?
-  if (admin.last_shift_date === today) {
-    console.log('[Admins] Смена уже начата сегодня');
-    return;
-  }
-
-  // Получаем настройки зарплаты
-  const settings = await getSalarySettings();
-  if (!settings) {
-    throw new Error('Настройки зарплаты не найдены');
-  }
-
-  // 🔒 УРОВЕНЬ 1: Вызываем PostgreSQL RPC функцию
-  const { data, error } = await supabase.rpc('start_admin_shift', {
-    p_admin_id: adminId,
-    p_salary: settings.admin_fixed_salary,
-    p_today: today
-  });
-
-  if (error) {
-    console.error('[Admins] Ошибка при начале смены:', error);
-    throw new Error(`Не удалось начать смену: ${error.message}`);
-  }
-}
-
-/**
- * Форматировать дату в формат YYYY-MM-DD
- * @param date - Дата
- * @returns Строка в формате YYYY-MM-DD
- */
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
 
 /**
  * Получить историю смен админа
