@@ -1588,9 +1588,8 @@ export default function App() {
         // Конвертируем телефон из формата "+7 (XXX) XXX-XX-XX" в формат "8XXXXXXXXXX"
         const formattedPhone = data.phone.replace(/\D/g, '').replace(/^7/, '8');
 
-        // Staff API derives total_price + services_with_quantities server-side
-        // from the tire_services catalog (idempotent recompute inside the RPC).
-        // We pass only the new service IDs.
+        // Staff API derives total_price server-side (sum of item.totals).
+        // We pass full TireServiceItem[] so quantity/total/comment are persisted.
         const bookingData = {
           client_name: data.clientName,
           phone: formattedPhone,
@@ -1599,7 +1598,16 @@ export default function App() {
           start_time: data.startTime,
           booking_date: data.date || initialTireBookingDate || tireSelectedDate,
           estimated_duration: data.estimatedDuration,
-          services: data.services.map(s => s.service_id),
+          // ✅ Hotfix D v2: pass full service objects (5+ fields) instead of IDs only.
+          // 1:1 mirror prod App.tsx:1602-1608. Wizard already has quantity/total/comment.
+          services: data.services.map(s => ({
+            service_id: s.service_id,
+            name: s.name,
+            quantity: s.quantity,
+            price: s.price,
+            total: s.total,
+            ...(s.comment ? { comment: s.comment } : {}),
+          })),
           payment_method: data.paymentType,
           is_org: data.clientType === 'ORG',
           organization_id: data.organizationId,
