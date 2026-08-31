@@ -131,6 +131,7 @@ const ALLOWED_ACTIONS = new Set([
   //   are deployed (migration 021). Until then the old anon RPC grant still
   //   works in parallel — frontend switch is the only functional change.
   'start-worker-shift',
+  'update-worker',                  // Commit 1: whitelisted generic update via update_worker RPC
   'start-tire-worker-shift',
   'stop-tire-worker-shift',     // NEW: OFF path — atomic, last_shift_date preserved
   'add-tire-worker-earnings',  // SECURITY: server-computes earnings from booking_id only
