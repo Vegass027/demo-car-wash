@@ -1,5 +1,5 @@
 import type { Booking } from './bookings';
-import type { TireBooking } from './tire-bookings';
+import type { TireBooking, TireServiceItem } from './tire-bookings';
 import type { Worker } from './workers';
 import type { TireWorker } from './tire-workers';
 import { getSessionToken } from '../_supabase-wrapper';
@@ -135,10 +135,13 @@ export async function createStaffBooking(
 export async function createStaffTireBooking(
   input: Omit<TireBooking,
     'id' | 'created_at' | 'updated_at' | 'status' |
-    'total_price' | 'booking_source' | 'services'  // services: input is string[] (IDs), not TireServiceItem[]
+    'total_price' | 'booking_source'
   > & {
     status?: string;
-    services: string[];
+    // ✅ Hotfix D v2: services is full TireServiceItem[] (5+ fields),
+    // not string[]. Matches prod App.tsx:1602-1608 behavior — wizard
+    // already has service_id/name/quantity/price/total/comment.
+    services: TireServiceItem[];
   },
 ): Promise<TireBooking> {
   const body = stripServerDerivedBookingFieldsTire(input as unknown as WizardBookingShape);

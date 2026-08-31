@@ -1699,28 +1699,36 @@ async function createStaffTireBookingAction(claims: StaffClaims, body: AnyObj): 
   if (!Array.isArray(services_in) || services_in.length === 0) {
     throw new ValidationError('services_required');
   }
-  const ids = services_in.map((s: any) => String(s));
-  const { data: tireRows, error: tireErr } = await supabaseAdmin
-    .from('tire_services')
-    .select('id, name, price, duration_minutes, is_custom_price, is_active')
-    .in('id', ids)
-    .eq('is_active', true);
-  if (tireErr) {
-    console.error('[staff:create-staff-tire-booking] tire_services query error:', tireErr.message);
-    return failAction(500, 'db_error', { detail: tireErr.message });
-  }
-  if (!tireRows || tireRows.length !== ids.length) {
-    const foundIds = new Set((tireRows ?? []).map((r: any) => r.id));
-    const missing = ids.filter((x) => !foundIds.has(x));
-    return failAction(400, `unknown_tire_service_${missing[0]}`);
+
+  // ✅ Hotfix D v2: accept full TireServiceItem[] from wizard (5+ fields).
+  // 1:1 mirror prod App.tsx:1602-1608 + createTireBooking passthrough.
+  // Pure passthrough — NO server-side recompute (prod trusts wizard output).
+  // The atomic_create_staff_tire_booking RPC (migration 010) also accepts p_services as-is.
+  const servicesOut: AnyObj[] = [];
+  for (const s of services_in) {
+    if (!s || typeof s !== 'object') {
+      throw new ValidationError('service_item_invalid');
+    }
+    const sid = String(s.service_id || '');
+    if (!sid) throw new ValidationError('service_id_required');
+
+    // Build service object with all 5 fields + optional comment.
+    // Use r.price (client-provided) — passthrough, not recomputed from tire_services.
+    const item: AnyObj = {
+      service_id: sid,
+      name: String(s.name || ''),
+      quantity: Number(s.quantity ?? 1),
+      price: Number(s.price ?? 0),
+      total: Number(s.total ?? 0),
+    };
+    if (s.comment) item.comment = String(s.comment);
+    servicesOut.push(item);
   }
 
-  const servicesOut: AnyObj[] = (tireRows as any[]).map((r: any) => ({
-    id: r.id,
-    name: r.name,
-    price: Number(r.price),
-  }));
-  const total_price = servicesOut.reduce((s, r) => s + Number(r.price), 0);
+  // ✅ total_price from item totals (correctly accounts for quantity).
+  // Pre-existing sum pattern from Phase 2.5 (line 47 in original code), not recompute.
+  // Was: sum of r.price (broken for quantity > 1). Now: sum of r.total (correct).
+  const total_price = servicesOut.reduce((s, r) => s + Number(r.total), 0);
 
   const payment_method = body.payment_method !== undefined && body.payment_method !== null
     ? readTirePaymentMethod(body, 'payment_method')
