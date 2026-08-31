@@ -137,6 +137,7 @@ const ALLOWED_ACTIONS = new Set([
   'change-worker-mode',              // Commit 6: dispatch to change_worker_mode RPC
   'start-tire-worker-shift',
   'stop-tire-worker-shift',     // NEW: OFF path — atomic, last_shift_date preserved
+  'stop-worker-shift',          // Commit 8: carwash worker OFF — mirror prod updateWorker body
   'update-tire-worker',         // Hotfix B: whitelisted generic update via update_tire_worker RPC
   'create-worker',              // Hotfix C: INSERT worker via create_worker RPC
   'delete-worker',              // Hotfix C: DELETE worker via delete_worker RPC
@@ -2425,6 +2426,30 @@ async function updateStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Prom
   return { status: 200, body: { data: { worker: data } } };
 }
 
+// === stop-worker-shift (admin/owner) — Commit 8 ===
+//
+// Migration 031 — OFF path for carwash workers.
+// 1:1 mirror prod lib/api/workers.ts:224 + features/workers/calculateEarnings.ts:194-211.
+// UPDATE only 6 fields (is_working_today, working_mode, working_mode_status,
+// partner_id, status, current_booking_id). All other fields preserved
+// automatically because not in SET clause (last_shift_date, earned_today,
+// current_balance, base_rate_amount, base_rate_taken_today, cars_today,
+// completed_bookings, is_advance_taken).
+//
+// Does NOT touch work_shifts row (by design — reset_daily cron closes it).
+// NO idempotency guard — pure passthrough like prod updateWorker.
+async function stopWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const { data, error } = await supabaseAdmin.rpc('stop_worker_shift', {
+    p_worker_id: worker_id,
+  });
+  if (error) {
+    console.error('[staff:stop-worker-shift] rpc error:', error.message);
+    return failAction(500, 'stop_worker_shift_failed', { detail: error.message });
+  }
+  return { status: 200, body: { data: { worker: data } } };
+}
+
 // === select-worker-mode-solo (admin/owner) ===
 //
 // === update-tire-worker (admin/owner) — Hotfix B ===
@@ -3407,6 +3432,7 @@ export default async function handler(req: any, res: any) {
 
       // Slice #3d Step 0 — staff-direct RPC dispatcher proxies:
       case 'start-worker-shift':                result = await startWorkerShiftAction(guard.claims, body); break;
+      case 'stop-worker-shift':                 result = await stopWorkerShiftAction(guard.claims, body); break;
       case 'update-worker':                     result = await updateStaffWorkerAction(guard.claims, body); break;
       case 'update-tire-worker':               result = await updateStaffTireWorkerAction(guard.claims, body); break;
       case 'create-worker':                      result = await createStaffWorkerAction(guard.claims, body); break;

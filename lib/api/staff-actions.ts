@@ -832,6 +832,19 @@ export async function deleteStaffTireWorker(workerId: string): Promise<void> {
   );
 }
 
+// === stop-worker-shift (Commit 8 — migration 031) ===
+//
+// 1:1 mirror prod lib/api/workers.ts:224 + features/workers/calculateEarnings.ts:194-211.
+// Pure passthrough — no idempotency guard, no work_shifts close.
+export async function stopStaffWorkerShift(workerId: string): Promise<Worker> {
+  const res = await dispatchStaffCall<{
+    data?: { worker: Worker };
+    error?: string;
+  }>('stop-worker-shift', { worker_id: workerId });
+  if (!res?.data?.worker) throw new Error('staff_stop_worker_shift_no_worker_in_response');
+  return res.data.worker;
+}
+
 // === select-worker-mode-solo (admin/owner) ===
 //
 // Migration 027 — atomic RPC for solo mode + base_rate accrual.
