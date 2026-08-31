@@ -3,7 +3,7 @@
  * Работают с БД через API функции
  */
 
-import { Worker, updateWorker, startWorkerDay, resetWorkerDailyStats } from '@/lib/api/workers';
+import { Worker, updateWorker } from '@/lib/api/workers';
 import { startStaffWorkerShift } from '@/lib/api/staff-actions';
 import { Booking } from '@/lib/api/bookings';
 import type { SalarySettings } from '@/lib/types/salary';
@@ -123,17 +123,6 @@ export function calculateExpectedEarnings(
   const earnings = calculateOrderEarnings(orderPrice, workingMode, salarySettings);
   const carCount = calculateCarCount(workingMode);
   return { earnings, carCount };
-}
-
-/**
- * Инициализирует рабочий день для всех мойщиков
- * @param workers - массив мойщиков
- * @returns Promise с обновленными мойщиками
- */
-export async function initializeWorkersDay(workers: Worker[]): Promise<Worker[]> {
-  const promises = workers.map(worker => startWorkerDay(worker.id, worker.working_mode));
-  await Promise.all(promises);
-  return workers;
 }
 
 /**
