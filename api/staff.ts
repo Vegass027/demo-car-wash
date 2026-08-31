@@ -2289,16 +2289,40 @@ async function startWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promi
 //
 // Additional CHECKs in SQL: working_mode only when status='waiting',
 // partner_id only when status='locked' (set, never clear).
+//
+// Hotfix A (Phase 2.5): whitelist extended to 15 fields — pure passthrough.
+// Restores flows broken by Commit 1: handleWorkerAssigned, handleCancelBooking,
+// handleMarkAsReady, transferDailyEarningsToBalance, payoutSalary, giveAdvance,
+// addBookingEarnings. No new CHECK constraints — table-level CHECKs
+// (workers_status_check, workers_working_mode_check) provide schema validation.
+// Fields STILL blacklisted: working_mode_status, base_rate_amount,
+// base_rate_taken_today, is_working_today, last_shift_date, current_balance
+// (via specialized RPCs only — not via this generic update path). Wait — see below.
+//
+// Hotfix A NOTE: current_balance, earned_today, is_advance_taken, status are
+// added back to whitelist as PASSTHROUGH. They CAN be set via updateWorker
+// (salary flows), but state-machine RPCs (start/stop_worker_shift,
+// select_worker_mode_*, change_worker_mode) take precedence where they apply.
 async function updateStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const worker_id = readUuidRequired(body, 'worker_id');
-  const WHITELIST = ['full_name', 'phone', 'card_number', 'payment_phone',
-                     'payment_comment', 'salary_comment', 'is_active',
-                     'working_mode', 'partner_id'] as const;
+  const WHITELIST = [
+    // metadata (Commit 1 — 9 fields)
+    'full_name', 'phone', 'card_number', 'payment_phone',
+    'payment_comment', 'salary_comment', 'is_active',
+    'working_mode', 'partner_id',
+    // Hotfix A additions — 6 salary/booking fields
+    'status', 'current_booking_id', 'current_balance',
+    'earned_today', 'is_advance_taken', 'completed_bookings',
+  ] as const;
+  // ✅ Fields where null EXPLICITLY means "clear in DB" (1:1 with prod semantics).
+  // For partner_id, null is filtered out — never cleared, goes through changeWorkerMode RPC.
+  const CLEARABLE = new Set(['current_booking_id', 'completed_bookings']);
   const updates: Record<string, unknown> = {};
   for (const k of WHITELIST) {
-    // Reject null too — explicit null for partner_id means "clear", which is forbidden.
-    // Unpairing goes through changeWorkerMode RPC (commit 8).
-    if (body[k] !== undefined && body[k] !== null) updates[k] = body[k];
+    const v = body[k];
+    if (v === undefined) continue;
+    if (v === null && !CLEARABLE.has(k)) continue;
+    updates[k] = v;
   }
   if (Object.keys(updates).length === 0) {
     return failAction(400, 'no_updates_to_apply');
