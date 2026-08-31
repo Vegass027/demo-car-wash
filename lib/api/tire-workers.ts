@@ -177,18 +177,9 @@ export async function createTireWorker(
     payment_phone: data.payment_phone ? normalizePhoneNumber(data.payment_phone) : null
   };
 
-  const { data: worker, error } = await supabase
-    .from('tire_workers')
-    .insert(workerData)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[TireWorkers] Ошибка при создании мастера:', error);
-    throw new Error(`Не удалось создать мастера: ${error.message}`);
-  }
-
-  return worker as TireWorker;
+  // ✅ Hotfix C: route through dispatcher + create_tire_worker RPC (migration 029c).
+  const { createStaffTireWorker } = await import('./staff-actions');
+  return await createStaffTireWorker(workerData);
 }
 
 /**
@@ -218,15 +209,11 @@ export async function updateTireWorker(
  * Удалить мастера
  */
 export async function deleteTireWorker(id: string): Promise<void> {
-  const { error } = await supabase
-    .from('tire_workers')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
-    console.error('[TireWorkers] Ошибка при удалении мастера:', error);
-    throw new Error(`Не удалось удалить мастера: ${error.message}`);
-  }
+  // ✅ Hotfix C: route through dispatcher + delete_tire_worker RPC (migration 029c).
+  // 1:1 mirror of prod JS. tire_bookings.worker_id FK (NO ACTION) will surface
+  // naturally if there are related bookings (verified live during recon).
+  const { deleteStaffTireWorker } = await import('./staff-actions');
+  await deleteStaffTireWorker(id);
 }
 
 /**
