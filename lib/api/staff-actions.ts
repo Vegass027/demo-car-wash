@@ -756,6 +756,33 @@ export async function updateStaffWorker(
   return res.data.worker;
 }
 
+// === update-tire-worker (Hotfix B — migration 029b) ===
+//
+// Whitelisted generic update for tire_worker. Mirrors updateStaffWorker pattern.
+// Restores tire_worker UI flows broken by Commit 1.
+export async function updateStaffTireWorker(
+  workerId: string,
+  updates: Partial<Pick<TireWorker,
+    // Metadata (7)
+    'full_name' | 'phone' | 'card_number' | 'payment_phone'
+    | 'payment_comment' | 'salary_comment' | 'is_active'
+    // Hotfix B — 7 salary/booking fields
+    | 'status' | 'current_booking_id' | 'current_balance'
+    | 'earned_today' | 'is_advance_taken' | 'cars_today'
+    | 'completed_bookings'
+  >>
+): Promise<TireWorker> {
+  const res = await dispatchStaffCall<{
+    data?: { worker: TireWorker };
+    error?: string;
+  }>('update-tire-worker', {
+    worker_id: workerId,
+    ...updates,
+  });
+  if (!res?.data?.worker) throw new Error('staff_update_tire_worker_no_worker_in_response');
+  return res.data.worker;
+}
+
 // === select-worker-mode-solo (admin/owner) ===
 //
 // Migration 027 — atomic RPC for solo mode + base_rate accrual.

@@ -198,7 +198,7 @@ export async function updateTireWorker(
   id: string,
   updates: Partial<Omit<TireWorker, 'id' | 'created_at' | 'updated_at'>>
 ): Promise<TireWorker> {
-  // ✅ Нормализуем телефоны если они есть
+  // ✅ Normalize phones if present
   const updatesToApply = { ...updates };
   if (updates.phone) {
     updatesToApply.phone = normalizePhoneNumber(updates.phone);
@@ -207,19 +207,11 @@ export async function updateTireWorker(
     updatesToApply.payment_phone = normalizePhoneNumber(updates.payment_phone);
   }
 
-  const { data, error } = await supabase
-    .from('tire_workers')
-    .update(updatesToApply)
-    .eq('id', id)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[TireWorkers] Ошибка при обновлении мастера:', error);
-    throw new Error(`Не удалось обновить мастера: ${error.message}`);
-  }
-
-  return data as TireWorker;
+  // ✅ Hotfix B: route through dispatcher + update_tire_worker RPC (migration 029b).
+  // All atomic base_rate accrual + status/balance/booking updates happen server-side.
+  // 1:1 mirror of prod semantics, no new CHECK constraints.
+  const { updateStaffTireWorker } = await import('./staff-actions');
+  return await updateStaffTireWorker(id, updatesToApply);
 }
 
 /**

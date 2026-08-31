@@ -129,7 +129,17 @@ export async function addCompletedBookingToTechnician(
  * @returns обновленный мастер
  */
 export async function toggleTechnicianWorkingToday(technician: TireWorker): Promise<TireWorker> {
-  return await updateTireWorker(technician.id, {
-    is_working_today: !technician.is_working_today,
-  });
+  // ✅ Hotfix B: route through start/stop dispatchers (RPCs exist from migration 019a).
+  // is_working_today is no longer in update_tire_worker whitelist (migration 029b)
+  // — server-stamped via start_tire_worker_shift / stop_tire_worker_shift RPCs.
+  // Mirror of Commit 1 followup5acc80f (same pattern for carwash workers).
+  if (!technician.is_working_today) {
+    const { startStaffTireWorkerShift } = await import('@/lib/api/staff-actions');
+    const result = await startStaffTireWorkerShift(technician.id);
+    return result.worker;
+  } else {
+    const { stopStaffTireWorkerShift } = await import('@/lib/api/staff-actions');
+    const result = await stopStaffTireWorkerShift(technician.id);
+    return result.worker;
+  }
 }

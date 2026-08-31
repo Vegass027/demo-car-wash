@@ -137,6 +137,7 @@ const ALLOWED_ACTIONS = new Set([
   'change-worker-mode',              // Commit 6: dispatch to change_worker_mode RPC
   'start-tire-worker-shift',
   'stop-tire-worker-shift',     // NEW: OFF path — atomic, last_shift_date preserved
+  'update-tire-worker',         // Hotfix B: whitelisted generic update via update_tire_worker RPC
   'add-tire-worker-earnings',  // SECURITY: server-computes earnings from booking_id only
   'inventory-usage',
   'inventory-restock',
@@ -2186,6 +2187,20 @@ async function updateAdminAction(_claims: StaffClaims, body: AnyObj): Promise<Ac
   if (body.is_active !== undefined) patch.is_active = !!body.is_active;
   if (body.payment_comment !== undefined) patch.payment_comment = body.payment_comment;
   if (body.salary_comment !== undefined) patch.salary_comment = body.salary_comment;
+  // ✅ Hotfix B: 3 salary fields (passthrough, no new validation).
+  // Restores revertAdminPayoutTransaction (manageBalance.ts:418) which calls
+  // updateStaffAdmin(id, {current_balance: newBalance}).
+  // days_worked_this_month INTENTIONALLY NOT added — server-derived via
+  // start_admin_shift RPC, no UI callers (audit: 0 callers in code).
+  if (body.current_balance !== undefined) {
+    patch.current_balance = Number(body.current_balance);
+  }
+  if (body.earned_today !== undefined) {
+    patch.earned_today = Number(body.earned_today);
+  }
+  if (body.is_advance_taken !== undefined) {
+    patch.is_advance_taken = !!body.is_advance_taken;
+  }
   const { data, error } = await supabaseAdmin
     .from('admins').update(patch).eq('id', admin_id).select().maybeSingle();
   if (error) {
@@ -2332,6 +2347,51 @@ async function updateStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Prom
     p_updates: updates,
   });
   if (error) return failAction(500, 'update_worker_failed', { detail: error.message });
+  return { status: 200, body: { data: { worker: data } } };
+}
+
+// === select-worker-mode-solo (admin/owner) ===
+//
+// === update-tire-worker (admin/owner) — Hotfix B ===
+//
+// Migration 029b — whitelisted generic update RPC for tire_worker metadata + salary fields.
+// Mirrors update_worker pattern (migration 029a). No new CHECK constraints.
+// Restores flows: transferDailyEarningsToBalanceForTechnician, payoutSalaryForTechnician,
+// giveAdvanceForTechnician, revertTireWorkerPayoutTransaction, addCompletedBookingToTechnician,
+// handleSaveCardDetails/Payment/SalaryComment (TireTechnicianCard.tsx).
+//
+// Fields NOT in whitelist (intentional):
+//   is_working_today — via start_tire_worker_shift / stop_tire_worker_shift RPCs (migration 019a).
+//     UI rewire done in same Hotfix B commit (toggleTechnicianWorkingToday).
+//   last_shift_date — via start_tire_worker_shift RPC.
+async function updateStaffTireWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const WHITELIST = [
+    // metadata (7)
+    'full_name', 'phone', 'card_number', 'payment_phone',
+    'payment_comment', 'salary_comment', 'is_active',
+    // Hotfix B — 7 salary/booking fields
+    'status', 'current_booking_id', 'current_balance',
+    'earned_today', 'is_advance_taken', 'cars_today',
+    'completed_bookings',
+  ] as const;
+  // Fields where null EXPLICITLY means "clear in DB" (CLEARABLE semantics).
+  const CLEARABLE = new Set(['current_booking_id', 'completed_bookings']);
+  const updates: Record<string, unknown> = {};
+  for (const k of WHITELIST) {
+    const v = body[k];
+    if (v === undefined) continue;
+    if (v === null && !CLEARABLE.has(k)) continue;
+    updates[k] = v;
+  }
+  if (Object.keys(updates).length === 0) {
+    return failAction(400, 'no_updates_to_apply');
+  }
+  const { data, error } = await supabaseAdmin.rpc('update_tire_worker', {
+    p_worker_id: worker_id,
+    p_updates: updates,
+  });
+  if (error) return failAction(500, 'update_tire_worker_failed', { detail: error.message });
   return { status: 200, body: { data: { worker: data } } };
 }
 
@@ -3273,6 +3333,7 @@ export default async function handler(req: any, res: any) {
       // Slice #3d Step 0 — staff-direct RPC dispatcher proxies:
       case 'start-worker-shift':                result = await startWorkerShiftAction(guard.claims, body); break;
       case 'update-worker':                     result = await updateStaffWorkerAction(guard.claims, body); break;
+      case 'update-tire-worker':               result = await updateStaffTireWorkerAction(guard.claims, body); break;
       case 'select-worker-mode-solo':           result = await selectStaffWorkerModeSoloAction(guard.claims, body); break;
       case 'select-worker-pair-mode':           result = await selectStaffWorkerPairModeAction(guard.claims, body); break;
       case 'change-worker-mode':                result = await changeStaffWorkerModeAction(guard.claims, body); break;
