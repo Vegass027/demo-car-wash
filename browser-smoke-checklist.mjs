@@ -162,13 +162,20 @@ async function main() {
     // Cleanup previous
     pg(`DELETE FROM tire_bookings WHERE client_name LIKE '[SMOKE]%'`);
     pg(`DELETE FROM worksheet_entries WHERE tire_booking_id IN (SELECT id FROM tire_bookings WHERE client_name LIKE '[SMOKE]%')`);
-    // Tire wizard sends: services.map(s => s.service_id), estimated_duration, start_time, NO end_time/box/worker
+    // ✅ Hotfix D v2: TireBookingWizard now passes full TireServiceItem[]
+    // (5+ fields), not just service IDs. Matches prod App.tsx:1602-1608.
     const body = {
       client_name: '[SMOKE] tire',
       phone: '89001234567', // App.tsx formats to 8XXXXXXXXXX
       car_model: 'Test Tire Car',
       plate_number: 'А003АА77',
-      services: [tireServiceId],
+      services: [{
+        service_id: tireServiceId,
+        name: 'Шиномонтаж R13-14',
+        quantity: 1,
+        price: 1000,
+        total: 1000,
+      }],
       payment_method: 'Наличный',
       is_org: false,
       is_paid: false,
