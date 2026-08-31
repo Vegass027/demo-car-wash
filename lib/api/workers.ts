@@ -480,56 +480,34 @@ export async function startWorkerDay(
  * @throws Error если запрос к базе данных не удался
  */
 export async function startWorkerShift(workerId: string): Promise<void> {
-  const today = formatDate(new Date()); // "2026-01-25"
-
-  // 🔒 Проверяем is_working_today перед RPC вызовом
+  // 🔒 Pre-check через anon SELECT — быстрый early-return если worker
+  // уже работает сегодня (избегаем лишний round-trip к RPC).
   const worker = await getWorkerById(workerId);
   if (!worker) {
     throw new Error(`Мойщик с ID ${workerId} не найден`);
   }
-
-  // ✅ Если уже работает сегодня - не позволяем
   if (worker.is_working_today) {
     console.log('[Workers] Мойщик уже работает сегодня');
     return;
   }
 
-  // ✅ Если базовая ставка уже была начислена сегодня - не начисляем повторно
-  if (worker.base_rate_taken_today) {
-    console.log('[Workers] Базовая ставка уже была начислена сегодня');
-    // Просто включаем is_working_today без начисления базы
-    const { error } = await supabase
-      .from('workers')
-      .update({
-        is_working_today: true,
-        status: 'available',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', workerId);
-
-    if (error) {
-      console.error('[Workers] Ошибка при включении работы сегодня:', error);
-      throw new Error(`Не удалось включить работу сегодня: ${error.message}`);
-    }
-    return;
-  }
-
-  // Slice #3d Step 0: dispatcher proxy (server-stamps p_today + p_salary).
-  // Old direct .rpc('start_worker_shift', ...) path removed — migration 021
-  // will REVOKE EXECUTE on the underlying RPC.
+  // ✅ Slice #3d Step 0: dispatcher proxy (server-stamps p_today + p_salary
+  //    from salary_settings.worker_solo_base). Old direct .rpc() + direct
+  //    .from('workers').update() paths removed — migration 020 REVOKEd
+  //    anon/authenticated UPDATE/INSERT/DELETE on workers, leaving only
+  //    SELECT for non-dispatcher flows. The legacy fallback
+  //    (base_rate_taken_today=true → direct .update() with status='available')
+  //    returned 403 permission denied for every repeat-shift click.
+  //
+  //    The RPC itself (start_worker_shift) has matching idempotency:
+  //      IF v_worker.base_rate_taken_today THEN RETURN v_worker (no UPDATE).
+  //    Confirmed safe: scenario 3 (base_rate_taken_today=true AND
+  //    is_working_today=false) has 0 current instances and 0 historical
+  //    occurrences in 30 days of work_shifts (21 rows, all finished,
+  //    unique per worker/date). See PROJECT_STATE.md entry 24a for the
+  //    data check rationale; B-path RPC change deferred until scenario 3
+  //    becomes real production data.
   await startStaffWorkerShift(workerId);
-}
-
-/**
- * Форматировать дату в формат YYYY-MM-DD
- * @param date - Дата
- * @returns Строка в формате YYYY-MM-DD
- */
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 /**
