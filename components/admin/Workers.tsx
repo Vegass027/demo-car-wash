@@ -465,9 +465,9 @@ export const Workers: React.FC<WorkersProps> = ({
           const waitingOne = worker.working_mode_status === 'waiting' ? worker : partner;
           if (!waitingOne.base_rate_taken_today) {
             alert(
-              `Подтверждение пары с начислением базы для ${waitingOne.full_name} ` +
-              `временно недоступно — будет восстановлено в ближайшем обновлении. ` +
-              `Пока используйте режим "solo" или дождитесь полного фикса.`
+              `Подтверждение пары невозможно: у мойщика ${waitingOne.full_name} ` +
+              `не начислена базовая ставка. Сначала переключите обоих мойщиков в ` +
+              `режим "Соло" (для начисления базы), затем повторите выбор пары.`
             );
             return;
           }
