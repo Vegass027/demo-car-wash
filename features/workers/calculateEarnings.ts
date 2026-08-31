@@ -4,7 +4,7 @@
  */
 
 import { Worker, updateWorker } from '@/lib/api/workers';
-import { startStaffWorkerShift } from '@/lib/api/staff-actions';
+import { startStaffWorkerShift, stopStaffWorkerShift } from '@/lib/api/staff-actions';
 import { Booking } from '@/lib/api/bookings';
 import type { SalarySettings } from '@/lib/types/salary';
 
@@ -187,12 +187,14 @@ export async function toggleWorkerWorkingToday(worker: Worker): Promise<Worker> 
   } else {
     console.log('[toggleWorkerWorkingToday] Выключаем работу — временно недоступно');
 
-    // ✅ Commit 1 hotfix: "turn off shift" requires stopWorkerShift
-    //    dispatcher + RPC (not yet created — planned for commit 8 alongside
-    //    changeWorkerMode). Until then: explicit alert. Re-entry after
-    //    end-of-day also happens via reset_daily cron at 17:00, so this
-    //    path is rarely needed manually.
-    throw new Error('toggle_off_temporarily_unavailable_use_daily_reset');
+    // ✅ Commit 8: restore prod parity for off-shift toggle. Replaces the
+    //    hardcoded throw (Hotfix A followup 5acc80f) — that was a temporary
+    //    placeholder until stop_worker_shift RPC existed. 1:1 mirror prod
+    //    lib/api/workers.ts:224 + features/workers/calculateEarnings.ts:194-211
+    //    — same 6-field UPDATE, no work_shifts close (by design: reset_daily
+    //    cron handles that next morning).
+    console.log('[toggleWorkerWorkingToday] Выключаем работу через stopStaffWorkerShift (Commit 8 dispatcher)');
+    return await stopStaffWorkerShift(worker.id);
   }
 }
 
