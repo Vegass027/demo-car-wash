@@ -4,6 +4,7 @@
  */
 
 import { Worker, updateWorker, startWorkerDay, resetWorkerDailyStats } from '@/lib/api/workers';
+import { startStaffWorkerShift } from '@/lib/api/staff-actions';
 import { Booking } from '@/lib/api/bookings';
 import type { SalarySettings } from '@/lib/types/salary';
 
@@ -169,19 +170,22 @@ export async function toggleWorkerWorkingToday(worker: Worker): Promise<Worker> 
   });
 
   if (!worker.is_working_today) {
-    console.log('[toggleWorkerWorkingToday] Включаем работу - НЕ сбрасываем earned_today и current_balance!');
+    console.log('[toggleWorkerWorkingToday] Включаем работу через startStaffWorkerShift (dispatcher)');
 
-    // Включаем работу - устанавливаем статус ожидания выбора режима
-    // НЕ сбрасываем earned_today и current_balance - они должны остаться как есть!
-    const updated = await updateWorker(worker.id, {
-      is_working_today: true,
-      working_mode_status: 'waiting',
-      working_mode: null,
-      partner_id: null,
-      // ❌ НЕ сбрасываем base_rate_amount - база зафиксирована на весь день!
-      // base_rate_amount: 0,
-      status: 'available',
-    });
+    // ✅ Commit 1 hotfix: route "turn on shift" through startStaffWorkerShift
+    //    dispatcher. The previous generic updateWorker call passed 4
+    //    blacklisted salary/status fields (is_working_today,
+    //    working_mode_status, status, partner_id=null) which were all
+    //    rejected by migration 026 RPC whitelist + JS-side filter,
+    //    returning 400 no_updates_to_apply. startStaffWorkerShift is the
+    //    correct path: it calls start_worker_shift RPC which handles
+    //    is_working_today, working_mode_status, etc. server-side atomically.
+    //
+    //    Note: the old code also tried to clear working_mode and partner_id
+    //    to null on turn-on — that's a no-op via the new RPC (they're
+    //    already null for fresh workers). For re-entry after end-of-day
+    //    reset (status='offline'), the daily reset cron handles it.
+    const updated = await startStaffWorkerShift(worker.id);
 
     console.log('[toggleWorkerWorkingToday] После включения:', {
       earned_today: updated.earned_today,
@@ -192,27 +196,14 @@ export async function toggleWorkerWorkingToday(worker: Worker): Promise<Worker> 
 
     return updated;
   } else {
-    console.log('[toggleWorkerWorkingToday] Выключаем работу - сбрасываем режим');
+    console.log('[toggleWorkerWorkingToday] Выключаем работу — временно недоступно');
 
-    // Выключаем работу - сбрасываем все показатели
-    const updated = await updateWorker(worker.id, {
-      is_working_today: false,
-      working_mode_status: 'waiting',
-      working_mode: null,
-      partner_id: null,
-      // ❌ НЕ сбрасываем base_rate_amount - база зафиксирована на весь день!
-      // base_rate_amount: 0,
-      status: 'offline',
-    });
-
-    console.log('[toggleWorkerWorkingToday] После выключения:', {
-      earned_today: updated.earned_today,
-      current_balance: updated.current_balance,
-      working_mode: updated.working_mode,
-      working_mode_status: updated.working_mode_status,
-    });
-
-    return updated;
+    // ✅ Commit 1 hotfix: "turn off shift" requires stopWorkerShift
+    //    dispatcher + RPC (not yet created — planned for commit 8 alongside
+    //    changeWorkerMode). Until then: explicit alert. Re-entry after
+    //    end-of-day also happens via reset_daily cron at 17:00, so this
+    //    path is rarely needed manually.
+    throw new Error('toggle_off_temporarily_unavailable_use_daily_reset');
   }
 }
 
