@@ -132,6 +132,9 @@ const ALLOWED_ACTIONS = new Set([
   //   works in parallel — frontend switch is the only functional change.
   'start-worker-shift',
   'update-worker',                  // Commit 1: whitelisted generic update via update_worker RPC
+  'select-worker-mode-solo',         // Commit 6: dispatch to select_worker_mode_solo RPC
+  'select-worker-pair-mode',         // Commit 6: dispatch to select_worker_pair_mode RPC
+  'change-worker-mode',              // Commit 6: dispatch to change_worker_mode RPC
   'start-tire-worker-shift',
   'stop-tire-worker-shift',     // NEW: OFF path — atomic, last_shift_date preserved
   'add-tire-worker-earnings',  // SECURITY: server-computes earnings from booking_id only
@@ -2308,6 +2311,56 @@ async function updateStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Prom
   return { status: 200, body: { data: { worker: data } } };
 }
 
+// === select-worker-mode-solo (admin/owner) ===
+//
+// Migration 027 — atomic RPC for "select solo mode" with base_rate accrual.
+// 1:1 port of lib/api/workers.ts:549-637 selectWorkerModeSolo.
+// Idempotency: if base_rate_taken_today=true, no-op (defensive).
+async function selectStaffWorkerModeSoloAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const { data, error } = await supabaseAdmin.rpc('select_worker_mode_solo', {
+    p_worker_id: worker_id,
+  });
+  if (error) return failAction(500, 'select_worker_mode_solo_failed', { detail: error.message });
+  return { status: 200, body: { data: { worker: data } } };
+}
+
+// === select-worker-pair-mode (admin/owner) ===
+//
+// Migration 027 — atomic RPC for "select pair mode" with base_rate accrual.
+// 1:1 port of lib/api/workers.ts:647-807 selectWorkerPairMode.
+async function selectStaffWorkerPairModeAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id1 = readUuidRequired(body, 'worker_id1');
+  const worker_id2 = readUuidRequired(body, 'worker_id2');
+  const { data, error } = await supabaseAdmin.rpc('select_worker_pair_mode', {
+    p_worker_id1: worker_id1,
+    p_worker_id2: worker_id2,
+  });
+  if (error) return failAction(500, 'select_worker_pair_mode_failed', { detail: error.message });
+  return { status: 200, body: { data: { workers: data } } };
+}
+
+// === change-worker-mode (admin/owner) ===
+//
+// Migration 027 — atomic RPC for solo↔pair mode switch without base_rate re-accrual.
+// 1:1 port of lib/api/workers.ts:817-891+ changeWorkerMode.
+// Guard: working_mode_status must be 'locked' (base rate must be already fixed).
+async function changeStaffWorkerModeAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const new_mode = body.new_mode;
+  if (new_mode !== 'solo' && new_mode !== 'pair') {
+    return failAction(400, 'invalid_mode', { detail: 'new_mode must be solo or pair' });
+  }
+  const new_partner_id = body.new_partner_id ?? null;
+  const { data, error } = await supabaseAdmin.rpc('change_worker_mode', {
+    p_worker_id: worker_id,
+    p_new_mode: new_mode,
+    p_new_partner_id: new_partner_id,
+  });
+  if (error) return failAction(500, 'change_worker_mode_failed', { detail: error.message });
+  return { status: 200, body: { data: { worker: data } } };
+}
+
 // === start-tire-worker-shift (admin/owner) ===
 //
 // Migration 019a: RPC body no longer references v_worker.base_rate_taken_today
@@ -3196,6 +3249,9 @@ export default async function handler(req: any, res: any) {
       // Slice #3d Step 0 — staff-direct RPC dispatcher proxies:
       case 'start-worker-shift':                result = await startWorkerShiftAction(guard.claims, body); break;
       case 'update-worker':                     result = await updateStaffWorkerAction(guard.claims, body); break;
+      case 'select-worker-mode-solo':           result = await selectStaffWorkerModeSoloAction(guard.claims, body); break;
+      case 'select-worker-pair-mode':           result = await selectStaffWorkerPairModeAction(guard.claims, body); break;
+      case 'change-worker-mode':                result = await changeStaffWorkerModeAction(guard.claims, body); break;
       case 'start-tire-worker-shift':           result = await startTireWorkerShiftAction(guard.claims, body); break;
       case 'stop-tire-worker-shift':            result = await stopTireWorkerShiftAction(guard.claims, body); break;
       case 'add-tire-worker-earnings':          result = await addTireWorkerEarningsAction(guard.claims, body); break;
