@@ -2273,6 +2273,40 @@ async function startWorkerShiftAction(_claims: StaffClaims, body: AnyObj): Promi
   return { status: 200, body: { data: { worker: data } } };
 }
 
+// === update-worker (admin/owner) ===
+//
+// Migration 026 — whitelisted generic update RPC for worker metadata.
+// Salary/status fields (working_mode_status, base_rate_amount,
+// base_rate_taken_today, earned_today, is_working_today, last_shift_date,
+// current_balance, current_booking_id, days_worked_this_month,
+// cars_today, completed_bookings) are NEVER accepted here — they must
+// go through specialized RPCs (start_worker_shift, select_worker_mode_*,
+// earnings, payout, advance, change_worker_mode — commit 8).
+//
+// Additional CHECKs in SQL: working_mode only when status='waiting',
+// partner_id only when status='locked' (set, never clear).
+async function updateStaffWorkerAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const worker_id = readUuidRequired(body, 'worker_id');
+  const WHITELIST = ['full_name', 'phone', 'card_number', 'payment_phone',
+                     'payment_comment', 'salary_comment', 'is_active',
+                     'working_mode', 'partner_id'] as const;
+  const updates: Record<string, unknown> = {};
+  for (const k of WHITELIST) {
+    // Reject null too — explicit null for partner_id means "clear", which is forbidden.
+    // Unpairing goes through changeWorkerMode RPC (commit 8).
+    if (body[k] !== undefined && body[k] !== null) updates[k] = body[k];
+  }
+  if (Object.keys(updates).length === 0) {
+    return failAction(400, 'no_updates_to_apply');
+  }
+  const { data, error } = await supabaseAdmin.rpc('update_worker', {
+    p_worker_id: worker_id,
+    p_updates: updates,
+  });
+  if (error) return failAction(500, 'update_worker_failed', { detail: error.message });
+  return { status: 200, body: { data: { worker: data } } };
+}
+
 // === start-tire-worker-shift (admin/owner) ===
 //
 // Migration 019a: RPC body no longer references v_worker.base_rate_taken_today
@@ -3160,6 +3194,7 @@ export default async function handler(req: any, res: any) {
 
       // Slice #3d Step 0 — staff-direct RPC dispatcher proxies:
       case 'start-worker-shift':                result = await startWorkerShiftAction(guard.claims, body); break;
+      case 'update-worker':                     result = await updateStaffWorkerAction(guard.claims, body); break;
       case 'start-tire-worker-shift':           result = await startTireWorkerShiftAction(guard.claims, body); break;
       case 'stop-tire-worker-shift':            result = await stopTireWorkerShiftAction(guard.claims, body); break;
       case 'add-tire-worker-earnings':          result = await addTireWorkerEarningsAction(guard.claims, body); break;

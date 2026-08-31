@@ -723,6 +723,35 @@ export async function startStaffWorkerShift(workerId: string): Promise<Worker> {
   return res.data.worker;
 }
 
+// === update-worker (admin/owner) ===
+//
+// Migration 026 — whitelisted generic update via `update_worker` RPC.
+// Allowed fields (matches RPC whitelist):
+//   full_name, phone, card_number, payment_phone, payment_comment,
+//   salary_comment, is_active, working_mode (only when waiting),
+//   partner_id (only when locked, set-only).
+// Salary/status fields are intentionally not in the type — callers
+// must use specialized RPCs (start_worker_shift, select_worker_mode_*,
+// changeWorkerMode — commits 6-8).
+export async function updateStaffWorker(
+  workerId: string,
+  updates: Partial<Pick<Worker,
+    'full_name' | 'phone' | 'card_number' | 'payment_phone'
+    | 'payment_comment' | 'salary_comment' | 'is_active'
+    | 'working_mode' | 'partner_id'
+  >>
+): Promise<Worker> {
+  const res = await dispatchStaffCall<{
+    data?: { worker: Worker };
+    error?: string;
+  }>('update-worker', {
+    worker_id: workerId,
+    ...updates,
+  });
+  if (!res?.data?.worker) throw new Error('staff_update_worker_no_worker_in_response');
+  return res.data.worker;
+}
+
 // === start-tire-worker-shift ===
 //
 // Migration 019a updated the RPC body (carwash-only `base_rate_taken_today`
