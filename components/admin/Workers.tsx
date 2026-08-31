@@ -456,6 +456,21 @@ export const Workers: React.FC<WorkersProps> = ({
         ) {
           console.log('[handleConfirmPair] Смешанный статус: один locked, другой waiting');
           // Один уже зафиксировал базу, другой ещё нет
+
+          // ✅ Commit 1 UX-guard: waiting-worker confirm-with-base-rate bypass
+          //    (multi-field updateWorker call below) was using 4 blacklisted
+          //    salary fields. After fix in БД (migration 026 RPC whitelist),
+          //    this path returns 500. Will be properly fixed in commit 7 via
+          //    select_worker_mode_pair RPC. Until then: explicit message.
+          const waitingOne = worker.working_mode_status === 'waiting' ? worker : partner;
+          if (!waitingOne.base_rate_taken_today) {
+            alert(
+              `Подтверждение пары с начислением базы для ${waitingOne.full_name} ` +
+              `временно недоступно — будет восстановлено в ближайшем обновлении. ` +
+              `Пока используйте режим "solo" или дождитесь полного фикса.`
+            );
+            return;
+          }
           const { updateWorker } = await import('../../lib/api/workers');
           const { getSalarySettings } = await import('../../lib/api/salary');
           const settings = await getSalarySettings();

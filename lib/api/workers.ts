@@ -2,7 +2,7 @@ import { supabase } from '../supabase';
 import { getSalarySettings } from './salary';
 import { createTransferTransaction, createEarningTransaction } from './salary-transactions';
 import { normalizePhoneNumber } from '../../shared/utils/phone';
-import { startStaffWorkerShift } from './staff-actions';
+import { startStaffWorkerShift, updateStaffWorker } from './staff-actions';
 
 /**
  * Режим работы мойщика
@@ -235,19 +235,10 @@ export async function updateWorker(
     updatesToApply.payment_phone = normalizePhoneNumber(updates.payment_phone);
   }
 
-  const { data, error } = await supabase
-    .from('workers')
-    .update(updatesToApply)
-    .eq('id', id)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[Workers] Ошибка при обновлении мойщика:', error);
-    throw new Error(`Не удалось обновить мойщика: ${error.message}`);
-  }
-
-  return data as Worker;
+  // ✅ Commit 1: route through dispatcher + update_worker RPC (migration 026).
+  //    Salary/status fields are rejected by RPC whitelist + CHECK.
+  //    Phone normalization preserved (RPC accepts any string, we normalize here).
+  return await updateStaffWorker(id, updatesToApply);
 }
 
 /**
