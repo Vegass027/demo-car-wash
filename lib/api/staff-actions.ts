@@ -736,9 +736,13 @@ export async function startStaffWorkerShift(workerId: string): Promise<Worker> {
 export async function updateStaffWorker(
   workerId: string,
   updates: Partial<Pick<Worker,
+    // Metadata (Commit 1)
     'full_name' | 'phone' | 'card_number' | 'payment_phone'
     | 'payment_comment' | 'salary_comment' | 'is_active'
     | 'working_mode' | 'partner_id'
+    // Hotfix A — salary/booking fields (passthrough)
+    | 'status' | 'current_booking_id' | 'current_balance'
+    | 'earned_today' | 'is_advance_taken' | 'completed_bookings'
   >>
 ): Promise<Worker> {
   const res = await dispatchStaffCall<{
