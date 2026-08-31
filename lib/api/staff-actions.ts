@@ -752,6 +752,53 @@ export async function updateStaffWorker(
   return res.data.worker;
 }
 
+// === select-worker-mode-solo (admin/owner) ===
+//
+// Migration 027 — atomic RPC for solo mode + base_rate accrual.
+// 1:1 port of lib/api/workers.ts:549-637 selectWorkerModeSolo.
+export async function selectStaffWorkerModeSolo(workerId: string): Promise<Worker> {
+  const res = await dispatchStaffCall<{
+    data?: { worker: Worker };
+    error?: string;
+  }>('select-worker-mode-solo', { worker_id: workerId });
+  if (!res?.data?.worker) throw new Error('staff_select_solo_no_worker_in_response');
+  return res.data.worker;
+}
+
+// === select-worker-pair-mode (admin/owner) ===
+//
+// Migration 027 — atomic RPC for pair mode + base_rate accrual.
+// 1:1 port of lib/api/workers.ts:647-807 selectWorkerPairMode.
+export async function selectStaffWorkerPairMode(workerId1: string, workerId2: string): Promise<Worker[]> {
+  const res = await dispatchStaffCall<{
+    data?: { workers: Worker[] };
+    error?: string;
+  }>('select-worker-pair-mode', { worker_id1: workerId1, worker_id2: workerId2 });
+  if (!res?.data?.workers) throw new Error('staff_select_pair_no_workers_in_response');
+  return res.data.workers;
+}
+
+// === change-worker-mode (admin/owner) ===
+//
+// Migration 027 — atomic RPC for solo↔pair mode switch without base_rate re-accrual.
+// 1:1 port of lib/api/workers.ts:817-891+ changeWorkerMode.
+export async function changeStaffWorkerMode(
+  workerId: string,
+  newMode: 'solo' | 'pair',
+  newPartnerId?: string | null
+): Promise<Worker> {
+  const res = await dispatchStaffCall<{
+    data?: { worker: Worker };
+    error?: string;
+  }>('change-worker-mode', {
+    worker_id: workerId,
+    new_mode: newMode,
+    new_partner_id: newPartnerId ?? null,
+  });
+  if (!res?.data?.worker) throw new Error('staff_change_mode_no_worker_in_response');
+  return res.data.worker;
+}
+
 // === start-tire-worker-shift ===
 //
 // Migration 019a updated the RPC body (carwash-only `base_rate_taken_today`

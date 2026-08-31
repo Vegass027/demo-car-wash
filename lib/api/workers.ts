@@ -2,7 +2,7 @@ import { supabase } from '../supabase';
 import { getSalarySettings } from './salary';
 import { createTransferTransaction, createEarningTransaction } from './salary-transactions';
 import { normalizePhoneNumber } from '../../shared/utils/phone';
-import { startStaffWorkerShift, updateStaffWorker } from './staff-actions';
+import { startStaffWorkerShift, updateStaffWorker, selectStaffWorkerModeSolo, selectStaffWorkerPairMode, changeStaffWorkerMode } from './staff-actions';
 
 /**
  * Режим работы мойщика
@@ -546,99 +546,32 @@ export async function assignWorkerPairToBooking(
  * @returns Обновленный мойщик
  * @throws Error если запрос к базе данных не удался
  */
+/**
+ * Первый выбор режима SOLO для мойщика
+ * Фиксирует базовую ставку на 500₽
+ * @param workerId - UUID мойщика
+ * @returns Обновленный мойщик
+ * @throws Error если запрос к базе данных не удался
+ */
 export async function selectWorkerModeSolo(workerId: string): Promise<Worker> {
-  console.log('[selectWorkerModeSolo] Начало выполнения для workerId:', workerId);
-
-  const worker = await getWorkerById(workerId);
-  if (!worker) {
-    throw new Error(`Мойщик с ID ${workerId} не найден`);
-  }
-
-  console.log('[selectWorkerModeSolo] Текущее состояние:', {
-    earned_today: worker.earned_today,
-    current_balance: worker.current_balance,
-    working_mode: worker.working_mode,
-    working_mode_status: worker.working_mode_status,
-    base_rate_taken_today: worker.base_rate_taken_today,
-  });
-
-  // Получаем настройки зарплаты
-  const settings = await getSalarySettings();
-  if (!settings) {
-    throw new Error('Настройки зарплаты не найдены');
-  }
-
-  const baseRateAmount = settings.worker_solo_base;  // 500₽
-
-  // Если база уже была начислена сегодня - просто фиксируем режим без начисления
-  if (worker.base_rate_taken_today) {
-    console.log('[selectWorkerModeSolo] База уже была начислена сегодня, просто фиксируем режим');
-    const { data, error } = await supabase
-      .from('workers')
-      .update({
-        working_mode: 'solo',
-        working_mode_status: 'locked',
-        partner_id: null,
-        // ❌ НЕ перезаписываем base_rate_amount - база уже зафиксирована на весь день!
-        // base_rate_amount: baseRateAmount,
-        status: 'available',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', workerId)
-      .select()
-      .single();
-
-    if (error) {
-      console.error('[Workers] Ошибка при выборе режима solo:', error);
-      throw new Error(`Не удалось выбрать режим solo: ${error.message}`);
-    }
-
-    return data as Worker;
-  }
-
-  console.log('[selectWorkerModeSolo] Начисляем базовую ставку:', {
-    baseRateAmount,
-    currentEarnedToday: worker.earned_today,
-    newEarnedToday: worker.earned_today + baseRateAmount,
-    current_balance_останется_тем_же: worker.current_balance,
-  });
-
-  // Обновляем мойщика - добавляем базу к earned_today!
-  const newEarnedToday = worker.earned_today + baseRateAmount;
-  const { data, error } = await supabase
-    .from('workers')
-    .update({
-      working_mode: 'solo',
-      working_mode_status: 'locked',  // БАЗА ЗАФИКСИРОВАНА!
-      partner_id: null,
-      base_rate_amount: baseRateAmount,  // НАВСЕГДА!
-      base_rate_taken_today: true,
-      earned_today: newEarnedToday,  // ✅ Добавляем базу к дневному балансу!
-      status: 'available',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', workerId)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[Workers] Ошибка при выборе режима solo:', error);
-    throw new Error(`Не удалось выбрать режим solo: ${error.message}`);
-  }
-
-  console.log('[selectWorkerModeSolo] Обновленное состояние:', {
-    earned_today: data.earned_today,
-    current_balance: data.current_balance,
-    working_mode: data.working_mode,
-    working_mode_status: data.working_mode_status,
-  });
-
-  return data as Worker;
+  // ✅ Commit 6: route through dispatcher + select_worker_mode_solo RPC (migration 027).
+  //    All atomic base_rate accrual + mode flag setting happens server-side.
+  //    1:1 port of original JS logic (lines 549-637) which used direct supabase.update().
+  return await selectStaffWorkerModeSolo(workerId);
 }
 
-/**
- * Первый выбор режима PAIR для обоих мойщиков
- * Фиксирует базовую ставку на 250₽ для обоих
+
+ /**
+  * Первый выбор режима PAIR для обоих мойщиков
+  * Фиксирует базовую ставку на 250₽ для обоих
+ * @param workerId1 - UUID первого мойщика
+ * @param workerId2 - UUID второго мойщика
+ * @returns Массив обновленных мойщиков
+ * @throws Error если запрос к базе данных не удался
+ */
+ /**
+  * Первый выбор режима PAIR для обоих мойщиков
+  * Фиксирует базовую ставку на 250₽ для обоих
  * @param workerId1 - UUID первого мойщика
  * @param workerId2 - UUID второго мойщика
  * @returns Массив обновленных мойщиков
@@ -648,164 +581,21 @@ export async function selectWorkerPairMode(
   workerId1: string,
   workerId2: string
 ): Promise<Worker[]> {
-  console.log('[selectWorkerPairMode] Начало выполнения для workerId1:', workerId1, 'workerId2:', workerId2);
-
-  const [worker1, worker2] = await Promise.all([
-    getWorkerById(workerId1),
-    getWorkerById(workerId2)
-  ]);
-
-  if (!worker1 || !worker2) {
-    throw new Error('Один или оба мойщика не найдены');
-  }
-
-  console.log('[selectWorkerPairMode] Текущее состояние worker1:', {
-    earned_today: worker1.earned_today,
-    current_balance: worker1.current_balance,
-    working_mode: worker1.working_mode,
-    working_mode_status: worker1.working_mode_status,
-    base_rate_taken_today: worker1.base_rate_taken_today,
-  });
-
-  console.log('[selectWorkerPairMode] Текущее состояние worker2:', {
-    earned_today: worker2.earned_today,
-    current_balance: worker2.current_balance,
-    working_mode: worker2.working_mode,
-    working_mode_status: worker2.working_mode_status,
-    base_rate_taken_today: worker2.base_rate_taken_today,
-  });
-
-  // Получаем настройки зарплаты
-  const settings = await getSalarySettings();
-  if (!settings) {
-    throw new Error('Настройки зарплаты не найдены');
-  }
-
-  const baseRateAmount = settings.worker_pair_base;  // 250₽
-
-  // Проверяем, была ли уже начислена база каждому из мойщиков
-  const worker1BaseAlreadyTaken = worker1.base_rate_taken_today;
-  const worker2BaseAlreadyTaken = worker2.base_rate_taken_today;
-
-  if (worker1BaseAlreadyTaken && worker2BaseAlreadyTaken) {
-    // Оба уже получили базу - просто фиксируем режим без начисления
-    console.log('[selectWorkerPairMode] Оба мойщика уже получили базу, просто фиксируем режим');
-    const [data1, data2] = await Promise.all([
-      supabase
-        .from('workers')
-        .update({
-          working_mode: 'pair',
-          working_mode_status: 'locked',
-          partner_id: workerId2,
-          // ❌ НЕ перезаписываем base_rate_amount - база уже зафиксирована на весь день!
-          // base_rate_amount: baseRateAmount,
-          status: 'available',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', workerId1)
-        .select()
-        .single(),
-      supabase
-        .from('workers')
-        .update({
-          working_mode: 'pair',
-          working_mode_status: 'locked',
-          partner_id: workerId1,
-          // ❌ НЕ перезаписываем base_rate_amount - база уже зафиксирована на весь день!
-          // base_rate_amount: baseRateAmount,
-          status: 'available',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', workerId2)
-        .select()
-        .single(),
-    ]);
-
-    if (data1.error) {
-      console.error('[Workers] Ошибка при выборе режима pair для первого мойщика:', data1.error);
-      throw new Error(`Не удалось выбрать режим pair: ${data1.error.message}`);
-    }
-
-    if (data2.error) {
-      console.error('[Workers] Ошибка при выборе режима pair для второго мойщика:', data2.error);
-      throw new Error(`Не удалось выбрать режим pair: ${data2.error.message}`);
-    }
-
-    return [data1.data as Worker, data2.data as Worker];
-  }
-
-  console.log('[selectWorkerPairMode] Начисляем базовую ставку:', {
-    baseRateAmount,
-    worker1_currentEarnedToday: worker1.earned_today,
-    worker1_newEarnedToday: worker1.earned_today + baseRateAmount,
-    worker2_currentEarnedToday: worker2.earned_today,
-    worker2_newEarnedToday: worker2.earned_today + baseRateAmount,
-    current_balance_останется_тем_же_для_обоих: `${worker1.current_balance} и ${worker2.current_balance}`,
-  });
-
-  // Обновляем обоих мойщиков - добавляем базу к earned_today!
-  const newEarnedToday1 = worker1.earned_today + baseRateAmount;
-  const newEarnedToday2 = worker2.earned_today + baseRateAmount;
-  const [data1, data2] = await Promise.all([
-    supabase
-      .from('workers')
-      .update({
-        working_mode: 'pair',
-        working_mode_status: 'locked',  // БАЗА ЗАФИКСИРОВАНА!
-        partner_id: workerId2,
-        base_rate_amount: baseRateAmount,  // НАВСЕГДА!
-        base_rate_taken_today: true,
-        earned_today: newEarnedToday1,  // ✅ Добавляем базу к дневному балансу!
-        status: 'available',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', workerId1)
-      .select()
-      .single(),
-    supabase
-      .from('workers')
-      .update({
-        working_mode: 'pair',
-        working_mode_status: 'locked',  // БАЗА ЗАФИКСИРОВАНА!
-        partner_id: workerId1,
-        base_rate_amount: baseRateAmount,  // НАВСЕГДА!
-        base_rate_taken_today: true,
-        earned_today: newEarnedToday2,  // ✅ Добавляем базу к дневному балансу!
-        status: 'available',
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', workerId2)
-      .select()
-      .single(),
-  ]);
-
-  if (data1.error) {
-    console.error('[Workers] Ошибка при выборе режима pair для первого мойщика:', data1.error);
-    throw new Error(`Не удалось выбрать режим pair: ${data1.error.message}`);
-  }
-
-  if (data2.error) {
-    console.error('[Workers] Ошибка при выборе режима pair для второго мойщика:', data2.error);
-    throw new Error(`Не удалось выбрать режим pair: ${data2.error.message}`);
-  }
-
-  console.log('[selectWorkerPairMode] Обновленное состояние worker1:', {
-    earned_today: data1.data.earned_today,
-    current_balance: data1.data.current_balance,
-    working_mode: data1.data.working_mode,
-    working_mode_status: data1.data.working_mode_status,
-  });
-
-  console.log('[selectWorkerPairMode] Обновленное состояние worker2:', {
-    earned_today: data2.data.earned_today,
-    current_balance: data2.data.current_balance,
-    working_mode: data2.data.working_mode,
-    working_mode_status: data2.data.working_mode_status,
-  });
-
-  return [data1.data as Worker, data2.data as Worker];
+  // ✅ Commit 6: route through dispatcher + select_worker_pair_mode RPC (migration 027).
+  //    All atomic base_rate accrual + mode flag setting happens server-side.
+  //    1:1 port of original JS logic (lines 647-807).
+  return await selectStaffWorkerPairMode(workerId1, workerId2);
 }
 
+
+/**
+ * Переключение режима в течение дня (только working_mode, БЕЗ изменения базы!)
+ * @param workerId - UUID мойщика
+ * @param newMode - новый режим ('solo' | 'pair')
+ * @param newPartnerId - ID нового партнера (только для pair)
+ * @returns Обновленный мойщик
+ * @throws Error если запрос к базе данных не удался
+ */
 /**
  * Переключение режима в течение дня (только working_mode, БЕЗ изменения базы!)
  * @param workerId - UUID мойщика
@@ -819,75 +609,9 @@ export async function changeWorkerMode(
   newMode: 'solo' | 'pair',
   newPartnerId?: string | null
 ): Promise<Worker> {
-  const worker = await getWorkerById(workerId);
-  if (!worker) {
-    throw new Error(`Мойщик с ID ${workerId} не найден`);
-  }
-
-  // Проверяем что база уже зафиксирована
-  if (worker.working_mode_status !== 'locked') {
-    throw new Error('База не зафиксирована. Сначала выберите режим работы.');
-  }
-
-  // ✅ Если переключаемся на solo - проверяем нужно ли очистить current_booking_id
-  let shouldClearBookingId = false;
-  let shouldMakeAvailable = false;
-
-  if (newMode === 'solo' && worker.current_booking_id) {
-    // Получаем текущий заказ работника
-    const { data: booking } = await supabase
-      .from('bookings')
-      .select('start_time, booking_date, status')
-      .eq('id', worker.current_booking_id)
-      .single();
-
-    if (booking) {
-      // Проверяем время заказа
-      const bookingHour = parseInt(booking.start_time?.split(':')[0] || '0');
-      const currentHour = new Date().getHours();
-      
-      // Если время заказа прошло или заказ завершен - очищаем current_booking_id
-      const isBookingTimePassed = bookingHour < currentHour;
-      const isBookingCompleted = booking.status === 'ГОТОВО' || 
-                                 booking.status === 'ОТМЕНЕНО';
-      
-      if (isBookingTimePassed || isBookingCompleted) {
-        shouldClearBookingId = true;
-        shouldMakeAvailable = true;
-      }
-    }
-  } else if (newMode === 'solo' && !worker.current_booking_id) {
-    // Если переключаемся на solo и нет активного заказа - делаем доступным
-    shouldMakeAvailable = true;
-  }
-
-  // Формируем обновления
-  const updates: any = {
-    working_mode: newMode,
-    partner_id: newMode === 'pair' ? (newPartnerId || null) : null,
-    updated_at: new Date().toISOString(),
-  };
-
-  if (shouldClearBookingId) {
-    updates.current_booking_id = null;
-  }
-
-  if (shouldMakeAvailable) {
-    updates.status = 'available';
-  }
-
-  // Обновляем режим, партнера и статус (если нужно), БАЗУ НЕ ТРОГАЕМ!
-  const { data, error } = await supabase
-    .from('workers')
-    .update(updates)
-    .eq('id', workerId)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[Workers] Ошибка при переключении режима:', error);
-    throw new Error(`Не удалось переключить режим: ${error.message}`);
-  }
-
-  return data as Worker;
+  // ✅ Commit 6: route through dispatcher + change_worker_mode RPC (migration 027).
+  //    Atomic solo↔pair switch without base_rate re-accrual.
+  //    1:1 port of original JS logic (lines 817-891+).
+  return await changeStaffWorkerMode(workerId, newMode, newPartnerId);
 }
+
