@@ -575,7 +575,7 @@ export default function App() {
     const targetDate = date || selectedDate;
     
     // Проверяем, есть ли данные в кэше
-    if (bookingsByDate[targetDate]) {
+    if (bookingsByDate[targetDate] && bookingsByDate[targetDate].length > 0) {
       console.log(`[App] Загрузка заказов из кэша для даты: ${targetDate}`);
       return bookingsByDate[targetDate];
     }
@@ -611,7 +611,7 @@ export default function App() {
     const targetDate = date || tireSelectedDate;
     
     // Проверяем, есть ли данные в кэше
-    if (tireBookingsByDate[targetDate]) {
+    if (tireBookingsByDate[targetDate] && tireBookingsByDate[targetDate].length > 0) {
       console.log(`[App] Загрузка заказов шиномонтажа из кэша для даты: ${targetDate}`);
       return tireBookingsByDate[targetDate];
     }
@@ -684,7 +684,7 @@ export default function App() {
   useEffect(() => {
     loadBookings();
     loadQuickBookings();
-  }, [selectedDate]);
+  }, [isAuthenticated, selectedDate]);
 
   // ✅ Supabase Realtime подписка на изменения в bookings для админа/владельца (postgres_changes)
   useEffect(() => {
@@ -738,7 +738,7 @@ export default function App() {
   // Загрузка заказов шиномонтажа из Supabase при изменении даты
   useEffect(() => {
     loadTireBookings();
-  }, [tireSelectedDate]);
+  }, [isAuthenticated, tireSelectedDate]);
 
   // ✅ Supabase Realtime подписка на изменения в tire_bookings для админа/владельца (postgres_changes)
   useEffect(() => {
