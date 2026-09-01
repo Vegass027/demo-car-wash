@@ -490,12 +490,7 @@ export const SummaryPage: React.FC<SummaryPageProps> = ({
     if (!confirm('Удалить этот расход?')) return;
 
     try {
-      // Удаляем чек из Storage если есть
-      if (expense?.receipt_url) {
-        await deleteReceipt(expense.receipt_url);
-      }
-
-      // Удаляем расход из БД
+      // Удаляем расход из БД (delete-expense action best-effort cleans receipt first)
       await deleteExpense(expenseId);
 
       // Перезагружаем расходы за сегодня
@@ -533,7 +528,7 @@ export const SummaryPage: React.FC<SummaryPageProps> = ({
     if (!expense.receipt_url) return;
 
     try {
-      const url = await getReceiptUrl(expense.receipt_url);
+      const url = await getReceiptUrl(expense.id);
       const fileName = expense.receipt_url.split('/').pop() || 'чек';
       setViewingReceipt({ url, fileName });
     } catch (error) {
@@ -579,19 +574,26 @@ export const SummaryPage: React.FC<SummaryPageProps> = ({
 
       // Загружаем новый чек если выбран
       if (inlineEditReceiptFile) {
-        // Удаляем старый чек если есть
-        if (expense.receipt_url) {
-          await deleteReceipt(expense.receipt_url);
-        }
-        // Загружаем новый чек
+        // SAFE REPLACE FLOW (no cleanup of old object):
+        //   1. upload new file (atomic; failure here leaves old receipt intact)
+        //   2. update DB to point at new path (atomic; failure here leaves
+        //      old receipt intact in DB; user can retry upload)
+        //   Old receipt is intentionally retained after replacement;
+        //   safe orphan cleanup requires attachment ownership/history
+        //   and is out of scope (Slice #3f).
         receiptUrl = await uploadReceipt(inlineEditReceiptFile, userId);
+        await updateExpense(expenseId, {
+          amount,
+          comment: (expense.category === 'utilities' || expense.category === 'repair' || expense.category === 'other') ? inlineEditComment : null,
+          receipt_url: receiptUrl,
+        }, userId);
+      } else {
+        // No new file — just update amount/comment, keep existing receipt_url
+        await updateExpense(expenseId, {
+          amount,
+          comment: (expense.category === 'utilities' || expense.category === 'repair' || expense.category === 'other') ? inlineEditComment : null,
+        }, userId);
       }
-
-      await updateExpense(expenseId, {
-        amount,
-        comment: (expense.category === 'utilities' || expense.category === 'repair' || expense.category === 'other') ? inlineEditComment : null,
-        receipt_url: receiptUrl,
-      }, userId); // ✅ Передаем userId отдельным параметром
 
       // Перезагружаем расходы за сегодня
       const today = formatDate(new Date());
