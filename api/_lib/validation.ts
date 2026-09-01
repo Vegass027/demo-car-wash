@@ -19,7 +19,13 @@ export const CAR_TYPES = ['SEDAN', 'CROSSOVER', 'JEEP', 'LARGE_SUV', 'MINIVAN'] 
 export type CarType = (typeof CAR_TYPES)[number];
 
 export const PAYMENT_METHODS = [
-  'Наличный', 'Безналичный', 'Перевод', 'СБП', 'Ведомость', 'QR-code',
+  'Наличный',
+  'Безналичный',
+  'Перевод',
+  'СБП',
+  'Ведомость',
+  'Яндекс',
+  'QR-code',
 ] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
