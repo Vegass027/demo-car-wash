@@ -188,7 +188,7 @@ export async function updateStaffTireBooking(
 export async function addStaffServices(
   bookingId: string,
   serviceIds: string[],
-  opts?: { antifreeze_intents?: string[]; allow_override?: boolean },
+  opts?: { antifreeze_intents?: string[]; allow_override?: boolean; discount?: number },
 ): Promise<Booking> {
   const body: Record<string, unknown> = {
     booking_id: bookingId,
@@ -196,6 +196,14 @@ export async function addStaffServices(
     antifreeze_intents: opts?.antifreeze_intents ?? [],
     allow_override: !!opts?.allow_override,
   };
+  // Only include `discount` when the caller passed it in opts.
+  // Matches prod semantics: UI path always passes a number (default 0),
+  // which is sent as a real `0` and overwrites existing discount.
+  // Callers that omit `discount` leave it absent, and the dispatcher's
+  // p_discount=null preserves the existing discount via RPC COALESCE.
+  if (opts && 'discount' in opts && opts.discount !== undefined) {
+    body.discount = opts.discount;
+  }
   const res = await dispatchStaffCall<BookingResponse<Booking>>('add-staff-services', body);
   return unwrapBooking(res);
 }

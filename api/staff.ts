@@ -1369,9 +1369,34 @@ async function updateStaffBookingAction(_claims: StaffClaims, body: AnyObj): Pro
 async function addStaffServicesAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const booking_id = readUuidRequired(body, 'booking_id');
   const service_ids = body.service_ids;
-  if (!Array.isArray(service_ids) || service_ids.length === 0) {
+  // service_ids must be a present array (possibly empty) — even on
+  // discount-only updates. Absent / null / non-array → 400 service_ids_required.
+  // Tightens the contract: callers must always send the field, even as [].
+  if (!Array.isArray(service_ids)) {
     throw new ValidationError('service_ids_required');
   }
+  const hasServices = service_ids.length > 0;
+
+  // Resolve p_discount from body. Distinguish absence (preserve via null)
+  // vs explicit 0 (overwrite via 0). Matches prod semantics where the UI
+  // always sends `discount` as a number (default 0).
+  let p_discount: number | null = null;
+  if (body.discount !== undefined) {
+    const d = body.discount;
+    if (typeof d !== 'number' || !Number.isFinite(d) || d < 0) {
+      throw new ValidationError('discount_invalid');
+    }
+    p_discount = d;
+  }
+  const hasDiscount = p_discount !== null && p_discount > 0;
+
+  // Gate: need services OR a positive discount. Empty services + 0/missing
+  // discount → 400 service_ids_required (matches existing rejection for
+  // the empty-services case; extended to also require a discount on its own).
+  if (!hasServices && !hasDiscount) {
+    throw new ValidationError('service_ids_required');
+  }
+
   const allow_override = !!body.allow_override;
   const antifreeze_intents = body.antifreeze_intents ?? [];
   if (antifreeze_intents.length > 0 && !allow_override) {
@@ -1381,15 +1406,15 @@ async function addStaffServicesAction(_claims: StaffClaims, body: AnyObj): Promi
   // price inside the locked transaction. Concurrent handlers serialize on
   // the row-lock, so no two updates land with stale snapshots — closes the
   // lost-update bug that R3b exposed.
+  // p_discount: explicit number (including 0) → overwrite; null → COALESCE
+  // preserves existing booking.discount.
   const { data, error } = await supabaseAdmin.rpc('atomic_modify_carwash_services', {
     p_booking_id: booking_id,
     p_action: 'add',
-    p_service_ids: service_ids.map((s: any) => String(s)),
+    p_service_ids: hasServices ? service_ids.map((s: any) => String(s)) : [],
     p_antifreeze_intents: antifreeze_intents,
     p_allow_override: allow_override,
-    // Pass null so RPC COALESCE keeps the existing booking.discount.
-    // add-staff-services must NOT clear a customer's existing discount.
-    p_discount: null,
+    p_discount: p_discount,
   });
   if (error) {
     const msg = String(error.message ?? '');

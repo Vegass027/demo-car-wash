@@ -1372,10 +1372,14 @@ export default function App() {
       if (!booking) return;
 
       // add-staff-services recomputes price server-side via the atomic RPC.
-      // Existing booking.discount is preserved (RPC COALESCE p_discount).
-      // If caller passes a discount, we send antifreeze_intents/allow_override
-      // — but the existing handler in the booking wizard never used them.
-      await addStaffServices(bookingId, serviceIds);
+      // Matches prod semantics (lib/api/bookings.ts:addServicesToBooking):
+      // UI always sends `discount` as an explicit number, default = 0.
+      //   - discount = 0  → RPC p_discount = 0     → overwrite existing discount to 0
+      //   - discount > 0  → RPC p_discount = N     → overwrite existing discount to N
+      //   - field absent  → RPC p_discount = null  → COALESCE keeps existing discount
+      // The wrapper lib/api/staff-actions.ts:addStaffServices only adds `discount`
+      // to the body when the caller passes opts.discount.
+      await addStaffServices(bookingId, serviceIds, { discount });
 
       // Перезагружаем списки
       await loadBookings();
