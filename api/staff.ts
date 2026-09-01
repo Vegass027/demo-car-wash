@@ -42,6 +42,13 @@ import {
   readTimeHHMM,
   readPaymentMethod,
   readBoolean,
+  readExpenseCategory,
+  isReceiptPath,
+  generateReceiptPath,
+  CATEGORIES_REQUIRING_COMMENT,
+  RECEIPT_MIME_ALLOWED,
+  RECEIPT_MAX_BYTES,
+  RECEIPT_BASE64_MAX_CHARS,
 } from './_lib/validation.js';
 import { normalizePhoneNumber } from '../shared/utils/phone.js';
 import { recomputeBookingServices } from './_lib/booking-services.js';
@@ -168,6 +175,14 @@ const ALLOWED_ACTIONS = new Set([
   // Closes DayTimeline.tsx anon-key 42501 permission denied gap.
   'open-box-for-hour',
   'close-box-for-hour',
+
+  // Slice #3f — staff expenses + receipts (6 actions):
+  'create-expense',
+  'update-expense',
+  'delete-expense',
+  'upload-receipt',
+  'get-receipt-url',
+  'delete-receipt',
 ]);
 
 const supabaseAdmin = createClient(
@@ -604,6 +619,329 @@ async function closeBoxForHourAction(_claims: StaffClaims, body: AnyObj): Promis
   }
 
   return { status: 200, body: { data: { closedBox: result, hour_closed: hour } } };
+}
+
+// =========================================================================
+// Slice #3f — staff expense writes + receipt storage (6 actions)
+// =========================================================================
+//
+// All actions: requireStaff → supabaseAdmin. Bucket 'expense-receipts'
+// created by migration 037 (private, 5MB cap, jpeg/png/pdf). Storage RLS
+// policies gate staff-only via app_role ∈ {admin, owner}.
+//
+// File transfer: base64-in-JSON. Server-decodes Buffer, validates size
+// ≤ RECEIPT_MAX_BYTES (3MB), checks magic bytes for MIME, generates
+// storage path server-side (NEVER trust client-supplied path).
+//
+// Receipt ownership model:
+//   - get-receipt-url and delete-receipt take `expense_id` and read the
+//     storage path from DB (single source of truth).
+//   - create-expense / update-expense only accept receipt_url paths
+//     that start with `${claims.profile_id}/` (caller must be the
+//     uploader).
+//   - delete-expense does best-effort cleanup of the CURRENT receipt
+//     before removing the DB row.
+//   - Inline-replace flow: old object is INTENTIONALLY NOT deleted in
+//     this slice. Old receipt becomes orphaned in storage. Safe orphan
+//     cleanup requires an attachment-ownership/history model and is
+//     out of scope.
+
+const RECEIPT_BUCKET = 'expense-receipts';
+const RECEIPT_SIGNED_TTL_SECONDS = 3600;
+
+// === action: upload-receipt ===
+//
+// Input:  { filename: string, mime: string, base64: string }
+// Output: { path: string }   // storage path to store in expenses.receipt_url
+async function uploadReceiptAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const filename = readString(body, 'filename', { max: 200, required: true });
+  const mime = readString(body, 'mime', { max: 80, required: true });
+  if (!mime || !(RECEIPT_MIME_ALLOWED as readonly string[]).includes(mime)) {
+    throw new ValidationError('mime_invalid');
+  }
+  const base64 = readString(body, 'base64', { max: RECEIPT_BASE64_MAX_CHARS, required: true });
+
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(base64, 'base64');
+  } catch {
+    throw new ValidationError('base64_decode_failed');
+  }
+  if (bytes.length === 0 || bytes.length > RECEIPT_MAX_BYTES) {
+    throw new ValidationError('file_too_large');
+  }
+
+  // Magic-byte cross-check (defense-in-depth, server-authoritative).
+  if (mime === 'image/jpeg' || mime === 'image/jpg') {
+    if (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
+      throw new ValidationError('mime_mismatch');
+    }
+  } else if (mime === 'image/png') {
+    if (!(bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47)) {
+      throw new ValidationError('mime_mismatch');
+    }
+  } else if (mime === 'application/pdf') {
+    if (!(bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46)) {
+      throw new ValidationError('mime_mismatch');
+    }
+  }
+
+  const path = generateReceiptPath(claims.profile_id, filename);
+  const { error: upErr } = await supabaseAdmin.storage
+    .from(RECEIPT_BUCKET)
+    .upload(path, bytes, { contentType: mime, cacheControl: '3600', upsert: false });
+  if (upErr) {
+    console.error('[staff:upload-receipt] storage error:', upErr.message);
+    return failAction(500, 'storage_upload_failed', { detail: upErr.message });
+  }
+  return { status: 200, body: { data: { path } } };
+}
+
+// === action: get-receipt-url ===
+//
+// Input:  { expense_id: uuid }
+// Output: { url: string }   // signed URL, TTL 1h
+//
+// Ownership: reads `receipt_url` from DB (server is the single source of
+// truth — client cannot supply an arbitrary storage path). Path is
+// validated via isReceiptPath before use to defend against DB corruption.
+async function getReceiptUrlAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const expense_id = readUuidRequired(body, 'expense_id');
+
+  const { data: existing, error: selErr } = await supabaseAdmin
+    .from('expenses')
+    .select('id, receipt_url')
+    .eq('id', expense_id)
+    .maybeSingle();
+  if (selErr) {
+    console.error('[staff:get-receipt-url] select error:', selErr.message);
+    return failAction(500, 'db_error', { detail: selErr.message });
+  }
+  if (!existing) return { status: 404, body: { error: 'expense_not_found' } };
+  const receiptUrl = existing.receipt_url as string | null;
+  if (!receiptUrl) return { status: 400, body: { error: 'receipt_not_found' } };
+  if (!isReceiptPath(receiptUrl)) return { status: 400, body: { error: 'receipt_path_invalid' } };
+
+  const { data, error } = await supabaseAdmin.storage
+    .from(RECEIPT_BUCKET)
+    .createSignedUrl(receiptUrl, RECEIPT_SIGNED_TTL_SECONDS);
+  if (error || !data?.signedUrl) {
+    console.error('[staff:get-receipt-url] signed url error:', error?.message);
+    return failAction(500, 'signed_url_failed');
+  }
+  return { status: 200, body: { data: { url: data.signedUrl } } };
+}
+
+// === action: delete-receipt ===
+//
+// Input:  { expense_id: uuid }
+// Output: { ok: true }
+//
+// Ownership: reads `receipt_url` from DB (NOT from client). On successful
+// storage remove, clears `expense.receipt_url` and stamps `updated_by`.
+// If storage delete fails, `receipt_url` is NOT cleared — caller should
+// retry. If DB update after successful storage remove fails, the receipt
+// is detached (storage object gone) but DB still references the path;
+// we surface a separate error so the operator can clean up.
+async function deleteReceiptAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const expense_id = readUuidRequired(body, 'expense_id');
+
+  const { data: existing, error: selErr } = await supabaseAdmin
+    .from('expenses')
+    .select('id, receipt_url')
+    .eq('id', expense_id)
+    .maybeSingle();
+  if (selErr) {
+    console.error('[staff:delete-receipt] select error:', selErr.message);
+    return failAction(500, 'db_error', { detail: selErr.message });
+  }
+  if (!existing) return { status: 404, body: { error: 'expense_not_found' } };
+  const receiptUrl = existing.receipt_url as string | null;
+  if (!receiptUrl) return { status: 400, body: { error: 'receipt_not_found' } };
+  if (!isReceiptPath(receiptUrl)) return { status: 400, body: { error: 'receipt_path_invalid' } };
+
+  // Step 1: storage remove. If this fails, do NOT clear receipt_url —
+  // caller can retry the action.
+  const { error: storErr } = await supabaseAdmin.storage
+    .from(RECEIPT_BUCKET)
+    .remove([receiptUrl]);
+  if (storErr) {
+    console.error('[staff:delete-receipt] storage error:', storErr.message);
+    return failAction(500, 'storage_delete_failed', { detail: storErr.message });
+  }
+
+  // Step 2: clear DB column. If this fails, the receipt object is gone
+  // but the DB row still references the path — surface a distinct error
+  // so it can be reconciled (operator-level cleanup of orphan references).
+  const { error: updErr } = await supabaseAdmin
+    .from('expenses')
+    .update({ receipt_url: null, updated_by: claims.profile_id })
+    .eq('id', expense_id);
+  if (updErr) {
+    console.error('[staff:delete-receipt] post-detach update error:', updErr.message);
+    return failAction(500, 'receipt_detached_failed', { detail: updErr.message });
+  }
+  return { status: 200, body: { data: { ok: true } } };
+}
+
+// === action: create-expense ===
+//
+// Input:  { category, amount, comment?, receipt_url?, expense_date? }
+// Server-stamps: created_by = claims.profile_id
+async function createExpenseAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const category = readExpenseCategory(body, 'category');
+  const amount = readNumberInRange(body, 'amount', 0.01, 10_000_000);
+
+  const commentRaw = readString(body, 'comment', { max: 2000, required: false });
+  const requiresComment = (CATEGORIES_REQUIRING_COMMENT as readonly string[]).includes(category);
+  if (requiresComment) {
+    if (!commentRaw || commentRaw.trim() === '') throw new ValidationError('comment_required');
+  }
+  const comment = commentRaw && commentRaw.trim() !== '' ? commentRaw.trim() : null;
+
+  const expense_date = body.expense_date === undefined
+    ? new Date().toISOString().slice(0, 10)
+    : readISODate(body, 'expense_date');
+
+  let receipt_url: string | null = null;
+  if (body.receipt_url !== undefined && body.receipt_url !== null) {
+    const p = readString(body, 'receipt_url', { max: 512, required: true });
+    if (!p || !isReceiptPath(p)) throw new ValidationError('receipt_url_invalid');
+    // Ownership: receipt_url must be a path the caller just uploaded.
+    // Server generates paths as `<profile_id>/<ts>_<name>`, so we
+    // require the prefix to match claims.profile_id. Prevents a staff
+    // member from attaching someone else's uploaded receipt to their
+    // own expense.
+    if (!p.startsWith(`${claims.profile_id}/`)) {
+      throw new ValidationError('receipt_url_not_owned');
+    }
+    receipt_url = p;
+  }
+
+  const { data: row, error } = await supabaseAdmin
+    .from('expenses')
+    .insert({ category, amount, comment, receipt_url, expense_date, created_by: claims.profile_id })
+    .select()
+    .single();
+  if (error) {
+    console.error('[staff:create-expense] insert error:', error.message);
+    if (error.code === '23514') return failAction(400, 'check_violation', { detail: error.message });
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { expense: row } } };
+}
+
+// === action: update-expense ===
+//
+// Input:  { id (uuid), category?, amount?, comment?, receipt_url?, expense_date? }
+// Server-stamps: updated_by = claims.profile_id. Requires ≥1 allowed field.
+async function updateExpenseAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const id = readUuidRequired(body, 'id');
+  const ALLOWED = ['category', 'amount', 'comment', 'receipt_url', 'expense_date'];
+  if (!hasAnyField(body, ALLOWED)) throw new ValidationError('no_fields_to_update');
+
+  const patch: AnyObj = {};
+  if (body.category !== undefined) patch.category = readExpenseCategory(body, 'category');
+  if (body.amount !== undefined) patch.amount = readNumberInRange(body, 'amount', 0.01, 10_000_000);
+  if (body.comment !== undefined) {
+    if (body.comment === null) {
+      patch.comment = null;
+    } else {
+      const v = readString(body, 'comment', { max: 2000, required: true });
+      const trimmed = (v ?? '').trim();
+      patch.comment = trimmed || null;
+    }
+  }
+  if (body.receipt_url !== undefined) {
+    if (body.receipt_url === null) {
+      patch.receipt_url = null;
+    } else {
+      const p = readString(body, 'receipt_url', { max: 512, required: true });
+      if (!p || !isReceiptPath(p)) throw new ValidationError('receipt_url_invalid');
+      // Ownership: same prefix check as create-expense — only the
+      // caller's own uploads may be attached.
+      if (!p.startsWith(`${claims.profile_id}/`)) {
+        throw new ValidationError('receipt_url_not_owned');
+      }
+      patch.receipt_url = p;
+    }
+  }
+  if (body.expense_date !== undefined) patch.expense_date = readISODate(body, 'expense_date');
+
+  const { data: row, error } = await supabaseAdmin
+    .from('expenses')
+    .update({ ...patch, updated_by: claims.profile_id })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) {
+    console.error('[staff:update-expense] update error:', error.message);
+    if (error.code === '23514') return failAction(400, 'check_violation', { detail: error.message });
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+  return { status: 200, body: { data: { expense: row } } };
+}
+
+// === action: delete-expense (CHANGED: best-effort receipt cleanup) ===
+//
+// Input:  { id (uuid) }
+// Output: { ok: true, receipt_deleted: boolean }
+// Flow:
+//   1. SELECT receipt_url for this expense (idempotent — null if absent).
+//   2. If receipt_url present, best-effort storage.remove([receipt_url]).
+//      Failure here is LOGGED but does NOT block DB delete (otherwise
+//      an orphaned file would block expense deletion indefinitely).
+//   3. DELETE FROM expenses WHERE id = $1.
+//   4. Return receipt_deleted so UI can surface partial failures.
+async function deleteExpenseAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const id = readUuidRequired(body, 'id');
+
+  // Step 1: read receipt_url (if any) before deleting the row.
+  const { data: existing, error: selErr } = await supabaseAdmin
+    .from('expenses')
+    .select('id, receipt_url')
+    .eq('id', id)
+    .maybeSingle();
+  if (selErr) {
+    console.error('[staff:delete-expense] preflight select error:', selErr.message);
+    return failAction(500, 'db_error', { detail: selErr.message });
+  }
+  if (!existing) {
+    return { status: 404, body: { error: 'expense_not_found' } };
+  }
+
+  // Step 2: best-effort receipt cleanup.
+  let receipt_deleted = false;
+  const receiptUrl = existing.receipt_url as string | null;
+  if (receiptUrl && isReceiptPath(receiptUrl)) {
+    const { error: storErr } = await supabaseAdmin.storage
+      .from(RECEIPT_BUCKET)
+      .remove([receiptUrl]);
+    if (storErr) {
+      // Log only — do not block DB delete. Orphan files will be cleaned
+      // by a future cron or by manual ops if pattern emerges.
+      console.warn('[staff:delete-expense] receipt cleanup failed (non-blocking):', storErr.message);
+      receipt_deleted = false;
+    } else {
+      receipt_deleted = true;
+    }
+  } else if (receiptUrl) {
+    // Stored path no longer matches expected format (manual DB edit?).
+    // Surface to logs but don't fail.
+    console.warn('[staff:delete-expense] receipt_url present but malformed, skipping cleanup:', receiptUrl);
+  }
+
+  // Step 3: delete DB row.
+  const { error: delErr } = await supabaseAdmin
+    .from('expenses')
+    .delete()
+    .eq('id', id);
+  if (delErr) {
+    console.error('[staff:delete-expense] delete error:', delErr.message);
+    return failAction(500, 'db_error', { detail: delErr.message });
+  }
+
+  return { status: 200, body: { data: { ok: true, receipt_deleted } } };
 }
 
 async function searchClientByPhone(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
@@ -3397,6 +3735,14 @@ export default async function handler(req: any, res: any) {
       case 'toggle-box':                   result = await toggleBoxAction(guard.claims, body); break;
       case 'open-box-for-hour':           result = await openBoxForHourAction(guard.claims, body); break;
       case 'close-box-for-hour':          result = await closeBoxForHourAction(guard.claims, body); break;
+
+      // Slice #3f — staff expenses + receipts:
+      case 'create-expense':               result = await createExpenseAction(guard.claims, body); break;
+      case 'update-expense':               result = await updateExpenseAction(guard.claims, body); break;
+      case 'delete-expense':               result = await deleteExpenseAction(guard.claims, body); break;
+      case 'upload-receipt':               result = await uploadReceiptAction(guard.claims, body); break;
+      case 'get-receipt-url':              result = await getReceiptUrlAction(guard.claims, body); break;
+      case 'delete-receipt':               result = await deleteReceiptAction(guard.claims, body); break;
       case 'create-client':                result = await createClientAction(guard.claims, body); break;
       case 'update-client':                result = await updateClientAction(guard.claims, body); break;
       case 'unblock-client':               result = await unblockClientAction(guard.claims, body); break;

@@ -9,6 +9,44 @@
  * for clean TypeScript narrowing via instanceof.
  */
 
+// =====================================================================
+// Slice #3f (Issue 3 expense receipts) — pure helpers re-exported from
+// ./expense-receipts.mjs. The .mjs file is the single source of truth so
+// that node:test .mjs suites can import these helpers directly without a
+// TS loader. This file adds only the TS types + ValidationError wrappers.
+// =====================================================================
+import {
+  EXPENSE_CATEGORIES as _EXPENSE_CATEGORIES,
+  CATEGORIES_REQUIRING_COMMENT as _CATEGORIES_REQUIRING_COMMENT,
+  RECEIPT_MIME_ALLOWED as _RECEIPT_MIME_ALLOWED,
+  RECEIPT_MAX_BYTES as _RECEIPT_MAX_BYTES,
+  RECEIPT_BASE64_MAX_CHARS as _RECEIPT_BASE64_MAX_CHARS,
+  isExpenseCategory as _isExpenseCategory,
+  isReceiptPath as _isReceiptPath,
+  sanitizeReceiptName as _sanitizeReceiptName,
+  generateReceiptPath as _generateReceiptPath,
+} from './expense-receipts.mjs';
+
+export const EXPENSE_CATEGORIES = _EXPENSE_CATEGORIES;
+export const CATEGORIES_REQUIRING_COMMENT = _CATEGORIES_REQUIRING_COMMENT;
+export const RECEIPT_MIME_ALLOWED = _RECEIPT_MIME_ALLOWED;
+export const RECEIPT_MAX_BYTES = _RECEIPT_MAX_BYTES;
+export const RECEIPT_BASE64_MAX_CHARS = _RECEIPT_BASE64_MAX_CHARS;
+export const isExpenseCategory = _isExpenseCategory;
+export const isReceiptPath = _isReceiptPath;
+export const sanitizeReceiptName = _sanitizeReceiptName;
+export const generateReceiptPath = _generateReceiptPath;
+
+export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
+
+// TS wrapper that throws ValidationError (instead of plain Error from .mjs).
+// The underlying whitelist logic is in isExpenseCategory (testable separately).
+export function readExpenseCategory(body: Record<string, any>, field: string): ExpenseCategory {
+  const v = body[field];
+  if (!_isExpenseCategory(v)) throw new ValidationError(`${field}_invalid`);
+  return v as ExpenseCategory;
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
