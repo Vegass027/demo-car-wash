@@ -165,6 +165,7 @@ const ALLOWED_ACTIONS = new Set([
   'add-inventory-category',
   'delete-inventory-category',
   'inventory-arrival',
+  'sign-inventory-photos',
   'get-next-document-number',
 
   // Slice #3e Phase A — admin-side Category C client/car read dispatcher
