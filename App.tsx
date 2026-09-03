@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { mergeById, appendIfNew } from './shared/utils/org-client-merge';
 import { Dashboard } from './components/admin/Dashboard';
 import { BookingWizard, BookingWizardData, mapWizardDataToBooking } from './components/admin/BookingWizard';
 import { TireBookingWizard, TireBookingWizardData } from './components/admin/TireBookingWizard';
@@ -248,6 +249,24 @@ export default function App() {
   const [organizationCars, setOrganizationCars] = useState<OrganizationCar[]>([]);
   // Данные клиентов физлиц
   const [clients, setClients] = useState<Client[]>([]);
+
+  // Issue 8: callback handlers that BookingWizard invokes after staff-side
+  // create/update actions so the parent state mirrors the DB without a
+  // full page reload. We merge by id (update) or append (create) instead
+  // of refetching — keeps Step 1 list reactive without a flash.
+  // Helpers live in shared/utils/org-client-merge.ts (pure, unit-tested).
+  const handleOrganizationUpdated = useCallback((org: Organization) => {
+    setOrganizations((prev) => mergeById(prev, org));
+  }, []);
+  const handleOrganizationCreated = useCallback((org: Organization) => {
+    setOrganizations((prev) => appendIfNew(prev, org));
+  }, []);
+  const handleClientUpdated = useCallback((client: Client) => {
+    setClients((prev) => mergeById(prev, client));
+  }, []);
+  const handleClientCreated = useCallback((client: Client) => {
+    setClients((prev) => appendIfNew(prev, client));
+  }, []);
 
   // Настройки зарплаты (загружаются из БД)
   const [salarySettings, setSalarySettings] = useState<any>(null);
@@ -1878,6 +1897,10 @@ export default function App() {
           organizationCars={organizationCars}
           clients={clients}
           isCreatingBooking={isCreatingBooking}
+          onOrganizationUpdated={handleOrganizationUpdated}
+          onOrganizationCreated={handleOrganizationCreated}
+          onClientUpdated={handleClientUpdated}
+          onClientCreated={handleClientCreated}
           onBack={() => {
             setInitialBookingHour(undefined);
             setInitialBookingBox(undefined);
@@ -1957,6 +1980,10 @@ export default function App() {
             organizationCars={organizationCars}
             clients={clients}
             isCreatingBooking={isCreatingBooking}
+            onOrganizationUpdated={handleOrganizationUpdated}
+            onOrganizationCreated={handleOrganizationCreated}
+            onClientUpdated={handleClientUpdated}
+            onClientCreated={handleClientCreated}
             onBack={() => {
               setInitialBookingHour(undefined);
               setInitialBookingBox(undefined);

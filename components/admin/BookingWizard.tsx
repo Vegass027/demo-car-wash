@@ -217,6 +217,13 @@ interface BookingWizardProps {
   organizationDrivers?: OrganizationDriver[];
   organizationCars?: OrganizationCar[];
   isCreatingBooking?: boolean;
+  // Issue 8: callbacks to surface updated/created org/client back to the
+  // parent so the staff list (Step 1) reflects changes without a full
+  // page reload. Optional — if omitted, wizard works exactly as before.
+  onOrganizationUpdated?: (org: Organization) => void;
+  onOrganizationCreated?: (org: Organization) => void;
+  onClientUpdated?: (client: Client) => void;
+  onClientCreated?: (client: Client) => void;
 }
 
 export const BookingWizard: React.FC<BookingWizardProps> = ({
@@ -234,7 +241,11 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
   organizations = [],
   organizationDrivers = [],
   organizationCars = [],
-  isCreatingBooking: isCreatingBookingProp = false
+  isCreatingBooking: isCreatingBookingProp = false,
+  onOrganizationUpdated,
+  onOrganizationCreated,
+  onClientUpdated,
+  onClientCreated,
 }) => {
   // Внутреннее состояние для режима быстрого заказа
   const [internalQuickBookingMode, setInternalQuickBookingMode] = useState(isQuickBookingMode);
@@ -540,11 +551,12 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
       try {
         // Create client through Slice #3a staff dispatcher (service_role
         // writes; phone normalized server-side).
-        const createClientRes = await dispatchStaffCall<{ client: { id: string } }>('create-client', {
+        const createClientRes = await dispatchStaffCall<{ client: Client }>('create-client', {
           full_name: clientName,
           phone: normalizePhoneNumber(phone),
         });
         const newClient = createClientRes.client;
+        onClientCreated?.(newClient);
 
         // Create the car through the same dispatcher.
         await dispatchStaffCall('create-client-car', {
@@ -603,10 +615,11 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
 
       try {
         // Create organization through Slice #3a dispatcher.
-        const createOrgRes = await dispatchStaffCall<{ organization: { id: string } }>('create-organization', {
+        const createOrgRes = await dispatchStaffCall<{ organization: Organization }>('create-organization', {
           name: newOrganizationName,
         });
         const newOrg = createOrgRes.organization;
+        onOrganizationCreated?.(newOrg);
 
         // Create the org-driver.
         await dispatchStaffCall('create-org-driver', {
@@ -2618,7 +2631,7 @@ try {
 
                     try {
                       // Update organization via Slice #3a dispatcher.
-                      await dispatchStaffCall('update-organization', {
+                      const updateOrgRes = await dispatchStaffCall<{ organization: Organization }>('update-organization', {
                         org_id: selectedOrganizationId!,
                         name: editingOrgData.organization.name,
                         inn: editingOrgData.organization.inn,
@@ -2630,6 +2643,7 @@ try {
                         correspondent_account: editingOrgData.organization.correspondent_account,
                         bik: editingOrgData.organization.bik,
                       });
+                      onOrganizationUpdated?.(updateOrgRes.organization);
 
                       setSaveSuccess(true);
 
@@ -2659,10 +2673,11 @@ try {
 
                     try {
                       // Update client via Slice #3a dispatcher.
-                      await dispatchStaffCall('update-client', {
+                      const updateClientRes = await dispatchStaffCall<{ client: Client }>('update-client', {
                         client_id: selectedClientId!,
                         full_name: editingClientData.client.full_name,
                       });
+                      onClientUpdated?.(updateClientRes.client);
 
                      setSaveSuccess(true);
 
