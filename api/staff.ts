@@ -1446,7 +1446,7 @@ async function updateOrganizationAction(_claims: StaffClaims, body: AnyObj): Pro
         .from('organizations').select('id').eq('contact_phone', contact_phone).neq('id', org_id).maybeSingle();
       if (collisionErr) {
         console.error('[staff:update-organization] collision check error:', collisionErr.message);
-        return failAction(500, 'db_error');
+        return failAction(500, 'db_error', { detail: collisionErr.message });
       }
       if (collision) return { status: 409, body: { error: 'contact_phone_collision' } };
     }
@@ -1489,7 +1489,7 @@ async function createOrgDriverAction(_claims: StaffClaims, body: AnyObj): Promis
     .from('organizations').select('id').eq('id', organization_id).maybeSingle();
   if (orgErr) {
     console.error('[staff:create-org-driver] org lookup error:', orgErr.message);
-    return failAction(500, 'db_error');
+    return failAction(500, 'db_error', { detail: orgErr.message });
   }
   if (!org) return { status: 404, body: { error: 'organization_not_found' } };
 
