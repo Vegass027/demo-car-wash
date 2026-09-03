@@ -102,18 +102,23 @@ export default function App() {
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false); // Отслеживание состояния клавиатуры
   const [initialViewportHeight, setInitialViewportHeight] = useState<number | null>(null); // Начальная высота viewport
 
-  // Phase 1.6a: legacy localStorage migration + 401 handler.
+  // Phase 1.6a + Issue 14: legacy localStorage migration + 401 handler +
+  //   F5-resilience for staff tokens.
   //   - If userId/userRole exist in localStorage but no JWT in memory →
   //     this is a legacy session from before Phase 1.6 (RPC-based login
   //     without JWT). Clear it and force re-login via /api/login.
   //   - For NEW users who logged in via /api/login: localStorage has both
-  //     userId/userRole AND the module-level currentToken is set. We DON'T
-  //     clear in that case (the user is mid-session, valid JWT in memory).
-  //   - Staff on page reload: currentToken is null (by design, staff token
-  //     lives in memory only), so cleanup runs and forces re-login. This
-  //     is the documented "close-tab/reload = logout" trade-off.
-  //   - Client on Mini App reload: currentToken is restored from
-  //     sessionStorage in wrapper module-load, so cleanup does NOT run.
+  //     userId/userRole AND the module-level currentToken is set (restored
+  //     from sessionStorage in wrapper module-load — see Issue 14).
+  //     We DON'T clear in that case.
+  //   - Staff on page reload (Issue 14): currentToken IS restored from
+  //     sessionStorage by lib/_supabase-wrapper.ts module-eval, so
+  //     hasCurrentJwt=true and cleanup does NOT run. The user stays logged
+  //     in across F5 within the same browser tab.
+  //   - Staff on tab close (Issue 14): sessionStorage is per-tab, so
+  //     closing the tab clears the token. Reopening requires login.
+  //     This is the documented "close-tab = logout" trade-off.
+  //   - Client on Mini App reload: same sessionStorage restore path.
   useEffect(() => {
     const hasLegacyKeys = !!(
       localStorage.getItem('userId') && localStorage.getItem('userRole')
@@ -129,10 +134,13 @@ export default function App() {
     }
 
     // Centralized handler for staff 401 mid-session. Any of 17+ supabase-js
-    // importers may trigger this; we handle it once here.
+    // importers may trigger this; we handle it once here. Issue 14 also
+    // clears the sessionStorage JWT so a subsequent F5 doesn't try to
+    // restore a token we know the server rejected.
     registerSessionExpiredHandler(() => {
       localStorage.removeItem('userId');
       localStorage.removeItem('userRole');
+      setSessionToken(null); // clears sessionStorage via setSessionToken
       setUserId('');
       setUserRole('admin');
       setIsAuthenticated(false);

@@ -50,8 +50,10 @@ export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
       const { token, profile_id, app_role } = await res.json();
 
       // Inject JWT into module-level currentToken so subsequent supabase-js
-      // requests carry Authorization: Bearer <jwt>. Per plan: staff tokens
-      // are in-memory only — no sessionStorage write.
+      // requests carry Authorization: Bearer <jwt>. Issue 14: setSessionToken
+      // ALSO persists to sessionStorage so a page reload (F5) within the same
+      // tab restores the session without forcing the user to log in again.
+      // Closing the tab clears sessionStorage and the next open will need login.
       setSessionToken(token);
 
       // UI-state kept in localStorage for legacy compatibility (admin/owner

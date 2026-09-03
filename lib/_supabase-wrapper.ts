@@ -39,14 +39,39 @@ export function registerSessionExpiredHandler(cb: (() => void) | null): void {
 }
 
 /**
- * Single source of truth for the JWT lifecycle (Phase D).
+ * Decode JWT payload (no signature verification — server is the authority).
+ * Returns the claims object or null on malformed input. Used at module-load
+ * to filter expired tokens BEFORE setting currentToken.
+ *
+ * Why client-side filter: we never want to restore a token that's already
+ * past `exp`. The server will reject it with 401 on the next call, but
+ * keeping it in memory means a brief window of failed requests on reload.
+ *
+ * Exported for unit tests (Issue 14).
+ */
+export function decodeJwtPayload(token: string): { exp?: number; sub?: string } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const json = atob(padded);
+    const claims = JSON.parse(json);
+    return claims && typeof claims === 'object' ? claims : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Single source of truth for the JWT lifecycle (Phase D + Issue 14).
  * Every REST + Realtime auth path goes through here:
  *   - Staff login (Login.tsx)
  *   - Telegram client login (lib/client-auth.ts)
  *   - Silent Telegram re-auth (wrappedFetch 401-retry)
  *   - Staff 401-expiry clear (wrappedFetch cleanup branch)
  *   - Manual logout (App.tsx handleLogout)
- *   - Future refresh flow
+ *   - Page reload restore (Issue 14)
  *
  * Centralizing `void setRealtimeAuth(t)` here means future lifecycle code
  * that touches auth will see realtime WS get sync'd automatically without
@@ -55,14 +80,24 @@ export function registerSessionExpiredHandler(cb: (() => void) | null): void {
  * Logout semantics: setSessionToken(null) syncs WebSocket (no-op in our
  * realtime-js config because cached fallback) and the caller is responsible
  * for `supabase.removeAllChannels()` to actually tear down active WS.
+ *
+ * Issue 14 (staff F5-resilience): staff path now writes to sessionStorage
+ * so the JWT survives a page reload within the same tab. Telegram client
+ * path already used sessionStorage for the same reason (line below). The
+ * expiry filter on restore means an expired stored token is silently
+ * cleared rather than causing a flash of failed requests.
  */
 export function setSessionToken(t: string | null): void {
   currentToken = t;
-  if (typeof window !== 'undefined' && t === null) {
+  if (typeof window !== 'undefined') {
     try {
-      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      if (t === null) {
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      } else {
+        sessionStorage.setItem(SESSION_STORAGE_KEY, t);
+      }
     } catch {
-      /* ignore */
+      /* sessionStorage unavailable (private mode, disabled) — ignore */
     }
   }
   void setRealtimeAuth(t);
@@ -77,15 +112,33 @@ export function getSessionToken(): string | null {
 }
 
 // Restore on first module load (browser only). sessionStorage may throw in
-// private mode or if disabled — swallow silently. Staff never writes here.
-// Run AFTER setSessionToken declaration so we go through the same
-// centralized lifecycle (and trigger a single setRealtimeAuth attempt).
+// private mode or if disabled — swallow silently.
+//
+// Issue 14: this branch now also serves the staff F5-resilience path.
+// Before Issue 14, only Telegram client tokens were ever written to
+// sessionStorage; staff tokens lived in module-level memory only and were
+// lost on every page reload. After Issue 14, staff Login.tsx calls
+// setSessionToken(token) which writes to sessionStorage here, and this
+// IIFE restores it on the next module evaluation (every page load).
+//
+// Expiry filter: if the stored token's `exp` claim is in the past, we
+// silently clear it and skip restoration. Prevents a flash of 401s on
+// reload after the 12-hour TTL has elapsed while the tab stayed open.
 if (typeof window !== 'undefined') {
   try {
     const stored = sessionStorage.getItem(SESSION_STORAGE_KEY);
-    if (stored) setSessionToken(stored);
+    if (stored) {
+      const claims = decodeJwtPayload(stored);
+      const expMs = typeof claims?.exp === 'number' ? claims.exp * 1000 : 0;
+      if (expMs > Date.now()) {
+        setSessionToken(stored);
+      } else {
+        // Expired — clean up silently.
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      }
+    }
   } catch {
-    /* sessionStorage недоступен — staff-only path */
+    /* sessionStorage недоступен */
   }
 }
 
@@ -141,12 +194,8 @@ export async function wrappedFetch(
     retriedThisRequest = true;
     const newToken = await silentTelegramReauth();
     if (newToken) {
+      // setSessionToken persists to sessionStorage (Issue 14).
       setSessionToken(newToken);
-      try {
-        sessionStorage.setItem(SESSION_STORAGE_KEY, newToken);
-      } catch {
-        /* ignore */
-      }
       res = await fetch(url, injectAuth(options));
     }
   }
