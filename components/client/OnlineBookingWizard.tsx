@@ -11,7 +11,6 @@ import { formatDate } from '../../shared/utils/date';
 import { Service, getServicePrice } from '../../lib/api/services';
 import { getBookingsByProfileId } from '../../lib/api/bookings';
 import { SERVICE_CATEGORIES, isBonusService } from '../../lib/config/serviceCategories';
-import { LOYALTY_CONFIG } from '../../shared/config/loyalty';
 import { Client, ClientCar } from '../../lib/api/clients';
 import { Booking } from '../../lib/api/bookings';
 import { CombinedCar, getClientCombinedCars } from '../../lib/api/combined-cars';
@@ -502,7 +501,12 @@ export const OnlineBookingWizard: React.FC<OnlineBookingWizardProps> = ({
 
               {/* Бонусная мойка - отдельный блок (только для личных машин) */}
               {hasFreeWash && selectedCarType === 'personal' && (() => {
-                const freeWashService = services.find(s => s.id === LOYALTY_CONFIG.FREE_BODY_WASH_SERVICE_ID);
+                // Issue 5: lookup by stable service_id slug instead of UUID.
+                // UUIDs differ between PROD and DEMO (UUID drift), so a
+                // UUID-based lookup breaks on DEMO where the bonus service
+                // has a fresh, locally-generated UUID. service_id is the
+                // stable business key.
+                const freeWashService = services.find(s => s.service_id === 'free-body-wash');
                 if (!freeWashService) return null;
 
                 const isSelected = selectedServices.includes(freeWashService.id);
