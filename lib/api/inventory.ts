@@ -93,25 +93,23 @@ export async function recordInventoryArrival(params: {
 
   // 1. Идемпотентность-проверка через SELECT inventory_arrivals (browser-direct).
   //    RLS позволяет SELECT для admin/owner через staff_select_inventory_arrivals.
-  //    PGRST116 (406) = нормальный путь, записи ещё нет.
+  //    Issue 11: maybeSingle() returns null on 0 rows with no error, so no
+  //    HTTP 406 spam in the browser console on every arrival save.
   try {
     const { data: existing } = await supabase
       .from('inventory_arrivals')
       .select('id')
       .eq('operation_id', opId)
-      .single();
+      .maybeSingle();
 
     if (existing) {
       console.log('[recordInventoryArrival] Operation already exists:', opId);
       return existing;
     }
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'PGRST116') {
-      console.log('[recordInventoryArrival] Operation not found (expected), proceeding...');
-    } else if (error) {
-      console.error('[recordInventoryArrival] Error checking existing operation:', error);
-      throw error;
-    }
+    // maybeSingle still throws on real errors (network, RLS deny, etc.).
+    console.error('[recordInventoryArrival] Error checking existing operation:', error);
+    throw error;
   }
 
   // 2. Issue 9: convert File objects to base64 for server-side upload via

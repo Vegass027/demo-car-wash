@@ -191,6 +191,12 @@ export const InventoryHistoryModal: React.FC<InventoryHistoryModalProps> = ({
                   overflow: 'hidden',
                 }}
               >
+                {/* Issue 11: Radix DialogContent requires DialogTitle for
+                    screen-reader accessibility. The photo viewer has no
+                    visible heading; sr-only keeps the layout intact. */}
+                <DialogPrimitive.Title className="sr-only">
+                  Просмотр фото накладной
+                </DialogPrimitive.Title>
                 <button
                   type="button"
                   onClick={handleClosePhotoModal}
