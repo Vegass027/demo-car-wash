@@ -1637,7 +1637,18 @@ async function updateOrgCarAction(_claims: StaffClaims, body: AnyObj): Promise<A
 // === C1: create-staff-booking (atomic RPC) ===
 async function createStaffBookingAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const target_date    = readISODate(body, 'booking_date');
-  const box_number     = readNumberInRange(body, 'box_number', 1, 99, true);
+  // Issue 15: is_quick_booking must be parsed BEFORE box_number validation so
+  // that quick mode can pass `box_number: null/undefined`. Strict equality
+  // (=== true) — `!!body.is_quick_booking` would treat the string "false"
+  // as truthy and incorrectly bypass box_number_required.
+  // Match PROD semantics (avajtwihzjfpytimfbaw: 20 quick bookings already
+  // exist with box_number=NULL on PROD).
+  const is_quick_booking = body.is_quick_booking === true;
+  const box_number     = is_quick_booking
+    ? (body.box_number === undefined || body.box_number === null
+        ? null
+        : readNumberInRange(body, 'box_number', 1, 99, true))   // explicit value → validate normally
+    : readNumberInRange(body, 'box_number', 1, 99, true);        // non-quick: required as before
   const start_time     = readTimeHHMM(body, 'start_time');
   const end_time       = readTimeHHMM(body, 'end_time');
   const client_name    = readString(body, 'client_name', { max: 200, required: true })!.trim();
@@ -1697,7 +1708,8 @@ async function createStaffBookingAction(claims: StaffClaims, body: AnyObj): Prom
     throw new ValidationError('worker_id_2_required_when_pair');
   }
 
-  const is_quick_booking = !!body.is_quick_booking;
+  // is_quick_booking parsed at the top of this function (before box_number
+  // validation). It is reused later when building the RPC payload.
   const discount = body.discount !== undefined
     ? readNumberInRange(body, 'discount', 0, 1_000_000, true)
     : 0;
