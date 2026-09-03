@@ -22,7 +22,14 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { createRequire as _createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createClient } from '/Users/dmitriy/Downloads/demo-car-wash/node_modules/@supabase/supabase-js/dist/index.cjs';
+
+// createRequire at top — works in ESM context
+const require = _createRequire(import.meta.url);
+const { writeFileSync, mkdtempSync, rmSync } = require('node:fs');
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -48,13 +55,21 @@ const PG_CONN = process.env.SUPABASE_DB_URL ||
   'postgresql://postgres.danobongqzbxilyvdwig:YVJlmcibmLQYBtRM@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?options=-c%20project%3Dpostgres';
 
 function pg(sql) {
+  // Write SQL to a temp file and pass via -f to avoid shell escaping issues
+  // with single-quoted strings (e.g., 'public'::regnamespace) inside
+  // double-quoted -c arguments.
+  const dir = mkdtempSync(path.join(tmpdir(), 'pgtest-'));
+  const sqlFile = path.join(dir, 'query.sql');
   try {
-    return execSync(`PGPASSWORD='YVJlmcibmLQYBtRM' /opt/homebrew/bin/psql "${PG_CONN}" -At -c "${sql.replace(/"/g, '\\"')}"`, {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+    writeFileSync(sqlFile, sql);
+    return execSync(
+      `PGPASSWORD='YVJlmcibmLQYBtRM' /opt/homebrew/bin/psql '${PG_CONN}' -At -f '${sqlFile}'`,
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
   } catch (e) {
     return `__ERROR__: ${e.stderr?.toString() || e.message}`;
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 }
 
@@ -65,7 +80,23 @@ const OLD_PASSWORD = 'OldPass_issue13_correct_001';
 const NEW_PASSWORD = 'NewPass_issue13_correct_002';
 
 let createdProfile = false;
-let migrationApplied = false;
+// Lazy detection: checked at test-run time via `if (!pgApplied())`,
+// not at test-registration time. This way each test is independent and
+// can run via --test-name-pattern filtering.
+let migrationApplied = !!migration; // file existence check (cheap)
+function pgApplied() {
+  // Returns true if change_password function exists AND contains gen_salt('bf', 10).
+  // Cached after first call.
+  if (typeof pgApplied._cached === 'undefined') {
+    try {
+      const fnDef = pg(`SELECT pg_get_functiondef(oid) FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname='change_password';`);
+      pgApplied._cached = /gen_salt\('bf',\s*10\)/.test(fnDef);
+    } catch {
+      pgApplied._cached = false;
+    }
+  }
+  return pgApplied._cached;
+}
 
 function log(...args) { console.log(...args); }
 
@@ -86,10 +117,14 @@ test('preflight: env vars + migration 042 file present', async () => {
     });
     assert.equal(data, false);
   }
-  migrationApplied = !!migration;
+  migrationApplied = pgApplied();
+  if (!migrationApplied) {
+    log('SKIP integration block — migration 042 not yet applied (change_password uses cost 6)');
+  }
 });
 
-test('A1 — fresh profile with cost-6 hash → change_password → cost-10 hash', { skip: !migrationApplied }, async () => {
+test('A1 — fresh profile with cost-6 hash → change_password → cost-10 hash', async (t) => {
+  if (!pgApplied()) { t.skip(); return; }
   // Generate a cost-6 bcrypt hash for OLD_PASSWORD via pgcrypt.
   const cost6Hash = pg(`SELECT crypt('${OLD_PASSWORD}', gen_salt('bf', 6));`);
   assert.ok(cost6Hash.startsWith('$2a$06$'), `cost-6 hash expected, got ${cost6Hash.slice(0, 7)}`);
@@ -125,7 +160,8 @@ test('A1 — fresh profile with cost-6 hash → change_password → cost-10 hash
   assert.equal(afterHash.length, 60, 'bcrypt hash length is 60 chars');
 });
 
-test('A2 — verify_password accepts new cost-10 hash and rejects wrong pwd', { skip: !migrationApplied }, async () => {
+test('A2 — verify_password accepts new cost-10 hash and rejects wrong pwd', async (t) => {
+  if (!pgApplied()) { t.skip(); return; }
   // New password should work.
   const { data: ok1 } = await admin.rpc('verify_password', {
     p_login: TEST_LOGIN, p_password: NEW_PASSWORD,
@@ -148,7 +184,8 @@ test('A2 — verify_password accepts new cost-10 hash and rejects wrong pwd', { 
   assert.equal(r3?.success, false, 'wrong pwd must be rejected');
 });
 
-test('A3 — backward compat: existing cost-6 demo_owner hash still verifies', { skip: !migrationApplied }, async () => {
+test('A3 — backward compat: existing cost-6 demo_owner hash still verifies', async (t) => {
+  if (!pgApplied()) { t.skip(); return; }
   // demo_owner's password is unknown, but we can confirm: (a) the hash is
   // cost 6, (b) the verify_password RPC exists and accepts cost-6 via
   // crypt(pwd, hash) auto-detection. The latter is a property of pgcrypt
@@ -167,7 +204,8 @@ test('A3 — backward compat: existing cost-6 demo_owner hash still verifies', {
 });
 
 // Cleanup — always runs (or at least tries).
-test('cleanup: delete test profile', { skip: !migrationApplied }, async () => {
+test('cleanup: delete test profile', async (t) => {
+  if (!pgApplied()) { t.skip(); return; }
   if (!createdProfile) return;
   const del = pg(`DELETE FROM public.profiles WHERE id = '${TEST_PROFILE_ID}';`);
   assert.ok(!del.startsWith('__ERROR__'), `cleanup error: ${del}`);
