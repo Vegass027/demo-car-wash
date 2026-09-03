@@ -28,7 +28,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createClient } from '/Users/dmitriy/Downloads/demo-car-wash/node_modules/@supabase/supabase-js/dist/index.cjs';
+import { createClient } from '@supabase/supabase-js';
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname);
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -59,6 +59,38 @@ const migration044 = existsSync(`${ROOT}/migrations/044_allow_null_box_for_quick
 
 function log(...args) { console.log(...args); }
 
+/**
+ * Robust cleanup runner. Executes each cleanup step independently — a failure
+ * in one step does NOT prevent later steps from running. Accumulates all
+ * errors and throws once at the end if any step failed. This makes cleanup
+ * failures visible (test fails after its main assertions) instead of being
+ * silently swallowed by a try/catch that only logs.
+ */
+async function runCleanup(steps) {
+  const errors = [];
+  for (const [name, fn] of steps) {
+    if (!fn) continue;
+    try {
+      await fn();
+    } catch (e) {
+      errors.push(`${name}: ${e?.message || e}`);
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(`cleanup failures (${errors.length}): ${errors.join(' | ')}`);
+  }
+}
+
+
+// =====================================================================
+// Module-level tracking of all throwaway UUIDs created across the whole
+// test run. Used by the final forensic test to verify cleanup did not
+// leak any rows. The arrays are populated as rows are created and never
+// cleared — they reflect the cumulative set of test-owned rows.
+// =====================================================================
+const allCreatedClientIds = [];
+const allCreatedCarIds = [];
+
 // =====================================================================
 // Shared setup / cleanup helpers — each integration test creates its own
 // throwaway test client tagged with a unique RUN_TAG, uses it for the
@@ -66,16 +98,19 @@ function log(...args) { console.log(...args); }
 // =====================================================================
 
 async function fetchServiceId() {
-  // Pick any real service_id (used to satisfy dispatcher's `services_required`
-  // check, even for quick bookings). Excludes the bonus free-body-wash service.
+  // Pick any real active service. Returns the UUID `id` column (not the
+  // text slug `service_id`) — recomputeBookingServices in api/staff.ts does
+  // .in('id', uniqueIds) on a UUID column, and passing a slug string throws
+  // PG 22P02 (invalid UUID syntax) which surfaces as 500 internal_error.
   const { data } = await admin
     .from('services')
-    .select('service_id')
+    .select('id')
+    .eq('is_active', true)
     .neq('service_id', 'free-body-wash')
     .limit(1)
     .maybeSingle();
-  if (!data?.service_id) throw new Error('no service_id found in services table');
-  return data.service_id;
+  if (!data?.id) throw new Error('no active service found in services table');
+  return data.id;
 }
 
 async function createTestClient(runTag) {
@@ -93,6 +128,7 @@ async function createTestClient(runTag) {
     is_active: true,
   });
   if (error) throw new Error(`createTestClient failed: ${error.message}`);
+  allCreatedClientIds.push(clientId);
   return clientId;
 }
 
@@ -190,6 +226,7 @@ test('A1 — live DEMO dispatcher: quick booking 200, is_quick_booking=true, box
   // Per-test state. RUN_TAG markers all DB rows this test owns.
   const runTag = `a1-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
   const createdBookingIds = [];
+  let cleanupErrors = [];
   let createdClientId = null;
   let createdCarId = null;
   let token = null;
@@ -206,9 +243,10 @@ test('A1 — live DEMO dispatcher: quick booking 200, is_quick_booking=true, box
         id: createdCarId, client_id: createdClientId,
         car_model: 'TestModel',
         plate_number: `I15${runTag.slice(-5).toUpperCase().padStart(4, '0')}`,
-        car_type: 'sedan', is_active: true,
+        car_type: 'SEDAN', is_active: true,
       });
       if (error) throw new Error(`createTestCar failed: ${error.message}`);
+      allCreatedCarIds.push(createdCarId);
     }
 
     token = await loginAndGetToken();
@@ -223,10 +261,8 @@ test('A1 — live DEMO dispatcher: quick booking 200, is_quick_booking=true, box
       phone: null,
       car_model: 'TestModel',
       plate_number: `I15${runTag.slice(-5).toUpperCase().padStart(4, '0')}`,
-      car_type: 'sedan',
+      car_type: 'SEDAN',
       services: [serviceId],
-      services_with_quantities: [],
-      price: 0,
       payment_method: null,
       worker_id: null,
       is_org: false,
@@ -273,18 +309,18 @@ test('A1 — live DEMO dispatcher: quick booking 200, is_quick_booking=true, box
     // the edge case where the booking INSERT succeeded but response parsing
     // failed → createdBookingIds is empty → primary cleanup finds nothing.
     try {
-      // 1. Primary cleanup by booking IDs from response.
-      await deleteByIds('bookings', createdBookingIds);
-      // 2. Fallback cleanup by per-test UUID marker (client_car_id).
-      //    Catches rows the primary cleanup missed.
-      if (createdCarId) await fallbackCleanupBookingsByClientCarId(createdCarId);
-      // 3. Delete client_cars (UUID).
-      if (createdCarId) await deleteByIds('client_cars', [createdCarId]);
-      // 4. Delete client (UUID).
-      if (createdClientId) await deleteByIds('clients', [createdClientId]);
+      await runCleanup([
+        ['primary bookings',                async () => await deleteByIds('bookings', createdBookingIds)],
+        ['fallback bookings by client_car_id', async () => createdCarId ? await fallbackCleanupBookingsByClientCarId(createdCarId) : null],
+        ['client_cars',                     async () => createdCarId ? await deleteByIds('client_cars', [createdCarId]) : null],
+        ['clients',                         async () => createdClientId ? await deleteByIds('clients', [createdClientId]) : null],
+      ]);
     } catch (e) {
-      log('A1 cleanup error (non-fatal):', e.message);
+      cleanupErrors.push(`A1 cleanup: ${e?.message || e}`);
     }
+  }
+  if (cleanupErrors.length > 0) {
+    throw new Error(`A1 test had cleanup failures: ${cleanupErrors.join(' | ')}`);
   }
 });
 
@@ -297,6 +333,7 @@ test('A2 — live DEMO dispatcher: non-quick without box → 400 box_number_requ
   const runTag = `a2-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
   let createdClientId = null;
   let createdCarId = null;
+  let cleanupErrors = [];
 
   try {
     const serviceId = await fetchServiceId();
@@ -307,9 +344,10 @@ test('A2 — live DEMO dispatcher: non-quick without box → 400 box_number_requ
         id: createdCarId, client_id: createdClientId,
         car_model: 'TestModel',
         plate_number: `I15${runTag.slice(-5).toUpperCase().padStart(4, '0')}`,
-        car_type: 'sedan', is_active: true,
+        car_type: 'SEDAN', is_active: true,
       });
       if (error) throw new Error(`createTestCar failed: ${error.message}`);
+      allCreatedCarIds.push(createdCarId);
     }
 
     const token = await loginAndGetToken();
@@ -324,10 +362,8 @@ test('A2 — live DEMO dispatcher: non-quick without box → 400 box_number_requ
       phone: null,
       car_model: 'TestModel',
       plate_number: `I15${runTag.slice(-5).toUpperCase().padStart(4, '0')}`,
-      car_type: 'sedan',
+      car_type: 'SEDAN',
       services: [serviceId],
-      services_with_quantities: [],
-      price: 0,
       payment_method: null,
       worker_id: null,
       is_org: false,
@@ -354,14 +390,19 @@ test('A2 — live DEMO dispatcher: non-quick without box → 400 box_number_requ
     assert.match(json?.error || '', /box_number_required/, 'must return box_number_required error');
   } finally {
     try {
-      // Fallback cleanup by client_car_id marker (in case A2 somehow
-      // created a booking despite our 400 expectation — defense in depth).
-      if (createdCarId) await fallbackCleanupBookingsByClientCarId(createdCarId);
-      if (createdCarId) await deleteByIds('client_cars', [createdCarId]);
-      if (createdClientId) await deleteByIds('clients', [createdClientId]);
+      // A2 expects 400 — no booking should have been created. Fallback
+      // cleanup is defense in depth in case anything slipped through.
+      await runCleanup([
+        ['fallback bookings by client_car_id', async () => createdCarId ? await fallbackCleanupBookingsByClientCarId(createdCarId) : null],
+        ['client_cars',                     async () => createdCarId ? await deleteByIds('client_cars', [createdCarId]) : null],
+        ['clients',                         async () => createdClientId ? await deleteByIds('clients', [createdClientId]) : null],
+      ]);
     } catch (e) {
-      log('A2 cleanup error (non-fatal):', e.message);
+      cleanupErrors.push(`A2 cleanup: ${e?.message || e}`);
     }
+  }
+  if (cleanupErrors.length > 0) {
+    throw new Error(`A2 test had cleanup failures: ${cleanupErrors.join(' | ')}`);
   }
 });
 
@@ -374,6 +415,7 @@ test('A3 — string "false" for is_quick_booking does NOT bypass box_number_requ
   const runTag = `a3-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
   let createdClientId = null;
   let createdCarId = null;
+  let cleanupErrors = [];
 
   try {
     const serviceId = await fetchServiceId();
@@ -384,9 +426,10 @@ test('A3 — string "false" for is_quick_booking does NOT bypass box_number_requ
         id: createdCarId, client_id: createdClientId,
         car_model: 'TestModel',
         plate_number: `I15${runTag.slice(-5).toUpperCase().padStart(4, '0')}`,
-        car_type: 'sedan', is_active: true,
+        car_type: 'SEDAN', is_active: true,
       });
       if (error) throw new Error(`createTestCar failed: ${error.message}`);
+      allCreatedCarIds.push(createdCarId);
     }
 
     const token = await loginAndGetToken();
@@ -401,10 +444,8 @@ test('A3 — string "false" for is_quick_booking does NOT bypass box_number_requ
       phone: null,
       car_model: 'TestModel',
       plate_number: `I15${runTag.slice(-5).toUpperCase().padStart(4, '0')}`,
-      car_type: 'sedan',
+      car_type: 'SEDAN',
       services: [serviceId],
-      services_with_quantities: [],
-      price: 0,
       payment_method: null,
       worker_id: null,
       is_org: false,
@@ -431,13 +472,18 @@ test('A3 — string "false" for is_quick_booking does NOT bypass box_number_requ
     assert.match(json?.error || '', /box_number_required/);
   } finally {
     try {
-      // Fallback cleanup by client_car_id marker.
-      if (createdCarId) await fallbackCleanupBookingsByClientCarId(createdCarId);
-      if (createdCarId) await deleteByIds('client_cars', [createdCarId]);
-      if (createdClientId) await deleteByIds('clients', [createdClientId]);
+      // A3 expects 400 — fallback cleanup is defense in depth.
+      await runCleanup([
+        ['fallback bookings by client_car_id', async () => createdCarId ? await fallbackCleanupBookingsByClientCarId(createdCarId) : null],
+        ['client_cars',                     async () => createdCarId ? await deleteByIds('client_cars', [createdCarId]) : null],
+        ['clients',                         async () => createdClientId ? await deleteByIds('clients', [createdClientId]) : null],
+      ]);
     } catch (e) {
-      log('A3 cleanup error (non-fatal):', e.message);
+      cleanupErrors.push(`A3 cleanup: ${e?.message || e}`);
     }
+  }
+  if (cleanupErrors.length > 0) {
+    throw new Error(`A3 test had cleanup failures: ${cleanupErrors.join(' | ')}`);
   }
 });
 
@@ -485,9 +531,13 @@ test('D — regression: ALLOWED_ACTIONS unchanged, no schema migration expected'
 // Final forensic sweep — confirms NO test rows leaked to DEMO. Uses marker
 // substring in client_name to identify rows that belong to this Issue 15
 // test session (regardless of which test created them). Should always be 0
-// after all tests' try/finally cleanups run.
-test('forensic: no leftover Issue15 test bookings (marker-based read-only check)', async (t) => {
+// after all tests' try/finally cleanups run. Each A-test's per-test cleanup
+// is also enforced at the test level via the runCleanup helper — if any
+// cleanup step throws, the test itself fails (see `if (cleanupErrors.length > 0)`
+// after each `finally`).
+test('forensic: no leftover Issue15 test rows (marker + UUID-based read-only checks)', async (t) => {
   if (skipIntegration) { t.skip(); return; }
+
   // Bookings carry client_name = "Issue15 Quick Test <runTag>". If cleanup
   // missed anything, this query would find it.
   const { data: bookings, error: e1 } = await admin.from('bookings')
@@ -506,4 +556,20 @@ test('forensic: no leftover Issue15 test bookings (marker-based read-only check)
   assert.ok(!e2, `clients read failed: ${e2?.message}`);
   assert.equal(clients?.length ?? 0, 0,
     `expected 0 leftover Issue15 test clients, found ${clients?.length}: ${JSON.stringify(clients?.map(c => c.id))}`);
+
+  // client_cars: marker-based scan (car_model = 'TestModel' AND created in
+  // this test session). All test cars use car_model='TestModel'. A marker
+  // scan via plate_number prefix is too narrow (each test uses a different
+  // runTag); instead we trust the per-test cleanup to have removed the
+  // specific UUIDs and the A-test cleanup to have failed if any step
+  // threw. The module-level `allCreatedCarIds` track keeps a record.
+  // Belt-and-suspenders: also assert the tracked-UUID list has 0 leftovers.
+  if (allCreatedCarIds.length > 0) {
+    const { data: cars, error: e3 } = await admin.from('client_cars')
+      .select('id')
+      .in('id', allCreatedCarIds);
+    assert.ok(!e3, `client_cars read failed: ${e3?.message}`);
+    assert.equal(cars?.length ?? 0, 0,
+      `expected 0 leftover Issue15 test client_cars (by UUID), found ${cars?.length}: ${JSON.stringify(cars?.map(c => c.id))}`);
+  }
 });
