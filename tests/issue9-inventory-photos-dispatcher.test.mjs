@@ -334,10 +334,18 @@ async function runIntegrationBlock(t) {
   const json = await res.json().catch(() => ({}));
   assert.equal(res.status, 200, `dispatcher returned ${res.status}: ${JSON.stringify(json)}`);
   const arrival = json?.data?.arrival;
-  assert.ok(arrival?.id, 'arrival.id missing in response');
-  assert.ok(Array.isArray(arrival.photos) && arrival.photos.length === 1,
-    `expected 1 photo path, got ${JSON.stringify(arrival.photos)}`);
-  const photoPath = arrival.photos[0];
+  // RPC returns { success, arrival_id, price_per_unit, new_base_quantity, new_current_quantity }
+  // not the full row. Dispatcher forwards that as `data.arrival` for the UI.
+  assert.ok(arrival?.arrival_id, `arrival_id missing in response: ${JSON.stringify(arrival)}`);
+  const arrivalId = arrival.arrival_id;
+
+  // Read the persisted row to verify photos ARRAY contains storage paths.
+  const { data: row, error: rowErr } = await admin.from('inventory_arrivals')
+    .select('photos').eq('id', arrivalId).maybeSingle();
+  assert.ok(!rowErr && row, `inventory_arrivals row not found: ${rowErr?.message}`);
+  assert.ok(Array.isArray(row.photos) && row.photos.length === 1,
+    `expected 1 photo path, got ${JSON.stringify(row.photos)}`);
+  const photoPath = row.photos[0];
   // V-B invariant: stored value must be a storage PATH, not a signed URL.
   assert.ok(!photoPath.startsWith('http'),
     `photos[] must be storage path, not URL. Got: ${photoPath}`);
@@ -348,7 +356,7 @@ async function runIntegrationBlock(t) {
   const signRes = await fetch(`${deployUrl}/api/staff?action=sign-inventory-photos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminJwt}` },
-    body: JSON.stringify({ arrival_id: arrival.id }),
+    body: JSON.stringify({ arrival_id: arrivalId }),
   });
   const signJson = await signRes.json().catch(() => ({}));
   assert.equal(signRes.status, 200, `sign returned ${signRes.status}: ${JSON.stringify(signJson)}`);
@@ -373,6 +381,7 @@ async function runIntegrationBlock(t) {
   assert.equal(bogusJson?.error, 'arrival_not_found');
 
   // 4. negative: arrival with no photos returns 200 with empty urls[]
+  const emptyOpId = crypto.randomUUID();
   const emptyRes = await fetch(`${deployUrl}/api/staff?action=inventory-arrival`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminJwt}` },
@@ -380,17 +389,17 @@ async function runIntegrationBlock(t) {
       item_id: itemId, quantity: 1, total_price: 50,
       delivery_date: new Date().toISOString().slice(0, 10),
       photos_b64: null, notes: 'no photo',
-      operation_id: crypto.randomUUID(),
+      operation_id: emptyOpId,
     }),
   });
   const emptyJson = await emptyRes.json().catch(() => ({}));
   assert.equal(emptyRes.status, 200);
   const emptyArrival = emptyJson?.data?.arrival;
-  assert.ok(emptyArrival?.id, 'empty-photos arrival must still be created');
+  assert.ok(emptyArrival?.arrival_id, 'empty-photos arrival must still be created');
   const emptySignRes = await fetch(`${deployUrl}/api/staff?action=sign-inventory-photos`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${adminJwt}` },
-    body: JSON.stringify({ arrival_id: emptyArrival.id }),
+    body: JSON.stringify({ arrival_id: emptyArrival.arrival_id }),
   });
   const emptySignJson = await emptySignRes.json().catch(() => ({}));
   assert.equal(emptySignRes.status, 200);
@@ -409,13 +418,13 @@ async function runIntegrationBlock(t) {
   assert.notEqual(clientRes.status, 200, 'mime_mismatch path must not return 200');
 
   // 6. cleanup
-  await admin.from('inventory_arrivals').delete().eq('id', arrival.id);
-  await admin.from('inventory_arrivals').delete().eq('id', emptyArrival.id);
+  await admin.from('inventory_arrivals').delete().eq('id', arrivalId);
+  await admin.from('inventory_arrivals').delete().eq('id', emptyArrival.arrival_id);
   for (const p of [photoPath]) {
     await admin.storage.from('inventory-photos').remove([p]).catch(() => {});
   }
   // Verify cleanup.
-  const { data: check } = await admin.from('inventory_arrivals').select('id').eq('id', arrival.id);
+  const { data: check } = await admin.from('inventory_arrivals').select('id').eq('id', arrivalId);
   assert.equal(check?.length ?? 0, 0, 'arrival row not cleaned up');
 }
 
