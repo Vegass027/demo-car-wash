@@ -27,6 +27,28 @@ import {
   generateReceiptPath as _generateReceiptPath,
 } from './expense-receipts.mjs';
 
+// Issue 9 — server-side inventory photo upload via dispatcher.
+// Pure helpers re-exported from ./inventory-photos.mjs, same pattern as
+// expense-receipts above. The .mjs file is the single source of truth.
+//
+// Rationale: storage RLS gate `(auth.jwt() ->> 'app_role') IN ('admin',
+// 'owner')` cannot match our custom staff JWT (api/login.ts:signJwt) —
+// Supabase Auth does not surface our claims via auth.jwt() context.
+// Browser-direct supabase.storage.from('inventory-photos').upload() is
+// therefore blocked by RLS even with valid staff credentials. Server-side
+// upload through service_role bypasses RLS, identical to Issue 3.
+import {
+  PHOTO_MIME_ALLOWED as _PHOTO_MIME_ALLOWED,
+  PHOTO_MAX_BYTES as _PHOTO_MAX_BYTES,
+  PHOTO_BASE64_MAX_CHARS as _PHOTO_BASE64_MAX_CHARS,
+  PHOTO_MAX_FILES as _PHOTO_MAX_FILES,
+  PHOTO_SIGNED_URL_TTL_SECONDS as _PHOTO_SIGNED_URL_TTL_SECONDS,
+  generateInventoryPhotoPath as _generateInventoryPhotoPath,
+  inferExtension as _inferExtension,
+  isValidMime as _isValidMime,
+  isInventoryPhotoPath as _isInventoryPhotoPath,
+} from './inventory-photos.mjs';
+
 export const EXPENSE_CATEGORIES = _EXPENSE_CATEGORIES;
 export const CATEGORIES_REQUIRING_COMMENT = _CATEGORIES_REQUIRING_COMMENT;
 export const RECEIPT_MIME_ALLOWED = _RECEIPT_MIME_ALLOWED;
@@ -36,6 +58,16 @@ export const isExpenseCategory = _isExpenseCategory;
 export const isReceiptPath = _isReceiptPath;
 export const sanitizeReceiptName = _sanitizeReceiptName;
 export const generateReceiptPath = _generateReceiptPath;
+
+export const PHOTO_MIME_ALLOWED = _PHOTO_MIME_ALLOWED;
+export const PHOTO_MAX_BYTES = _PHOTO_MAX_BYTES;
+export const PHOTO_BASE64_MAX_CHARS = _PHOTO_BASE64_MAX_CHARS;
+export const PHOTO_MAX_FILES = _PHOTO_MAX_FILES;
+export const PHOTO_SIGNED_URL_TTL_SECONDS = _PHOTO_SIGNED_URL_TTL_SECONDS;
+export const generateInventoryPhotoPath = _generateInventoryPhotoPath;
+export const inferExtension = _inferExtension;
+export const isValidMime = _isValidMime;
+export const isInventoryPhotoPath = _isInventoryPhotoPath;
 
 export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 

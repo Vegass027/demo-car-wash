@@ -1,5 +1,12 @@
 /**
  * API функции для работы со складом
+ *
+ * Issue 9: photo upload moved server-side (api/staff.ts:inventoryArrivalAction).
+ * The browser-direct uploadInventoryPhotos() was deleted because storage RLS
+ * (auth.jwt() ->> 'app_role') cannot read our custom staff JWT's app_role
+ * claim — Supabase Auth does not surface claims from JWTs minted by
+ * api/login.ts:signJwt. Server-side upload through service_role bypasses RLS
+ * (mirroring Issue 3 for expense-receipts).
  */
 
 import { supabase } from '@/lib/supabase';
@@ -9,6 +16,7 @@ import {
   deleteInventoryCategoryViaStaff,
   restockInventoryViaStaff,
   recordInventoryArrivalViaStaff,
+  signInventoryPhotosViaStaff,
 } from './staff-actions';
 
 // ============================================
@@ -78,12 +86,14 @@ export async function recordInventoryArrival(params: {
   photos?: File[];
   notes?: string;
   operationId?: string;
-  userId: string; // ✅ Добавляем userId как обязательный параметр
+  userId: string; // server-stamps p_created_by from JWT, ignored here
 }) {
   // Генерируем или используем переданный operationId
   const opId = params.operationId || generateUUID();
 
-  // 1. Проверяем, не была ли уже сохранена эта операция (идемпотентность)
+  // 1. Идемпотентность-проверка через SELECT inventory_arrivals (browser-direct).
+  //    RLS позволяет SELECT для admin/owner через staff_select_inventory_arrivals.
+  //    PGRST116 (406) = нормальный путь, записи ещё нет.
   try {
     const { data: existing } = await supabase
       .from('inventory_arrivals')
@@ -93,11 +103,9 @@ export async function recordInventoryArrival(params: {
 
     if (existing) {
       console.log('[recordInventoryArrival] Operation already exists:', opId);
-      return existing; // Просто выходим, не создаём дубликат
+      return existing;
     }
   } catch (error) {
-    // Ошибка 406 (Not Found) - это нормально, записи ещё нет
-    // Игнорируем и продолжаем создание записи
     if (error && typeof error === 'object' && 'code' in error && error.code === 'PGRST116') {
       console.log('[recordInventoryArrival] Operation not found (expected), proceeding...');
     } else if (error) {
@@ -106,21 +114,32 @@ export async function recordInventoryArrival(params: {
     }
   }
 
-  // 2. Загружаем фото (если есть) с тем же operationId
-  let photoUrls: string[] = [];
-
+  // 2. Issue 9: convert File objects to base64 for server-side upload via
+  //    dispatcher. The dispatcher (api/staff.ts:inventoryArrivalAction)
+  //    validates mime + magic bytes + size, then uploads through
+  //    supabaseAdmin (service_role, bypasses storage RLS) using
+  //    api/_lib/inventory-photos.mjs helpers.
+  //
+  //    Replaces the browser-direct uploadInventoryPhotos() that was deleted
+  //    (see module header comment).
+  const photosB64: Array<{ mime: string; base64: string }> = [];
   if (params.photos && params.photos.length > 0) {
-    photoUrls = await uploadInventoryPhotos(params.itemId, params.photos, opId);
+    for (const file of params.photos) {
+      // Prefer file.type (browser-detected MIME); fallback to octet-stream.
+      const mime = file.type && file.type.length > 0 ? file.type : 'application/octet-stream';
+      const buf = await file.arrayBuffer();
+      const base64 = bytesToBase64(new Uint8Array(buf));
+      photosB64.push({ mime, base64 });
+    }
   }
 
-  // 3. Вызываем dispatcher proxy (server-stamps p_created_by from JWT).
-  //    Storage photo upload stays browser-direct (Phase 1.8 OUT OF SCOPE).
+  // 3. Dispatcher proxy: uploads photos server-side, then writes inventory_arrivals row.
   const result = await recordInventoryArrivalViaStaff({
     itemId: params.itemId,
     quantity: params.quantity,
     totalPrice: params.totalPrice,
     deliveryDate: params.deliveryDate,
-    photos: photoUrls.length > 0 ? photoUrls : null,
+    photosB64: photosB64.length > 0 ? photosB64 : null,
     notes: params.notes || null,
     operationId: opId,
   });
@@ -202,104 +221,40 @@ export async function getInventoryOperations(
 }
 
 // ============================================
-// РАБОТА С ФОТО
+// HELPERS
 // ============================================
 
-async function uploadInventoryPhotos(itemId: string, files: File[], operationId?: string): Promise<string[]> {
-  const urls: string[] = [];
-  const errors: string[] = [];
-
-  console.log('[uploadInventoryPhotos] Starting upload for item:', itemId, 'files:', files.length, 'operationId:', operationId);
-
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const extension = file.name.split('.').pop()?.toLowerCase() || 'jpg';
-    
-    // Используем operationId + индекс вместо timestamp для идемпотентности
-    const fileName = operationId 
-      ? `${itemId}/${operationId}_${i}.${extension}`
-      : `${itemId}/${Date.now()}.${extension}`;
-
-    console.log('[uploadInventoryPhotos] Uploading file:', fileName, 'size:', file.size, 'type:', file.type);
-
-    // Retry логика с экспоненциальной задержкой
-    let lastError: any;
-    let uploadSuccess = false;
-    const maxRetries = 3;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const { data, error } = await supabase.storage
-          .from('inventory-photos')
-          .upload(fileName, file, {
-            cacheControl: '3600',
-            upsert: true  // Перезаписывает файлы вместо ошибки
-          });
-
-        if (!error) {
-          console.log(`[uploadInventoryPhotos] Upload successful on attempt ${attempt}/${maxRetries}`);
-          uploadSuccess = true;
-
-          // Получаем публичный URL
-          const { data: urlData } = supabase.storage
-            .from('inventory-photos')
-            .getPublicUrl(fileName);
-
-          console.log('[uploadInventoryPhotos] Public URL:', urlData.publicUrl);
-          urls.push(urlData.publicUrl);
-          break;
-        }
-
-        lastError = error;
-        console.log(`[uploadInventoryPhotos] Attempt ${attempt}/${maxRetries} failed:`, error.message);
-
-        // Если это последняя попытка - выходим
-        if (attempt === maxRetries) break;
-
-        // Экспоненциальная задержка: 1s, 2s, 4s
-        const delay = Math.pow(2, attempt - 1) * 1000;
-        console.log(`[uploadInventoryPhotos] Waiting ${delay}ms before retry...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-
-      } catch (error) {
-        lastError = error;
-        console.log(`[uploadInventoryPhotos] Attempt ${attempt}/${maxRetries} exception:`, error);
-
-        if (attempt === maxRetries) break;
-
-        const delay = Math.pow(2, attempt - 1) * 1000;
-        console.log(`[uploadInventoryPhotos] Waiting ${delay}ms before retry...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-
-    if (!uploadSuccess) {
-      console.error('[uploadInventoryPhotos] Photo upload error after all retries:', lastError);
-      errors.push(`${file.name}: ${lastError?.message || 'Неизвестная ошибка'}`);
-    }
-  }
-
-  console.log('[uploadInventoryPhotos] Completed. URLs:', urls, 'Errors:', errors);
-
-  // Если есть ошибки - выбрасываем исключение с деталями
-  if (errors.length > 0) {
-    throw new Error(
-      `Не удалось загрузить ${errors.length} фото:\n${errors.join('\n')}`
+// Uint8Array → base64 string. Browser-only (uses btoa + String.fromCharCode).
+// Kept local — no other call site needs it. If reused, lift to shared/utils.
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + chunk))
     );
   }
-
-  return urls;
+  return btoa(binary);
 }
 
-export async function deleteInventoryPhoto(photoUrl: string) {
-  // Извлекаем путь файла из URL
-  const path = photoUrl.split('/inventory-photos/')[1];
-
-  if (!path) throw new Error('Invalid photo URL');
-
-  const { error } = await supabase.storage
-    .from('inventory-photos')
-    .remove([path]);
-
-  if (error) throw error;
+// ============================================
+// PHOTO URLS (Issue 9 Variant B)
+// ============================================
+//
+// Server-stored inventory_arrivals.photos ARRAY contains storage PATHS
+// (not signed URLs). The UI fetches fresh signed URLs on demand via the
+// sign-inventory-photos dispatcher endpoint. This wrapper is what UI
+// components call — it hides the dispatcher plumbing and gives back
+// ready-to-use <img src> urls.
+//
+// On any error we return [] so the UI can degrade gracefully (show the
+// "Нет чека" placeholder instead of crashing).
+export async function getInventoryArrivalPhotoUrls(arrivalId: string): Promise<string[]> {
+  try {
+    return await signInventoryPhotosViaStaff(arrivalId);
+  } catch (error) {
+    console.error('[getInventoryArrivalPhotoUrls] failed:', error);
+    return [];
+  }
 }
