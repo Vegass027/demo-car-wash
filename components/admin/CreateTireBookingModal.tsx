@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Dialog, DialogContent } from '../ui/dialog';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -321,7 +321,12 @@ const [serviceId, setServiceId] = useState<string>('');
     <Dialog open={isOpen} onOpenChange={handleClose}>
       <DialogContent className="max-w-md">
         <div className="p-6">
-          <h2 className="text-xl font-bold mb-6">Новая запись на шиномонтаж</h2>
+          {/* Issue 10: Radix DialogContent requires a DialogTitle for
+              screen-reader accessibility. Replacing the visual <h2>
+              with <DialogTitle> satisfies both sighted users and
+              assistive tech without duplicating markup. The existing
+              text-xl/font-bold classes preserve the previous look. */}
+          <DialogTitle className="text-xl font-bold mb-6">Новая запись на шиномонтаж</DialogTitle>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Время начала */}
