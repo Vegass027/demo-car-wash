@@ -183,6 +183,12 @@ const ALLOWED_ACTIONS = new Set([
   'upload-receipt',
   'get-receipt-url',
   'delete-receipt',
+
+  // Slice #3g — Issue 4: atomic product_sales + inventory (2 actions):
+  //   create-product-sale: server-side atomic insert + inventory deduct
+  //   delete-product-sale: server-side atomic delete + inventory restock
+  'create-product-sale',
+  'delete-product-sale',
 ]);
 
 const supabaseAdmin = createClient(
@@ -782,6 +788,154 @@ async function deleteReceiptAction(claims: StaffClaims, body: AnyObj): Promise<A
     return failAction(500, 'receipt_detached_failed', { detail: updErr.message });
   }
   return { status: 200, body: { data: { ok: true } } };
+}
+
+// =========================================================================
+// Slice #3g — Issue 4: atomic product_sales (2 actions)
+// =========================================================================
+//
+// Both actions delegate the actual DB work to a SECURITY DEFINER plpgsql
+// function in public schema, defined by migration 038 on DEMO:
+//   * create_product_sale_atomic(p_inventory_item_id, p_quantity,
+//     p_price_per_unit, p_product_name, p_created_by)
+//   * delete_product_sale_atomic(p_sale_id, p_restored_by)
+//
+// The dispatcher layer:
+//   1. Validates body shape with validation.ts (no zod, no shared).
+//   2. Stamps p_created_by / p_restored_by from claims.profile_id
+//      (never trusts client-supplied user id).
+//   3. Maps atomic-function jsonb responses to HTTP status codes.
+//
+// Mapping table:
+//   {success:false, error:'insufficient_stock'}        → 400 insufficient_stock
+//   {success:false, error:'inventory_item_not_found'}   → 400 inventory_item_not_found
+//   {success:false, error:'invalid_quantity'}           → 400 invalid_quantity
+//   {success:false, error:'invalid_price'}              → 400 invalid_price
+//   {success:false, error:'invalid_product_name'}       → 400 invalid_product_name
+//   {success:false, error:'sale_not_found'}             → 404 sale_not_found
+//   success:true                                        → 200 (sale data)
+//   rpc.exception / no data                             → 500 db_error
+
+const PRODUCT_SALE_RPC_ERROR_TO_HTTP: Record<string, number> = {
+  insufficient_stock: 400,
+  inventory_item_not_found: 400,
+  invalid_quantity: 400,
+  invalid_price: 400,
+  invalid_product_name: 400,
+  sale_not_found: 404,
+};
+
+// === action: create-product-sale ===
+//
+// Input:  {
+//   product_name?: string,         // required iff inventory_item_id is null
+//   quantity: integer > 0,
+//   price_per_unit: number > 0,
+//   inventory_item_id?: uuid,      // null → manual-mode (no inventory)
+// }
+//
+// Server-stamps: p_created_by = claims.profile_id
+// Calls: supabaseAdmin.rpc('create_product_sale_atomic', { ... })
+async function createProductSaleAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const quantity = readNumberInRange(body, 'quantity', 1, 1_000_000);
+  // product_sales.quantity is integer on DEMO (also integer on PROD based on
+  // DEMO audit). readNumberInRange accepts any finite number, so a fractional
+  // input like 2.5 would slip through and Postgres would either round or
+  // raise a non-obvious error. Reject explicitly with a 400.
+  if (!Number.isInteger(quantity)) {
+    throw new ValidationError('quantity_must_be_integer');
+  }
+  const price_per_unit = readNumberInRange(body, 'price_per_unit', 0.01, 10_000_000);
+
+  // inventory_item_id: optional. Null/undefined → manual-mode.
+  const inventory_item_id = body.inventory_item_id === undefined || body.inventory_item_id === null
+    ? null
+    : readUuidRequired(body, 'inventory_item_id');
+
+  // product_name: required iff manual-mode (inventory_item_id is null).
+  // In inventory-mode the SQL function pulls `name` from inventory_items.
+  let product_name: string | null = null;
+  if (inventory_item_id === null) {
+    const raw = readString(body, 'product_name', { max: 200, required: true });
+    product_name = (raw ?? '').trim();
+    if (product_name.length === 0) {
+      throw new ValidationError('product_name_required');
+    }
+  }
+
+  const { data, error } = await supabaseAdmin.rpc('create_product_sale_atomic', {
+    p_inventory_item_id: inventory_item_id,
+    p_quantity: quantity,
+    p_price_per_unit: price_per_unit,
+    p_product_name: product_name,
+    p_created_by: claims.profile_id,
+  });
+
+  if (error) {
+    console.error('[staff:create-product-sale] rpc error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+
+  const result = (data ?? {}) as AnyObj;
+  if (result.success !== true) {
+    const code = (result.error as string) || 'unknown_rpc_error';
+    const status = PRODUCT_SALE_RPC_ERROR_TO_HTTP[code] ?? 400;
+    return { status, body: { error: code, available: result.available, requested: result.requested } };
+  }
+
+  return {
+    status: 200,
+    body: {
+      data: {
+        sale_id: result.sale_id,
+        total_price: result.total_price,
+        inventory_item_id: result.inventory_item_id,
+        quantity: result.quantity,
+        new_current_quantity: result.new_current_quantity,
+        product_name: product_name, // null in inventory-mode (caller reads from item)
+      },
+    },
+  };
+}
+
+// === action: delete-product-sale ===
+//
+// Input:  { id (uuid) }
+// Calls: supabaseAdmin.rpc('delete_product_sale_atomic', { p_sale_id, p_restored_by })
+// Output: { deleted, restocked, inventory_item_id?, quantity?, new_current_quantity?, warning? }
+async function deleteProductSaleAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const id = readUuidRequired(body, 'id');
+
+  const { data, error } = await supabaseAdmin.rpc('delete_product_sale_atomic', {
+    p_sale_id: id,
+    p_restored_by: claims.profile_id,
+  });
+
+  if (error) {
+    console.error('[staff:delete-product-sale] rpc error:', error.message);
+    return failAction(500, 'db_error', { detail: error.message });
+  }
+
+  const result = (data ?? {}) as AnyObj;
+  if (result.success !== true) {
+    const code = (result.error as string) || 'unknown_rpc_error';
+    const status = PRODUCT_SALE_RPC_ERROR_TO_HTTP[code] ?? 500;
+    return { status, body: { error: code } };
+  }
+
+  return {
+    status: 200,
+    body: {
+      data: {
+        deleted: result.deleted ?? true,
+        restocked: result.restocked ?? false,
+        inventory_item_id: result.inventory_item_id ?? null,
+        quantity: result.quantity ?? null,
+        new_current_quantity: result.new_current_quantity ?? null,
+        warning: result.warning ?? null,
+      },
+    },
+  };
 }
 
 // === action: create-expense ===
@@ -3743,6 +3897,10 @@ export default async function handler(req: any, res: any) {
       case 'upload-receipt':               result = await uploadReceiptAction(guard.claims, body); break;
       case 'get-receipt-url':              result = await getReceiptUrlAction(guard.claims, body); break;
       case 'delete-receipt':               result = await deleteReceiptAction(guard.claims, body); break;
+
+      // Slice #3g — Issue 4 atomic product_sales:
+      case 'create-product-sale':          result = await createProductSaleAction(guard.claims, body); break;
+      case 'delete-product-sale':          result = await deleteProductSaleAction(guard.claims, body); break;
       case 'create-client':                result = await createClientAction(guard.claims, body); break;
       case 'update-client':                result = await updateClientAction(guard.claims, body); break;
       case 'unblock-client':               result = await unblockClientAction(guard.claims, body); break;

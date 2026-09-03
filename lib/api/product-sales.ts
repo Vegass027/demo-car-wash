@@ -1,12 +1,17 @@
 /**
  * API функции для работы с продажами товаров
+ *
+ * Issue 4 (Slice #3g): write-операции (create/delete) идут через
+ * /api/staff dispatcher, который вызывает SECURITY DEFINER функции
+ * create_product_sale_atomic / delete_product_sale_atomic (migration 038).
+ *
+ * Read-операции (getProductSalesByDate, getProductSalesByPeriod,
+ * getInventoryItems) остаются browser-direct — RLS staff_select_* уже
+ * гейтит по app_role ∈ {admin, owner}, и dispatcher round-trip не нужен.
  */
 
 import { supabase } from '@/lib/supabase';
-import {
-  deductFromInventoryViaStaff,
-  restockInventoryViaStaff,
-} from './staff-actions';
+import { getSessionToken } from '../_supabase-wrapper';
 
 // ============================================
 // ТИПЫ
@@ -33,14 +38,52 @@ export interface InventoryItem {
 }
 
 // ============================================
-// ПРОДАЖИ ТОВАРОВ
+// DISPATCHER HELPER (Issue 4 pattern, mirrors lib/api/expenses.ts)
+// ============================================
+
+const STAFF_ENDPOINT = '/api/staff';
+
+async function dispatchStaff<T>(action: string, body: Record<string, unknown>): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const token = getSessionToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(`${STAFF_ENDPOINT}?action=${encodeURIComponent(action)}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers,
+    body: JSON.stringify(body),
+  });
+  const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    const err = (json?.error as string) || `${action}_failed`;
+    throw new Error(`${err} (HTTP ${res.status})`);
+  }
+  const data = json?.data as Record<string, unknown> | undefined;
+  return (data ?? (json as Record<string, unknown>)) as T;
+}
+
+// ============================================
+// WRITES (dispatcher-only)
 // ============================================
 
 /**
- * Создать продажу товара
+ * Создать продажу товара (атомарно).
+ *
  * @param data - Данные продажи
- * @param userId - ID пользователя, создающего продажу
- * @returns Созданная продажа
+ * @param _userId - DEPRECATED: server-stamps created_by из JWT claims;
+ *                  параметр оставлен для совместимости сигнатуры с
+ *                  components/admin/ProductSalesForm.tsx
+ * @returns Созданная продажа (с серверным total_price)
+ *
+ * Server-side:
+ *   - Списывает inventory_items.current_quantity (если inventory_item_id есть)
+ *   - Пишет строку в inventory_operations (operation_type='usage')
+ *   - Создаёт product_sales row
+ *   - Всё одной транзакцией (SECURITY DEFINER plpgsql).
+ *   - product_sales.total_price НЕ передаётся — на DEMO это GENERATED
+ *     колонка, наш сервер не пишет туда.
+ *   - Если inventory_item_id IS NULL → manual-mode: просто INSERT,
+ *     без склада, без операций.
  */
 export async function createProductSale(
   data: {
@@ -49,35 +92,95 @@ export async function createProductSale(
     price_per_unit: number;
     inventory_item_id?: string;
   },
-  userId: string
+  _userId: string
 ): Promise<ProductSale> {
-  console.log('[createProductSale] Creating product sale:', data, 'userId:', userId);
+  const res = await dispatchStaff<{
+    sale_id: string;
+    total_price: number;
+    inventory_item_id: string | null;
+    quantity: number;
+    new_current_quantity: number | null;
+    product_name: string | null;
+  }>('create-product-sale', {
+    product_name: data.product_name,
+    quantity: data.quantity,
+    price_per_unit: data.price_per_unit,
+    inventory_item_id: data.inventory_item_id ?? null,
+  });
 
-  // Если товар выбран со склада, списываем его
-  if (data.inventory_item_id) {
-    await deductFromInventory(data.inventory_item_id, data.quantity, userId);
-  }
+  // Dispatcher возвращает sale_id + total_price, но фронту нужен полный объект
+  // ProductSale. После успешного create читаем через anon SELECT (RLS open для
+  // staff). Делаем единичный запрос — никакого N+1.
+  //
+  // Если readback падает (временная сеть/RLS-сбой), sale row УЖЕ создана в БД
+  // server-side атомарно — бросать exception из UI было бы дезинформацией
+  // ("не сохранилось" при том что сохранилось). Возвращаем минимальный объект,
+  // собранный из полей RPC-ответа + body. UI увидит успех, и при следующем
+  // reload (например getProductSalesByDate) полный объект появится естественно.
+  try {
+    const { data: row, error } = await supabase
+      .from('product_sales')
+      .select('*')
+      .eq('id', res.sale_id)
+      .single();
 
-  const { data: saleData, error } = await supabase
-    .from('product_sales')
-    .insert({
-      product_name: data.product_name,
-      quantity: data.quantity,
+    if (error || !row) {
+      console.warn('[createProductSale] post-insert readback failed (returning minimal object):', error?.message);
+      return {
+        id: res.sale_id,
+        product_name: res.product_name ?? data.product_name,
+        quantity: res.quantity,
+        price_per_unit: data.price_per_unit,
+        total_price: res.total_price,
+        sale_date: new Date().toISOString().slice(0, 10),
+        inventory_item_id: res.inventory_item_id ?? undefined,
+        created_by: '',
+        created_at: new Date().toISOString(),
+      };
+    }
+    return row as ProductSale;
+  } catch (readbackErr) {
+    console.warn('[createProductSale] post-insert readback threw (returning minimal object):', readbackErr);
+    return {
+      id: res.sale_id,
+      product_name: res.product_name ?? data.product_name,
+      quantity: res.quantity,
       price_per_unit: data.price_per_unit,
-      inventory_item_id: data.inventory_item_id || null,
-      created_by: userId
-    })
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[createProductSale] Error:', error);
-    throw error;
+      total_price: res.total_price,
+      sale_date: new Date().toISOString().slice(0, 10),
+      inventory_item_id: res.inventory_item_id ?? undefined,
+      created_by: '',
+      created_at: new Date().toISOString(),
+    };
   }
-
-  console.log('[createProductSale] Product sale created:', saleData);
-  return saleData;
 }
+
+/**
+ * Удалить продажу (атомарно).
+ *
+ * Внутри dispatcher:
+ *   - SELECT product_sales → читает inventory_item_id + quantity ИЗ ROW
+ *   - Если inventory_item_id есть → restock (UPDATE inventory_items +
+ *     INSERT inventory_operations operation_type='restock')
+ *   - DELETE FROM product_sales
+ *   - Всё одной транзакцией.
+ *
+ * @param saleId - UUID продажи
+ */
+export async function deleteProductSale(saleId: string): Promise<void> {
+  await dispatchStaff<{
+    deleted: boolean;
+    restocked: boolean;
+    inventory_item_id: string | null;
+    quantity: number | null;
+    new_current_quantity: number | null;
+    warning: string | null;
+  }>('delete-product-sale', { id: saleId });
+}
+
+// ============================================
+// READS (browser-direct, RLS-gated)
+// ============================================
 
 /**
  * Получить продажи за дату
@@ -132,42 +235,6 @@ export async function getProductSalesByPeriod(
 }
 
 /**
- * Удалить продажу
- * @param saleId - ID продажи
- */
-export async function deleteProductSale(saleId: string): Promise<void> {
-  console.log('[deleteProductSale] Deleting product sale:', saleId);
-
-  // Сначала получаем продажу, чтобы вернуть товар на склад
-  const { data: sale } = await supabase
-    .from('product_sales')
-    .select('inventory_item_id, quantity')
-    .eq('id', saleId)
-    .single();
-
-  if (sale?.inventory_item_id) {
-    // Возвращаем товар на склад
-    await addToInventory(sale.inventory_item_id, sale.quantity);
-  }
-
-  const { error } = await supabase
-    .from('product_sales')
-    .delete()
-    .eq('id', saleId);
-
-  if (error) {
-    console.error('[deleteProductSale] Error:', error);
-    throw error;
-  }
-
-  console.log('[deleteProductSale] Product sale deleted:', saleId);
-}
-
-// ============================================
-// ТОВАРЫ СО СКЛАДА
-// ============================================
-
-/**
  * Получить товары со склада для селектора
  * @returns Массив товаров
  */
@@ -193,39 +260,4 @@ export async function getInventoryItems(): Promise<InventoryItem[]> {
 
   console.log('[getInventoryItems] Items fetched:', data?.length || 0);
   return data || [];
-}
-
-/**
- * Списать товар со склада
- *
- * Slice #3d Step 0: dispatcher proxy. Server-stamps p_created_by from JWT;
- * browser no longer passes userId.
- * @param itemId - ID товара
- * @param quantity - Количество для списания
- * @param _userId - DEPRECATED (server-stamped from JWT); kept for signature compat
- */
-async function deductFromInventory(
-  itemId: string,
-  quantity: number,
-  _userId: string
-): Promise<void> {
-  console.log('[deductFromInventory] Deducting from inventory:', itemId, 'quantity:', quantity);
-  await deductFromInventoryViaStaff(itemId, quantity, 'Продажа товара');
-  console.log('[deductFromInventory] Inventory updated');
-}
-
-/**
- * Вернуть товар на склад (при удалении продажи)
- *
- * Slice #3d Step 0: dispatcher proxy.
- * @param itemId - ID товара
- * @param quantity - Количество для возврата
- */
-async function addToInventory(
-  itemId: string,
-  quantity: number
-): Promise<void> {
-  console.log('[addToInventory] Adding to inventory:', itemId, 'quantity:', quantity);
-  await restockInventoryViaStaff(itemId, quantity, 'Отмена продажи товара');
-  console.log('[addToInventory] Inventory updated');
 }
