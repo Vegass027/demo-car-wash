@@ -1015,14 +1015,26 @@ export async function deleteInventoryCategoryViaStaff(
 }
 
 // === inventory-arrival ===
-// Storage photo upload stays browser-direct (Phase 1.8 OUT OF SCOPE).
-// Pass photos as URL array metadata only.
+//
+// Issue 9: photo upload moved server-side. Client now reads each File as
+// base64 and ships it in `photos_b64`; the dispatcher uploads via
+// service_role and returns signed URLs in the arrival.photos ARRAY. See
+// api/staff.ts:inventoryArrivalAction for the server-side validation,
+// upload, and signing logic.
+//
+// Why this changed: RLS on storage.objects gates
+// `(auth.jwt() ->> 'app_role') IN ('admin','owner')`, but our custom
+// staff JWT (api/login.ts:signJwt) is not a Supabase Auth session, so
+// Supabase Auth never surfaces our app_role claim through auth.jwt().
+// Browser-direct supabase.storage uploads are therefore always RLS-
+// blocked. Service_role bypasses RLS. Same pattern as Issue 3 expense-
+// receipts (api/staff.ts:uploadReceiptAction).
 export async function recordInventoryArrivalViaStaff(params: {
   itemId: string;
   quantity: number;
   totalPrice: number;
   deliveryDate: string;
-  photos: string[] | null;
+  photosB64: Array<{ mime: string; base64: string }> | null;
   notes: string | null;
   operationId: string;
 }): Promise<{ arrival: unknown; idempotent?: boolean }> {
@@ -1034,12 +1046,29 @@ export async function recordInventoryArrivalViaStaff(params: {
     quantity: params.quantity,
     total_price: params.totalPrice,
     delivery_date: params.deliveryDate,
-    photos: params.photos,
+    photos_b64: params.photosB64,
     notes: params.notes,
     operation_id: params.operationId,
   });
   if (!res.data) throw new Error('staff_no_response');
   return res.data;
+}
+
+// === sign-inventory-photos ===
+//
+// Issue 9 Variant B: storage paths stored in inventory_arrivals.photos
+// are server-minted signed URLs on demand. Mirrors getReceiptUrl pattern
+// from Issue 3. UI calls this when displaying history photos so the
+// URLs are always fresh (TTL = 1h, refreshed on every modal open).
+//
+// `arrival_id` is the canonical anchor — paths are NEVER trusted from
+// the client (read server-side, validated by isInventoryPhotoPath).
+export async function signInventoryPhotosViaStaff(arrivalId: string): Promise<string[]> {
+  const res = await dispatchStaffCall<{ data?: { urls: string[] } }>(
+    'sign-inventory-photos',
+    { arrival_id: arrivalId }
+  );
+  return res.data?.urls ?? [];
 }
 
 // === get-next-document-number ===

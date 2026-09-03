@@ -49,6 +49,15 @@ import {
   RECEIPT_MIME_ALLOWED,
   RECEIPT_MAX_BYTES,
   RECEIPT_BASE64_MAX_CHARS,
+  // Issue 9 — inventory photos (server-side upload via dispatcher)
+  PHOTO_MIME_ALLOWED as _PHOTO_MIME_ALLOWED,
+  PHOTO_MAX_BYTES as _PHOTO_MAX_BYTES,
+  PHOTO_BASE64_MAX_CHARS as _PHOTO_BASE64_MAX_CHARS,
+  PHOTO_MAX_FILES as _PHOTO_MAX_FILES,
+  PHOTO_SIGNED_URL_TTL_SECONDS as _PHOTO_SIGNED_URL_TTL_SECONDS,
+  generateInventoryPhotoPath as _generateInventoryPhotoPath,
+  isValidMime as _isValidMime,
+  isInventoryPhotoPath as _isInventoryPhotoPath,
 } from './_lib/validation.js';
 import { normalizePhoneNumber } from '../shared/utils/phone.js';
 import { recomputeBookingServices } from './_lib/booking-services.js';
@@ -3341,11 +3350,22 @@ async function deleteInventoryCategoryAction(_claims: StaffClaims, body: AnyObj)
 
 // === inventory-arrival (admin/owner) ===
 //
-// Storage photo upload remains browser-direct (supabase.storage) — Phase 1.8
-// bucket RLS/policies are OUT OF SCOPE for Slice #3d. This dispatcher only
-// writes the inventory_arrivals row + photos metadata (array of URLs).
+// Issue 9: photo upload moved server-side through this dispatcher.
+// Client sends photos as base64 strings (photos_b64: string[]) — the
+// dispatcher decodes each, validates mime + magic bytes + size, uploads
+// via supabaseAdmin (service_role, bypasses RLS), then collects signed
+// URLs and writes them via the existing inventory_arrival RPC.
 //
-// Uses the 8-arg overload uniquely (passes p_operation_id).
+// Why not browser-direct upload: the RLS gate
+// `(auth.jwt() ->> 'app_role') IN ('admin','owner')` cannot read our
+// custom staff JWT's app_role claim (Supabase Auth does not surface
+// claims from JWTs minted via api/login.ts:signJwt). Browser uploads
+// are therefore always RLS-blocked. Server-side upload through
+// service_role bypasses RLS (mirroring Issue 3 for expense-receipts).
+//
+// Storage bucket 'inventory-photos' + 3 staff policies were created by
+// migration 040 (defense-in-depth — they remain useful if a future
+// browser-direct path establishes a proper Supabase Auth session).
 async function inventoryArrivalAction(claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
   const item_id = readUuidRequired(body, 'item_id');
   const quantity = Number(body.quantity);
@@ -3357,15 +3377,81 @@ async function inventoryArrivalAction(claims: StaffClaims, body: AnyObj): Promis
     throw new ValidationError('total_price_invalid');
   }
   const delivery_date = readString(body, 'delivery_date', { required: true, max: 10 });
-  const photos = Array.isArray(body.photos) ? body.photos : null;
   const notes = body.notes ?? null;
   const operation_id = readUuidRequired(body, 'operation_id');
+
+  // Photo upload (server-side, Issue 9 Variant B).
+  // Two input shapes accepted:
+  //   - photos_b64: [{ mime, base64 }, ...]   (preferred — explicit mime)
+  //   - legacy photos: string[]               (URLs already uploaded — pre-Issue 9 path)
+  // Legacy shape is retained for callers that already have URLs; new
+  // callers must use photos_b64.
+  //
+  // Variant B: we store STORAGE PATHS in inventory_arrivals.photos (not
+  // signed URLs). The UI fetches fresh signed URLs on demand via the
+  // sign-inventory-photos dispatcher action (mirrors Issue 3's
+  // getReceiptUrlAction). This avoids a guaranteed bug where stored
+  // signed URLs expire after 7 days and history photos become broken
+  // links for every past arrival.
+  const photoPaths: string[] = [];
+  if (Array.isArray(body.photos_b64) && body.photos_b64.length > 0) {
+    if (body.photos_b64.length > _PHOTO_MAX_FILES) {
+      throw new ValidationError('too_many_photos');
+    }
+    for (let i = 0; i < body.photos_b64.length; i++) {
+      const entry = body.photos_b64[i];
+      if (!entry || typeof entry !== 'object') throw new ValidationError('photo_invalid');
+      const mime = readString(entry, 'mime', { max: 80, required: true });
+      if (!_isValidMime(mime)) throw new ValidationError('mime_invalid');
+      const base64 = readString(entry, 'base64', { max: _PHOTO_BASE64_MAX_CHARS, required: true });
+
+      let bytes: Buffer;
+      try { bytes = Buffer.from(base64, 'base64'); }
+      catch { throw new ValidationError('base64_decode_failed'); }
+      if (bytes.length === 0 || bytes.length > _PHOTO_MAX_BYTES) {
+        throw new ValidationError('file_too_large');
+      }
+      // Magic-byte cross-check (defense-in-depth, server-authoritative).
+      if (mime === 'image/jpeg' || mime === 'image/jpg') {
+        if (!(bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)) {
+          throw new ValidationError('mime_mismatch');
+        }
+      } else if (mime === 'image/png') {
+        if (!(bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47)) {
+          throw new ValidationError('mime_mismatch');
+        }
+      } else if (mime === 'application/pdf') {
+        if (!(bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46)) {
+          throw new ValidationError('mime_mismatch');
+        }
+      }
+
+      const path = _generateInventoryPhotoPath(item_id, operation_id, i, mime);
+      const { error: upErr } = await supabaseAdmin.storage
+        .from('inventory-photos')
+        .upload(path, bytes, { contentType: mime, cacheControl: '3600', upsert: false });
+      if (upErr) {
+        console.error('[staff:inventory-arrival] storage error:', upErr.message);
+        // Best-effort cleanup of any earlier uploads in this batch so we don't leak.
+        for (const prev of photoPaths) {
+          await supabaseAdmin.storage.from('inventory-photos').remove([prev]).catch(() => {});
+        }
+        return failAction(500, 'storage_upload_failed', { detail: upErr.message });
+      }
+      photoPaths.push(path);
+    }
+  } else if (Array.isArray(body.photos) && body.photos.length > 0) {
+    // Legacy callers — assume storage paths already uploaded via browser path.
+    // Retained for backwards compatibility with pre-Issue 9 callers.
+    photoPaths.push(...body.photos);
+  }
+
   const { data, error } = await supabaseAdmin.rpc('inventory_arrival', {
     p_item_id: item_id,
     p_quantity: quantity,
     p_total_price: total_price,
     p_delivery_date: delivery_date,
-    p_photos: photos,
+    p_photos: photoPaths.length > 0 ? photoPaths : null,
     p_notes: notes,
     p_created_by: claims.profile_id,
     p_operation_id: operation_id,
@@ -3384,9 +3470,89 @@ async function inventoryArrivalAction(claims: StaffClaims, body: AnyObj): Promis
   }
   if (error) {
     console.error('[staff:inventory-arrival] rpc error:', error.message);
+    // On RPC failure after successful uploads, leave the photos in place —
+    // the next retry with the same operation_id hits the 23505 idempotent
+    // path and returns the existing row. Photo objects are reusable.
     return failAction(500, 'inventory_arrival_failed', { detail: error.message });
   }
   return { status: 200, body: { data: { arrival: data } } };
+}
+
+// === sign-inventory-photos (admin/owner) ===
+//
+// Issue 9 Variant B: server-side photo upload stores STORAGE PATHS in
+// inventory_arrivals.photos (not signed URLs). This action reads those
+// paths from the DB on demand and returns fresh signed URLs. Mirrors
+// Issue 3's getReceiptUrlAction pattern.
+//
+// Input:  { arrival_id: uuid }
+// Output: { urls: string[] }   // 1:1 with stored paths; same order;
+//                               // empty array if arrival has no photos.
+//
+// Security: paths are NEVER trusted from the client. We read the photo
+// paths from inventory_arrivals.photos server-side and validate each one
+// against the inventory-photos bucket via _isInventoryPhotoPath. A client
+// cannot ask for signed URLs for paths belonging to other staff uploads
+// because they don't know the IDs, and even if they guessed one, the
+// paths array is fetched from the matching row only.
+async function signInventoryPhotosAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const arrival_id = readUuidRequired(body, 'arrival_id');
+
+  // Read photo paths server-side.
+  const { data: arrival, error: selErr } = await supabaseAdmin
+    .from('inventory_arrivals')
+    .select('photos')
+    .eq('id', arrival_id)
+    .maybeSingle();
+  if (selErr) {
+    console.error('[staff:sign-inventory-photos] select error:', selErr.message);
+    return failAction(500, 'db_error', { detail: selErr.message });
+  }
+  if (!arrival) return { status: 404, body: { error: 'arrival_not_found' } };
+
+  const stored = Array.isArray(arrival.photos) ? arrival.photos : [];
+  if (stored.length === 0) {
+    return { status: 200, body: { data: { urls: [] } } };
+  }
+
+  // Validate every path before signing. _isInventoryPhotoPath enforces
+  // the bucket prefix and rejects anything that looks like a URL or
+  // contains '..' (traversal). Same defense-in-depth principle as
+  // isReceiptPath.
+  const paths = stored.filter((p): p is string =>
+    typeof p === 'string' && _isInventoryPhotoPath(p));
+  if (paths.length !== stored.length) {
+    console.warn('[staff:sign-inventory-photos] filtered out',
+      stored.length - paths.length, 'malformed paths for arrival', arrival_id);
+  }
+  if (paths.length === 0) {
+    return { status: 200, body: { data: { urls: [] } } };
+  }
+
+  // Sign all paths in parallel. If any single sign fails, log it and
+  // return a partial result (best-effort) so the UI can degrade
+  // gracefully — show the URLs that did sign, skip the broken ones.
+  const results = await Promise.allSettled(
+    paths.map((p) =>
+      supabaseAdmin.storage
+        .from('inventory-photos')
+        .createSignedUrl(p, _PHOTO_SIGNED_URL_TTL_SECONDS)
+        .then((r) => ({ path: p, url: r.data?.signedUrl, err: r.error }))
+    )
+  );
+
+  const urls: string[] = [];
+  for (const r of results) {
+    if (r.status === 'fulfilled' && r.value.url && !r.value.err) {
+      urls.push(r.value.url);
+    } else if (r.status === 'rejected') {
+      console.error('[staff:sign-inventory-photos] sign failed:', r.reason);
+    } else if (r.status === 'fulfilled' && r.value.err) {
+      console.error('[staff:sign-inventory-photos] sign error:', r.value.err.message);
+    }
+  }
+
+  return { status: 200, body: { data: { urls } } };
 }
 
 // === get-next-document-number (admin/owner) ===
@@ -3979,6 +4145,7 @@ export default async function handler(req: any, res: any) {
       case 'add-inventory-category':            result = await addInventoryCategoryAction(guard.claims, body); break;
       case 'delete-inventory-category':         result = await deleteInventoryCategoryAction(guard.claims, body); break;
       case 'inventory-arrival':                 result = await inventoryArrivalAction(guard.claims, body); break;
+      case 'sign-inventory-photos':             result = await signInventoryPhotosAction(guard.claims, body); break;
       case 'get-next-document-number':          result = await getNextDocumentNumberAction(guard.claims, body); break;
 
       default:

@@ -9,8 +9,9 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Calendar, Package, Banknote, X, Download, Clock, Eye, AlertCircle } from 'lucide-react';
+import { Calendar, Package, Banknote, X, Download, Clock, Eye, AlertCircle, Loader2 } from 'lucide-react';
 import { InventoryArrivalHistory } from '@/entities/inventory/model';
+import { getInventoryArrivalPhotoUrls } from '@/lib/api/inventory';
 
 interface InventoryHistoryModalProps {
   isOpen: boolean;
@@ -234,6 +235,27 @@ const HistoryCard: React.FC<HistoryCardProps> = ({ historyItem, onOpenPhoto, ite
     return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   };
 
+  // Issue 9 Variant B: historyItem.photos are storage PATHS (not URLs).
+  // Fetch fresh signed URLs on mount via the dispatcher. Three states:
+  //   loading — initial fetch in flight
+  //   has_url — at least one URL is signed and usable for <img>
+  //   no_photo — either photos[] empty or all signing attempts failed
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoLoading, setPhotoLoading] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    if (!historyItem.photos || historyItem.photos.length === 0) {
+      setPhotoUrl(null);
+      return;
+    }
+    setPhotoLoading(true);
+    getInventoryArrivalPhotoUrls(historyItem.id)
+      .then((urls) => { if (!cancelled) setPhotoUrl(urls[0] ?? null); })
+      .catch(() => { if (!cancelled) setPhotoUrl(null); })
+      .finally(() => { if (!cancelled) setPhotoLoading(false); });
+    return () => { cancelled = true; };
+  }, [historyItem.id, historyItem.photos]);
+
   const handleDownload = (url: string) => {
     const link = document.createElement('a');
     link.href = url;
@@ -302,27 +324,40 @@ const HistoryCard: React.FC<HistoryCardProps> = ({ historyItem, onOpenPhoto, ite
                 </div>
               </div>
 
-              {/* Чек */}
+              {/* Чек — Issue 9 V-B: photos[] holds storage paths; need to fetch
+                  fresh signed URL via dispatcher before showing buttons. */}
               {historyItem.photos && historyItem.photos.length > 0 ? (
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1 text-xs"
-                    onClick={() => onOpenPhoto(historyItem.photos[0])}
-                  >
-                    <Eye className="w-3 h-3" />
-                    Чек
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="gap-1 text-xs"
-                    onClick={() => handleDownload(historyItem.photos[0])}
-                  >
-                    <Download className="w-3 h-3" />
-                  </Button>
-                </div>
+                photoLoading ? (
+                  <div className="flex items-center gap-1 text-xs text-gray-500">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Загрузка чека…
+                  </div>
+                ) : photoUrl ? (
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1 text-xs"
+                      onClick={() => onOpenPhoto(photoUrl)}
+                    >
+                      <Eye className="w-3 h-3" />
+                      Чек
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1 text-xs"
+                      onClick={() => handleDownload(photoUrl)}
+                    >
+                      <Download className="w-3 h-3" />
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1 text-xs text-orange-600">
+                    <AlertCircle className="w-3 h-3" />
+                    Не удалось получить ссылку
+                  </div>
+                )
               ) : (
                 <div className="flex items-center gap-1 text-xs text-orange-600">
                   <AlertCircle className="w-3 h-3" />
