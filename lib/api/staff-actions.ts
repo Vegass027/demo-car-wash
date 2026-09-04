@@ -1091,6 +1091,35 @@ export async function getNextDocumentNumberViaStaff(
   return res.data.number;
 }
 
+// === allocate-document-number (Issue 17) ===
+//
+// Allocates or looks up ONE document_number for a worksheet tuple
+// (organization, year, month, service_type). Idempotent — returns the same
+// number for invoice and act of the same worksheet. Source of truth lives
+// in `document_assignments` (Postgres), NOT in frontend state: every press
+// of "Сформировать PDF / DOCX" re-queries the DB so that re-generation
+// cannot accidentally create new numbers.
+export async function allocateDocumentNumberViaStaff(
+  organizationId: string,
+  month: number,
+  year: number,
+  serviceType: 'carwash' | 'tire',
+): Promise<number> {
+  const res = await dispatchStaffCall<{
+    data?: { number: number };
+    error?: string;
+  }>('allocate-document-number', {
+    organization_id: organizationId,
+    month,
+    year,
+    service_type: serviceType,
+  });
+  if (res.data?.number === undefined || res.data?.number === null) {
+    throw new Error('staff_no_number_in_response');
+  }
+  return res.data.number;
+}
+
 // =========================================================================
 // Phase A Slice #3e — admin-side Category C client/car reads
 // =========================================================================
