@@ -167,6 +167,7 @@ const ALLOWED_ACTIONS = new Set([
   'inventory-arrival',
   'sign-inventory-photos',
   'get-next-document-number',
+  'allocate-document-number',
 
   // Slice #3e Phase A — admin-side Category C client/car read dispatcher
   // ports (3 actions). Replaces anon-side lib/api/clients.ts browser reads
@@ -3603,6 +3604,44 @@ async function getNextDocumentNumberAction(_claims: StaffClaims, body: AnyObj): 
   return { status: 200, body: { data: { number: data } } };
 }
 
+// === allocate-document-number (Issue 17) ===
+//
+// Allocates or looks up ONE immutable document_number for a worksheet
+// (organization, year, month, service_type). Idempotent: invoice and act for
+// the same tuple return the same number. Counter is global — no monthly
+// reset and no per-document-type split. Replaces the broken
+// get_next_document_number path for new code; legacy get-next-document-number
+// stays alive for backward-compat with existing tests.
+async function allocateDocumentNumberAction(_claims: StaffClaims, body: AnyObj): Promise<ActionResult> {
+  const organization_id = readUuidRequired(body, 'organization_id');
+  const month = Number(body.month);
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    throw new ValidationError('month_invalid');
+  }
+  const year = Number(body.year);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    throw new ValidationError('year_invalid');
+  }
+  const service_type = readString(body, 'service_type', { required: true, max: 20 });
+  if (service_type !== 'carwash' && service_type !== 'tire') {
+    throw new ValidationError('service_type_invalid');
+  }
+  const { data, error } = await supabaseAdmin.rpc('allocate_document_number', {
+    p_organization_id: organization_id,
+    p_fiscal_year: year,
+    p_fiscal_month: month,
+    p_service_type: service_type,
+  });
+  if (error) {
+    console.error('[staff:allocate-document-number] rpc error:', error.message);
+    return failAction(500, 'allocate_document_number_failed', { detail: error.message });
+  }
+  if (data == null) {
+    return failAction(500, 'allocate_document_number_no_data');
+  }
+  return { status: 200, body: { data: { number: data } } };
+}
+
 // =========================================================================
 // admin-give-advance / admin-payout-salary / admin-transfer-balance
 // (all owner-only — admin shouldn't manage their own money out)
@@ -4169,6 +4208,7 @@ export default async function handler(req: any, res: any) {
       case 'inventory-arrival':                 result = await inventoryArrivalAction(guard.claims, body); break;
       case 'sign-inventory-photos':             result = await signInventoryPhotosAction(guard.claims, body); break;
       case 'get-next-document-number':          result = await getNextDocumentNumberAction(guard.claims, body); break;
+      case 'allocate-document-number':          result = await allocateDocumentNumberAction(guard.claims, body); break;
 
       default:
         return res.status(404).json({ error: 'unknown_action' });

@@ -59,7 +59,7 @@ import { motion } from 'framer-motion';
 import { getOrganizations } from '../../lib/api/organizations';
 import { getWorksheetEntries, type WorksheetEntry } from '../../lib/api/worksheets';
 import { getCompanySettings } from '../../lib/api/companySettings';
-import { getNextDocumentNumber } from '../../lib/api/document-numbers';
+import { allocateDocumentNumber } from '../../lib/api/document-numbers';
 import { generateInvoiceHTML, generateActHTML } from '../../shared/utils/document-templates';
 import { generateInvoiceDocx, generateActDocx } from '../../shared/utils/docx-generator';
 import { isTelegramWebApp } from '../../shared/telegram/telegram';
@@ -923,7 +923,12 @@ export const SummaryPage: React.FC<SummaryPageProps> = ({
 
       // Получаем следующий номер документа
       const [year, month] = selectedMonth.split('-');
-      const invoiceNumber = await getNextDocumentNumber('invoice', parseInt(month), parseInt(year));
+      const invoiceNumber = await allocateDocumentNumber(
+        selectedOrg,
+        parseInt(month, 10),
+        parseInt(year, 10),
+        serviceType,
+      );
 
       // Формируем дату документа (последний день выбранного месяца)
       const lastDayOfMonth = new Date(parseInt(year), parseInt(month), 0).getDate();
@@ -1084,11 +1089,16 @@ export const SummaryPage: React.FC<SummaryPageProps> = ({
 
       // Получаем следующий номер документа
       const [year, month] = selectedMonth.split('-');
-      const invoiceNumber = String(await getNextDocumentNumber('invoice', parseInt(month), parseInt(year)));
+      const invoiceNumber = String(await allocateDocumentNumber(
+        selectedOrg,
+        parseInt(month, 10),
+        parseInt(year, 10),
+        serviceType,
+      ));
 
       // Формируем дату документа (последний день выбранного месяца)
       const lastDayOfMonth = new Date(parseInt(year), parseInt(month), 0).getDate();
-      const invoiceDate = `${String(lastDayOfMonth).padStart(2, '0')}.${month}.${year} г.`;
+      const invoiceDate = `${year}-${month}-${String(lastDayOfMonth).padStart(2, '0')}`;
 
       // Агрегируем услуги (одна строка на весь период)
       const totalAmount = worksheetData.reduce((sum, entry) => sum + entry.total_amount, 0);
@@ -1169,7 +1179,12 @@ export const SummaryPage: React.FC<SummaryPageProps> = ({
 
       // Получаем следующий номер документа
       const [year, month] = selectedMonth.split('-');
-      const actNumber = await getNextDocumentNumber('act', parseInt(month), parseInt(year));
+      const actNumber = await allocateDocumentNumber(
+        selectedOrg,
+        parseInt(month, 10),
+        parseInt(year, 10),
+        serviceType,
+      );
 
       // Формируем дату документа (последний день выбранного месяца)
       const lastDayOfMonth = new Date(parseInt(year), parseInt(month), 0).getDate();
@@ -1322,7 +1337,12 @@ export const SummaryPage: React.FC<SummaryPageProps> = ({
 
       // Получаем следующий номер документа
       const [year, month] = selectedMonth.split('-');
-      const actNumber = String(await getNextDocumentNumber('act', parseInt(month), parseInt(year)));
+      const actNumber = String(await allocateDocumentNumber(
+        selectedOrg,
+        parseInt(month, 10),
+        parseInt(year, 10),
+        serviceType,
+      ));
 
       // Формируем дату документа (последний день выбранного месяца)
       const lastDayOfMonth = new Date(parseInt(year), parseInt(month), 0).getDate();

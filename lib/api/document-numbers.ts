@@ -1,5 +1,5 @@
 import { supabase } from '../supabase';
-import { getNextDocumentNumberViaStaff } from './staff-actions';
+import { getNextDocumentNumberViaStaff, allocateDocumentNumberViaStaff } from './staff-actions';
 
 /**
  * Типы сущности "Номер документа"
@@ -19,6 +19,10 @@ export interface DocumentNumber {
  * @param month Месяц документа (1-12)
  * @param year Год документа
  * @returns Следующий номер документа (1-999)
+ *
+ * @deprecated Use allocateDocumentNumber (Issue 17). The old per-doc-type
+ * counter splits invoice/act into independent sequences and was the root
+ * cause of mismatched numbers in printed PDFs. Kept for legacy code/tests.
  */
 export async function getNextDocumentNumber(
   documentType: 'invoice' | 'act',
@@ -27,6 +31,28 @@ export async function getNextDocumentNumber(
 ): Promise<number> {
   // Slice #3d Step 0: dispatcher proxy. 3-arg overload uniquely resolved.
   return await getNextDocumentNumberViaStaff(documentType, month, year);
+}
+
+/**
+ * Issue 17 — allocate or lookup ONE document_number for a worksheet.
+ *
+ * Use case: invoice and act for the SAME (organization_id, fiscal_year,
+ * fiscal_month, service_type) tuple must always render the same number.
+ * Calling this helper for both callsites (invoice PDF, invoice DOCX,
+ * act PDF, act DOCX) of one SummaryPage state guarantees identical
+ * numbers across all four documents.
+ *
+ * Idempotent: re-invoking for the same tuple returns the saved number
+ * without incrementing the global counter. Source of truth is the
+ * `document_assignments` table in Postgres.
+ */
+export async function allocateDocumentNumber(
+  organizationId: string,
+  month: number,
+  year: number,
+  serviceType: 'carwash' | 'tire',
+): Promise<number> {
+  return await allocateDocumentNumberViaStaff(organizationId, month, year, serviceType);
 }
 
 /**
