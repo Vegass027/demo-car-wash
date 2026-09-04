@@ -10,20 +10,41 @@ import type { SalarySettings } from '@/lib/types/salary';
 
 /**
  * Рассчитывает заработок мойщика за заказ
- * @param orderPrice - стоимость заказа
+ *
+ * Issue 16 — the basis is now sum(nominal_unit_price * quantity) across
+ * the booking's services_with_quantities (list-priced gross), not
+ * bookings.price + bookings.discount. Universal principle: bonus/free
+ * services contribute their retail-equivalent unit price, so the
+ * displayed earnings in WorkerBookingsList match the actual ledger row
+ * written by api/staff.ts:markStaffReadyAction.
+ *
+ * Legacy rows without nominal_unit_price fall back to per-line total,
+ * matching the previous behavior for fully-paid bookings.
+ *
+ * @param swq - bookings.services_with_quantities (array of line items)
  * @param workingMode - режим работы мойщика
  * @param salarySettings - настройки зарплаты из БД
  * @returns заработок с этого заказа
  */
 export function calculateOrderEarnings(
-  orderPrice: number,
+  swq: Booking['services_with_quantities'] | null | undefined,
   workingMode: 'solo' | 'pair',
-  salarySettings: SalarySettings | null
+  salarySettings: SalarySettings | null,
 ): number {
+  const lines = Array.isArray(swq) ? swq : [];
   const percentage = workingMode === 'pair'
     ? (salarySettings?.worker_pair_commission || 0.2) // 20%
     : (salarySettings?.worker_solo_commission || 0.4); // 40%
-  return orderPrice * percentage;
+  let gross = 0;
+  for (const line of lines) {
+    const nominal = line?.nominal_unit_price;
+    const qty = Number(line?.quantity ?? 0);
+    const lineTotal = nominal != null && Number(nominal) > 0
+      ? Number(nominal) * qty
+      : Number(line?.total ?? (Number(line?.price ?? 0) * qty));
+    gross += lineTotal;
+  }
+  return gross * percentage;
 }
 
 /**
@@ -104,23 +125,34 @@ export function calculateTotalEarningsFromBookings(
   salarySettings: SalarySettings | null
 ): number {
   return bookings.reduce((sum, booking) => {
-    return sum + calculateOrderEarnings(booking.price, workingMode, salarySettings);
+    return sum + calculateOrderEarnings(
+      booking.services_with_quantities,
+      workingMode,
+      salarySettings,
+    );
   }, 0);
 }
 
 /**
  * Рассчитывает ожидаемый заработок за заказ
- * @param orderPrice - стоимость заказа
+ *
+ * Issue 16 — accepts a swq-like array now (list-priced gross). When a
+ * caller only has a single orderPrice, pass [{ service_id: 'synthetic',
+ * quantity: 1, price: orderPrice, total: orderPrice,
+ * nominal_unit_price: orderPrice }] to preserve the old single-amount
+ * semantics.
+ *
+ * @param swq - bookings.services_with_quantities (or synthetic 1-line)
  * @param workingMode - режим работы мойщика
  * @param salarySettings - настройки зарплаты из БД
  * @returns ожидаемый заработок
  */
 export function calculateExpectedEarnings(
-  orderPrice: number,
+  swq: Booking['services_with_quantities'] | null | undefined,
   workingMode: 'solo' | 'pair',
-  salarySettings: SalarySettings | null
+  salarySettings: SalarySettings | null,
 ): { earnings: number; carCount: number } {
-  const earnings = calculateOrderEarnings(orderPrice, workingMode, salarySettings);
+  const earnings = calculateOrderEarnings(swq, workingMode, salarySettings);
   const carCount = calculateCarCount(workingMode);
   return { earnings, carCount };
 }

@@ -111,6 +111,13 @@ export interface Booking {
     quantity: number;
     price: number;
     total: number;
+    /**
+     * Issue 16 — list-priced unit price set by the server at create time
+     * (see migration 044 + api/_lib/booking-services.ts:recomputeBookingServices).
+     * Used by calculateWorkerEarnings and calculateOrderEarnings as the
+     * commission basis. Optional for backward compat with legacy rows.
+     */
+    nominal_unit_price?: number | null;
   }>;
 }
 

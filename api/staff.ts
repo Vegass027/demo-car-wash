@@ -2129,8 +2129,17 @@ async function markStaffReadyAction(_claims: StaffClaims, body: AnyObj): Promise
     }
     const { earnings, cars } = calculateWorkerEarnings({
       working_mode: current.working_mode === 'pair' ? 'pair' : 'solo',
-      booking_price: Number(current.price ?? 0),
-      booking_discount: Number(current.discount ?? 0),
+      // Issue 16 — feed the calculator services_with_quantities so it can
+      // use nominal_unit_price (list-priced basis) per line. Legacy rows
+      // without nominal_unit_price fall back to per-line total via the
+      // calculator's backward-compat branch (no behavioral change).
+      services_with_quantities: (current.services_with_quantities as Array<{
+        service_id: string;
+        quantity: number;
+        price?: number;
+        total?: number;
+        nominal_unit_price?: number | null;
+      }>) ?? [],
       worker_solo_commission: Number(settings.worker_solo_commission),
       worker_pair_commission: Number(settings.worker_pair_commission),
     });

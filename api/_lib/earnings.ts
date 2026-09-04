@@ -40,8 +40,23 @@ interface TireServiceItemForEarnings {
 
 export interface WorkerEarningsArgs {
   working_mode: 'solo' | 'pair';
-  booking_price: number;
-  booking_discount: number;
+  /**
+   * Issue 16 — list-priced basis for commission. Each line contributes
+   * `nominal_unit_price * quantity` to the gross. Falls back to per-line
+   * `total` (or `price * quantity`) for legacy rows that pre-date
+   * migration 044 and have no `nominal_unit_price` set.
+   *
+   * Universal principle: the worker is paid as if every service they
+   * performed were at its retail price, regardless of client-paid
+   * amount, booking-level discount, or bonus/loyalty status.
+   */
+  services_with_quantities: Array<{
+    service_id: string;
+    quantity: number;
+    price?: number;
+    total?: number;
+    nominal_unit_price?: number | null;
+  }>;
   worker_solo_commission: number;
   worker_pair_commission: number;
 }
@@ -50,13 +65,28 @@ export function calculateWorkerEarnings(args: WorkerEarningsArgs): {
   earnings: number;
   cars: number;
 } {
-  // Worker earns commission over (price + discount) — i.e. gross.
-  // Mirrors lib/api/workers.ts:590.
-  const priceForSalary = Number(args.booking_price) + (Number(args.booking_discount) || 0);
+  let gross = 0;
+  const lines = args.services_with_quantities ?? [];
+  for (const line of lines) {
+    const nominal = line.nominal_unit_price;
+    const qty = Number(line.quantity ?? 0);
+    if (nominal != null && Number(nominal) > 0) {
+      // Forward path: nominal_unit_price is set at create time (migration 044+).
+      gross += Number(nominal) * qty;
+    } else {
+      // Backward-compatible fallback for legacy rows pre-dating migration 044.
+      // Prefer canonical per-line `total` (always present at create), fall
+      // back to `price * quantity` for paranoia.
+      const lineTotal = Number(
+        line.total ?? (Number(line.price ?? 0) * qty),
+      );
+      gross += lineTotal;
+    }
+  }
   const rate = args.working_mode === 'pair'
     ? Number(args.worker_pair_commission)
     : Number(args.worker_solo_commission);
-  const earnings = priceForSalary * rate;
+  const earnings = gross * rate;
   const cars = args.working_mode === 'pair' ? 0.5 : 1;
   return { earnings, cars };
 }
