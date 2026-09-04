@@ -39,7 +39,11 @@ import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
 
-const PG_CONN = 'postgresql://postgres.danobongqzbxilyvdwig:YVJlmcibmLQYBtRM@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?options=-c%20project%3Dpostgres';
+// Single source of truth for the DEMO app base URL (login + dispatcher +
+// any other HTTP calls must target the exact same deployment, otherwise
+// /api/login cookies and /api/staff auth checks could desync). Override
+// via DEMO_VERCEL_URL env var when running against a preview deployment.
+const DEMO_APP_URL = process.env.DEMO_VERCEL_URL || 'https://demo-car-wash.vercel.app';
 
 // UUID-addressed cleanup tracking (module-level Sets, exactly like issue15).
 const allCreatedBookings = new Set();
@@ -152,22 +156,36 @@ async function fetchServiceId(admin, serviceSlug) {
 }
 
 async function loginAsAdmin(baseUrl, adminLogin, adminPassword) {
-  const { createClient: cc } = await import('@supabase/supabase-js');
-  const browser = cc(SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '', {
-    auth: { persistSession: false },
+  // Issue 16 follow-up — use HTTP /api/login (custom verify_password RPC
+  // against profiles.password_hash). Demo admin never had an auth.users
+  // row, so supabase.auth.signInWithPassword() would never work; this
+  // /api/login path is the same one Issue 15 regression test uses.
+  //
+  // No secrets or tokens are echoed. The token is held in a local variable
+  // and only used as Bearer header in subsequent dispatcher POSTs. The
+  // baseUrl parameter is honored directly so the caller is the single
+  // source of truth for which DEMO deployment is being tested.
+  const res = await fetch(`${baseUrl}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ login: adminLogin, password: adminPassword }),
   });
-  const { data, error } = await browser.auth.signInWithPassword({
-    email: adminLogin,
-    password: adminPassword,
-  });
-  if (error) throw new Error(`admin_login_failed: ${error.message}`);
-  if (!data?.session) throw new Error('admin_login_failed: no session');
-  return data.session.access_token;
+  if (!res.ok) {
+    // Don't echo body length (could leak server hints) — only HTTP status.
+    throw new Error(`login_failed: HTTP ${res.status}`);
+  }
+  const json = await res.json().catch(() => null);
+  if (!json || typeof json.token !== 'string' || json.token.length === 0) {
+    throw new Error(`login_failed: response missing token`);
+  }
+  return json.token;
 }
 
 async function staffCall(jwt, action, body) {
-  const demoBase = process.env.DEMO_VERCEL_URL || 'https://demo-car-wash.vercel.app';
-  const resp = await fetch(`${demoBase}/api/staff?action=${encodeURIComponent(action)}`, {
+  // Same base URL as login — guarantees /api/login and /api/staff are
+  // talking to the same deployment (no risk of cookie/JWT drift across
+  // preview envs).
+  const resp = await fetch(`${DEMO_APP_URL}/api/staff?action=${encodeURIComponent(action)}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -343,7 +361,7 @@ test('live: bonus+paid booking salary_transactions amount uses list-price gross'
     workerId = wNew.id; allCreatedWorkers.add(workerId);
 
     // 5. Login as demo_admin to get JWT for dispatcher calls.
-    const jwt = await loginAsAdmin(SUPABASE_URL, process.env.DEMO_ADMIN_LOGIN, process.env.DEMO_ADMIN_PASSWORD);
+    const jwt = await loginAsAdmin(DEMO_APP_URL, process.env.DEMO_ADMIN_LOGIN, process.env.DEMO_ADMIN_PASSWORD);
 
     // 6. Create booking via dispatcher with free-body-wash + wax-coating.
     const today = new Date().toISOString().split('T')[0];
@@ -452,7 +470,7 @@ test('live: legacy booking (no nominal_unit_price) — earnings unchanged from o
     if (wNew.error) throw new Error(`worker_create_failed: ${wNew.error.message}`);
     workerId = wNew.data.id; allCreatedWorkers.add(workerId);
 
-    const jwt = await loginAsAdmin(SUPABASE_URL, process.env.DEMO_ADMIN_LOGIN, process.env.DEMO_ADMIN_PASSWORD);
+    const jwt = await loginAsAdmin(DEMO_APP_URL, process.env.DEMO_ADMIN_LOGIN, process.env.DEMO_ADMIN_PASSWORD);
 
     const tomorrow = new Date(Date.now() + 24 * 3600 * 1000).toISOString().split('T')[0];
     const resp = await staffCall(jwt, 'create-staff-booking', {
