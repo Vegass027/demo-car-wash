@@ -34,6 +34,14 @@ export interface ServicesPatchResult {
     quantity: number;
     price: number;
     total: number;
+    /**
+     * Issue 16 — list-priced unit price for the worker's commission basis.
+     * Equals the equivalent_paid_service's price_<car_type> when set,
+     * otherwise this row's own price_<car_type>. Always present for new
+     * bookings (migration 044). Legacy bookings may omit it; the earnings
+     * calculator falls back to `total` in that case.
+     */
+    nominal_unit_price: number;
   }>;
   final_price: number;
   discount: number;
@@ -225,6 +233,9 @@ export async function recomputeBookingServices(
       quantity,
       price: unitPrice,
       total,
+      // nominal_unit_price is set in a second pass after this loop ends
+      // (see batchResolveNominalUnitPrices below) to avoid per-line N+1.
+      nominal_unit_price: 0,
     });
     totalPrice += total;
 
@@ -238,10 +249,84 @@ export async function recomputeBookingServices(
   const finalDiscount = Math.max(0, Number(discount ?? 0));
   const finalPrice = Math.max(0, totalPrice - finalDiscount);
 
+  // Issue 16 — batch-resolve nominal unit prices (one read for all swq
+  // rows + at most one small follow-up for equivalent_paid_service_id rows
+  // not already present in the first batch).
+  const nominalBySvcId = await batchResolveNominalUnitPrices(
+    supabase,
+    resolvedServices,
+    car_type,
+  );
+
+  const sqWithNominal: ServicesPatchResult['services_with_quantities'] = sq.map((line) => ({
+    ...line,
+    nominal_unit_price: nominalBySvcId.get(line.service_id) ?? 0,
+  }));
+
   return {
     services: resolvedServices,
-    services_with_quantities: sq,
+    services_with_quantities: sqWithNominal,
     final_price: finalPrice,
     discount: finalDiscount,
   };
+}
+
+/**
+ * Issue 16 — batch-resolve nominal unit prices for a list of service UUIDs.
+ *
+ * Returns Map<service_id, nominal_unit_price>. For each service, nominal
+ * unit price equals:
+ *   - referenced service's price_<car_type> if equivalent_paid_service_id
+ *     is set and points to a different row (e.g. free-body-wash → body-wash);
+ *   - this service's own price_<car_type> otherwise (default for all paid
+ *     services; behavior unchanged).
+ *
+ * Two queries worst-case: one for the input set, one for any equivalent IDs
+ * not already returned in the first batch (typically 0 for paid services).
+ */
+async function batchResolveNominalUnitPrices(
+  supabase: SupabaseClient,
+  serviceIds: string[],
+  car_type: CarType,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (serviceIds.length === 0) return out;
+
+  const { data: rows, error } = await supabase
+    .from('services')
+    .select(
+      'id, equivalent_paid_service_id, price_sedan, price_crossover, price_jeep, price_large_suv, price_minivan',
+    )
+    .in('id', serviceIds);
+  if (error) throw new Error(`nominal_price_batch_lookup_failed: ${error.message}`);
+  if (!rows || rows.length === 0) return out;
+
+  const byId = new Map<string, any>();
+  for (const r of rows as any[]) byId.set(r.id, r);
+
+  // Follow-up only for equivalent IDs not already in the first batch.
+  const eqIds = Array.from(
+    new Set(
+      (rows as any[])
+        .map((r) => r.equivalent_paid_service_id)
+        .filter((id: unknown): id is string => typeof id === 'string' && !!id && !byId.has(id)),
+    ),
+  );
+  if (eqIds.length > 0) {
+    const { data: eqRows, error: eqErr } = await supabase
+      .from('services')
+      .select(
+        'id, price_sedan, price_crossover, price_jeep, price_large_suv, price_minivan',
+      )
+      .in('id', eqIds);
+    if (eqErr) throw new Error(`equivalent_price_batch_lookup_failed: ${eqErr.message}`);
+    for (const r of (eqRows ?? []) as any[]) byId.set(r.id, r);
+  }
+
+  for (const r of (rows as any[]) ?? []) {
+    const eqId: string | null = r.equivalent_paid_service_id;
+    const srcRow = eqId && eqId !== r.id && byId.has(eqId) ? byId.get(eqId) : r;
+    out.set(r.id, getServicePriceForCarType(srcRow, car_type));
+  }
+  return out;
 }

@@ -29,14 +29,10 @@ export const WorkerBookingsList: React.FC<WorkerBookingsListProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  // Локальная функция для расчета заработка с использованием динамических настроек
-  const calculateOrderEarningsDynamic = (price: number, discount: number, workingMode: string | null): number => {
-    const commission = workingMode === 'pair'
-      ? (salarySettings?.worker_pair_commission || 0.20) // 20%
-      : (salarySettings?.worker_solo_commission || 0.4); // 40%
-    const priceForSalary = price + discount; // ✅ Полная цена БЕЗ скидки!
-    return Math.round(priceForSalary * commission);
-  };
+// Issue 16 — delegate display earnings to the shared calculator so the UI
+  // matches the actual ledger row written by markStaffReadyAction. The
+  // local helper was duplicating the old formula and was replaced entirely.
+  // See features/workers/calculateEarnings.ts:calculateOrderEarnings.
 
   // ✅ Форматируем дату в YYYY-MM-DD для сравнения с booking_date в БД
   const now = new Date();
@@ -51,8 +47,8 @@ export const WorkerBookingsList: React.FC<WorkerBookingsListProps> = ({
 
   const totalEarningsFromBookings = todayBookings.reduce(
     (sum, booking) => {
-      const workingMode = booking.working_mode || worker.working_mode;
-      return sum + calculateOrderEarningsDynamic(booking.price, booking.discount || 0, workingMode);
+      const workingMode = (booking.working_mode as 'solo' | 'pair') || worker.working_mode;
+      return sum + calculateOrderEarnings(booking.services_with_quantities, workingMode, salarySettings);
     },
     0
   );
@@ -147,7 +143,11 @@ export const WorkerBookingsList: React.FC<WorkerBookingsListProps> = ({
             <div className="space-y-3">
               {todayBookings.map((booking, index) => {
                 const workingMode = booking.working_mode || worker.working_mode;
-                const earnings = calculateOrderEarningsDynamic(booking.price, booking.discount || 0, workingMode);
+                const earnings = calculateOrderEarnings(
+                  booking.services_with_quantities,
+                  (workingMode as 'solo' | 'pair') || worker.working_mode,
+                  salarySettings,
+                );
                 const serviceLabels = booking.services
                   .map(serviceId => {
                     const service = services.find(s => s.id === serviceId);
