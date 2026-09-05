@@ -2166,6 +2166,53 @@ async function markStaffReadyAction(_claims: StaffClaims, body: AnyObj): Promise
     }
   }
 
+  // Pair bookings: worker_2 receives the same per-worker earnings
+  // and car fraction as worker_1.
+  if (
+    current.working_mode === 'pair' &&
+    current.worker_id_2 &&
+    current.worker_id_2 !== current.worker_id
+  ) {
+    const result2 = await addWorkerEarningAndLedger(supabaseAdmin, {
+      worker_id: current.worker_id_2,
+      worker_name: current.worker_name_2 ?? '',
+      booking_id,
+      earnings,
+      cars,
+    });
+
+    if (
+      !result2.rpc_success &&
+      !result2.ledger_inserted &&
+      result2.rpc_message !== 'already_added'
+    ) {
+      return failAction(500, 'add_worker_earnings_failed', {
+        worker_id: current.worker_id_2,
+        rpc_message: result2.rpc_message,
+      });
+    }
+
+    if (result2.rpc_success && !result2.ledger_inserted) {
+      console.error(
+        '[staff:mark-staff-ready] COMPENSATION ledger_write_failed for worker_2',
+        {
+          booking_id,
+          worker_id: current.worker_id_2,
+          worker_name: current.worker_name_2,
+          amount: earnings,
+          rpc_message: result2.rpc_message,
+        },
+      );
+
+      return failAction(500, 'earnings_ledger_write_failed', {
+        booking_id,
+        worker_id: current.worker_id_2,
+        rpc_success: true,
+        ledger_inserted: false,
+      });
+    }
+  }
+
   return { status: 200, body: { data: { booking: updated } } };
 }
 
