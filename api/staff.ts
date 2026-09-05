@@ -2119,31 +2119,34 @@ async function markStaffReadyAction(_claims: StaffClaims, body: AnyObj): Promise
     return failAction(500, 'db_error', { detail: updErr.message });
   }
 
+  // Hoist settings/earnings/cars to function scope so they can be reused by
+  // both worker_1 and worker_2 blocks below without an inner block scope.
+  const { data: settings } = await supabaseAdmin
+    .from('salary_settings')
+    .select('worker_solo_commission, worker_pair_commission')
+    .limit(1).maybeSingle();
+  if (!settings) {
+    console.error('[staff:mark-staff-ready] salary_settings missing', { booking_id });
+    return failAction(500, 'salary_settings_missing');
+  }
+  const { earnings, cars } = calculateWorkerEarnings({
+    working_mode: current.working_mode === 'pair' ? 'pair' : 'solo',
+    // Issue 16 — feed the calculator services_with_quantities so it can
+    // use nominal_unit_price (list-priced basis) per line. Legacy rows
+    // without nominal_unit_price fall back to per-line total via the
+    // calculator's backward-compat branch (no behavioral change).
+    services_with_quantities: (current.services_with_quantities as Array<{
+      service_id: string;
+      quantity: number;
+      price?: number;
+      total?: number;
+      nominal_unit_price?: number | null;
+    }>) ?? [],
+    worker_solo_commission: Number(settings.worker_solo_commission),
+    worker_pair_commission: Number(settings.worker_pair_commission),
+  });
+
   if (current.worker_id) {
-    const { data: settings } = await supabaseAdmin
-      .from('salary_settings')
-      .select('worker_solo_commission, worker_pair_commission')
-      .limit(1).maybeSingle();
-    if (!settings) {
-      console.error('[staff:mark-staff-ready] salary_settings missing', { booking_id });
-      return failAction(500, 'salary_settings_missing');
-    }
-    const { earnings, cars } = calculateWorkerEarnings({
-      working_mode: current.working_mode === 'pair' ? 'pair' : 'solo',
-      // Issue 16 — feed the calculator services_with_quantities so it can
-      // use nominal_unit_price (list-priced basis) per line. Legacy rows
-      // without nominal_unit_price fall back to per-line total via the
-      // calculator's backward-compat branch (no behavioral change).
-      services_with_quantities: (current.services_with_quantities as Array<{
-        service_id: string;
-        quantity: number;
-        price?: number;
-        total?: number;
-        nominal_unit_price?: number | null;
-      }>) ?? [],
-      worker_solo_commission: Number(settings.worker_solo_commission),
-      worker_pair_commission: Number(settings.worker_pair_commission),
-    });
     const result = await addWorkerEarningAndLedger(supabaseAdmin, {
       worker_id: current.worker_id,
       worker_name: current.worker_name ?? '(unknown)',
