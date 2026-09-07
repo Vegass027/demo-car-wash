@@ -45,7 +45,7 @@ export const MyGarage: React.FC<MyGarageProps> = ({
   const [showAddCarForm, setShowAddCarForm] = useState(false);
 
   // Хуки для данных
-  const { cars, isLoading: carsLoading, addCar, refetch: refetchCars } = useClientCars(profileId, profilePhone);
+  const { cars, isLoading: carsLoading, addCar, appendCar, refetch: refetchCars } = useClientCars(profileId, profilePhone);
   const { carwashBookings, tireBookings, isLoading: activeBookingsLoading, refetch: refetchActiveBookings } = useActiveBookings(profileId, profilePhone);
   const { 
     carwashBookings: historyCarwash, 
@@ -290,10 +290,12 @@ export const MyGarage: React.FC<MyGarageProps> = ({
       {showAddCarForm && (
         <AddCarForm
           clientId={clientId}
-          onSuccess={() => {
+          onSuccess={(newCar) => {
+            // appendCar синхронно добавляет новую машину в state хука
+            // с dedup по id (если Realtime вдруг тоже сработает — дубля не будет).
+            // Прячем форму ПОСЛЕ append, чтобы React сбатчил оба setState в один рендер.
+            appendCar(newCar);
             setShowAddCarForm(false);
-            // ❌ НЕ вызываем refetchCars() - Realtime подписка сама обработает изменение
-            // refetchCars();
           }}
           onCancel={() => setShowAddCarForm(false)}
         />

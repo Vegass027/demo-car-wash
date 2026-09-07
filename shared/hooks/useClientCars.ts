@@ -23,6 +23,7 @@ export interface UseClientCarsResult {
   isLoading: boolean;
   error: string | null;
   addCar: (carModel: string, plateNumber: string, carType: string) => Promise<void>;
+  appendCar: (car: CombinedCar) => void;
   refetch: () => Promise<void>;
 }
 
@@ -166,11 +167,22 @@ export function useClientCars(profileId: string | null | undefined, profilePhone
     }
   };
 
+  // Local append: used by AddCarForm after server-confirmed create.
+  // Dedup by id защищает от двойного добавления, если Realtime подписка
+  // сработает параллельно с локальным append.
+  const appendCar = (car: CombinedCar) => {
+    setCars(prev => {
+      if (prev.some(c => c.id === car.id)) return prev;
+      return [...prev, car];
+    });
+  };
+
   return {
     cars,
     isLoading,
     error,
     addCar,
+    appendCar,
     refetch: fetchCars,
   };
 }

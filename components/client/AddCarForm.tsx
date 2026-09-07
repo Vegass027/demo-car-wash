@@ -5,10 +5,11 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { CarType } from '../../types';
 import { getSessionToken } from '../../lib/supabase';
+import type { CombinedCar } from '../../lib/api/combined-cars';
 
 interface AddCarFormProps {
   clientId: string | null;
-  onSuccess: () => void;
+  onSuccess?: (newCar: CombinedCar) => void;
   onCancel: () => void;
 }
 
@@ -80,7 +81,19 @@ export const AddCarForm: React.FC<AddCarFormProps> = ({ onSuccess, onCancel }) =
       setPlateNumber('');
       setCarType(CarType.SEDAN);
 
-      onSuccess();
+      // Сервер вернул созданную запись (см. api/client.ts createCarAction
+      // — insert с .select().single()). Маппим в CombinedCar и отдаём наверх,
+      // чтобы хук добавил её в state без полного refetch.
+      const newCarRow = body?.data?.car;
+      if (newCarRow && onSuccess) {
+        onSuccess({
+          id: newCarRow.id,
+          car_model: newCarRow.car_model,
+          plate_number: newCarRow.plate_number,
+          car_type: newCarRow.car_type,
+          type: 'personal',
+        });
+      }
     } catch (err: any) {
       setError(err.message || 'Не удалось добавить машину');
     } finally {
