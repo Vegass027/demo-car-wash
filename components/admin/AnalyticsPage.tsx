@@ -30,7 +30,9 @@ import {
   Building2,
   LineChart,
   ShoppingCart,
-  Key
+  Key,
+  Pen,
+  Save
 } from 'lucide-react';
 import { CompanySettingsWizard } from './CompanySettingsWizard';
 import { SalarySettingsWizard } from './SalarySettingsWizard';
@@ -84,6 +86,9 @@ export const AnalyticsPage: React.FC<AnalyticsPageProps> = ({
   const [showCompanySettingsWizard, setShowCompanySettingsWizard] = useState(false); // Состояние мастера юридических данных
   const [showSalarySettingsWizard, setShowSalarySettingsWizard] = useState(false); // Состояние мастера условий персонала
   const [showChangePasswordWizard, setShowChangePasswordWizard] = useState(false); // Состояние мастера смены пароля
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null); // DEMO: pencil edit
+  const [editingAmount, setEditingAmount] = useState(''); // DEMO: pencil edit
+  const [savingExpenseEdit, setSavingExpenseEdit] = useState(false); // DEMO: pencil edit
 
   // История отчетов
   const [openReportsSection, setOpenReportsSection] = useState(false); // Состояние аккордеона истории отчетов
@@ -295,13 +300,47 @@ useEffect(() => {
   loadOrgPayments();
 }, [selectedOrgMonth]);
 
+  // DEMO: owner-only inline edit of expense amount in История расходов.
+  const handleStartEditExpense = (expense: ExpenseWithCreator) => {
+    setEditingExpenseId(expense.id);
+    setEditingAmount(expense.amount.toString());
+  };
+  const handleCancelEditExpense = () => {
+    setEditingExpenseId(null);
+    setEditingAmount('');
+  };
+  const handleSaveEditExpense = async (expense: ExpenseWithCreator) => {
+    const newAmount = parseFloat(editingAmount);
+    if (!Number.isFinite(newAmount) || newAmount <= 0) {
+      alert('Введите корректную сумму');
+      return;
+    }
+    if (newAmount === expense.amount) {
+      handleCancelEditExpense();
+      return;
+    }
+    setSavingExpenseEdit(true);
+    try {
+      const { updateExpense } = await import('../../lib/api/expenses');
+      const updated = await updateExpense(expense.id, { amount: newAmount }, userId || '');
+      setHistoryExpenses(prev => prev.map(e => e.id === updated.id ? updated : e));
+      setCachedHistoryExpenses(prev => prev.map(e => e.id === updated.id ? updated : e));
+      handleCancelEditExpense();
+    } catch (error) {
+      console.error('[handleSaveEditExpense] Ошибка сохранения расхода:', error);
+      alert('Не удалось сохранить сумму расхода');
+    } finally {
+      setSavingExpenseEdit(false);
+    }
+  };
+
   // Обработчик просмотра чека
   const handleViewReceipt = async (expense: ExpenseWithCreator) => {
     if (!expense.receipt_url) return;
 
     try {
       const { getReceiptUrl } = await import('../../lib/api/expenses');
-      const url = await getReceiptUrl(expense.receipt_url);
+      const url = await getReceiptUrl(expense.id);
       const fileName = expense.receipt_url.split('/').pop() || 'чек';
       setViewingReceipt({ url, fileName });
     } catch (error: any) {
@@ -615,8 +654,47 @@ useEffect(() => {
                         const timeStr = createdAt.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
                         const dateStr = createdAt.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
+                        const isEditing = editingExpenseId === expense.id;
                         return (
                           <div key={expense.id} className="px-4 py-3">
+                            {isEditing ? (
+                              // Inline edit (DEMO): owner edits amount
+                              <div className="space-y-2">
+                                <div className="flex items-center gap-2">
+                                  <Input
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    value={editingAmount}
+                                    onChange={(e) => setEditingAmount(e.target.value)}
+                                    className="flex-1 text-sm"
+                                    autoFocus
+                                  />
+                                  <span className="text-sm text-gray-500">₽</span>
+                                </div>
+                                <div className="flex gap-2">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleSaveEditExpense(expense)}
+                                    disabled={savingExpenseEdit}
+                                    className="flex-1"
+                                  >
+                                    <Save className="w-3 h-3 mr-1" />
+                                    Сохранить
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={handleCancelEditExpense}
+                                    disabled={savingExpenseEdit}
+                                    className="flex-1"
+                                  >
+                                    <X className="w-3 h-3 mr-1" />
+                                    Отмена
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
                             <div className="flex justify-between items-center gap-2">
                               <div className="flex-1">
                                 {/* Строка 1: Сумма */}
@@ -663,6 +741,18 @@ useEffect(() => {
                                 )}
                               </div>
                               <div className="hidden sm:flex flex-col items-center gap-0">
+                                {/* DEMO: карандашик для редактирования суммы (owner-only) */}
+                                {userRole === 'owner' && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => handleStartEditExpense(expense)}
+                                    className="h-7 w-7 p-0"
+                                    title="Изменить сумму"
+                                  >
+                                    <Pen className="w-3.5 h-3.5" />
+                                  </Button>
+                                )}
                                 {/* Кнопка просмотра чека (только для ПК) */}
                                 {expense.receipt_url && (
                                   <Button
@@ -677,6 +767,7 @@ useEffect(() => {
                                 )}
                               </div>
                             </div>
+                            )}
                           </div>
                         );
                       })}
