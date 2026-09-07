@@ -62,14 +62,19 @@ export const TireTimeline: React.FC<TireTimelineProps> = ({
   // ✅ Фильтрация по роли для онлайн-записи
   const getFilteredBookings = (): TireBooking[] => {
     if (userRole === 'client' && currentProfileId) {
-      // Клиент видит только: ОЖИДАЕТ, В РАБОТЕ, ПРОСРОЧЕН
-      // НЕ видит: ГОТОВО (закрытые заказы)
-      // Детали чужих записей скрываются в BookingCellContent
+      // Клиент: видит свои активные + чужие не-ОТМЕНЕНО/ГОТОВО/ПРОСРОЧЕН.
+      // ПРОСРОЧЕН уже отфильтрован в wrapper (до merge), но держим
+      // защиту и здесь на случай если synthetic slot попал сюда напрямую.
       return bookings.filter(booking => {
-        const isNotCancelled = booking.status !== 'ОТМЕНЕНО';
-        const isNotCompleted = booking.status !== 'ГОТОВО';
+        if (booking.status === 'ОТМЕНЕНО') return false;
+        if (booking.status === 'ПРОСРОЧЕН') return false;
         const matchesDate = selectedDate ? booking.booking_date === selectedDate : true;
-        return isNotCancelled && isNotCompleted && matchesDate;
+        if (!matchesDate) return false;
+        // Own: скрываем ГОТОВО (текущее поведение). Foreign: показываем ГОТОВО.
+        if (isOwnTireBooking(booking)) {
+          return booking.status !== 'ГОТОВО';
+        }
+        return true;
       });
     }
     // Админ видит все записи
@@ -125,6 +130,14 @@ export const TireTimeline: React.FC<TireTimelineProps> = ({
   };
 
   const cellBookings = getBookingsForCells();
+
+  // ✅ Определяем, является ли запись собственной для клиента
+  const isOwnTireBooking = (booking: TireBooking): boolean => {
+    if (userRole !== 'client') return false;
+    const isPersonal = !!(currentProfileId && booking.created_by_profile_id === currentProfileId);
+    const isOrg = !!(booking.is_org && booking.organization_id && driverOrganizationIds.includes(booking.organization_id));
+    return isPersonal || isOrg;
+  };
 
   // Определяем цвет статуса записи
   const getStatusColor = (status: string): string => {
@@ -455,6 +468,12 @@ const BookingCellContent: React.FC<BookingCellContentProps> = ({ booking, userRo
   const isOrgBooking = booking.is_org && booking.organization_id && driverOrganizationIds.includes(booking.organization_id);
   const isOwnBooking = userRole === 'client' && (isPersonalBooking || isOrgBooking);
 
+  // Synthetic foreign slot: estimated_duration === 0 (RPC не возвращает).
+  // Real own bookings всегда имеют estimated_duration > 0.
+  const displayEnd = booking.estimated_duration > 0
+    ? calculateEndTime(booking.start_time, booking.estimated_duration)
+    : (booking.end_time ? formatTimeWithoutSeconds(booking.end_time) : '');
+
   return (
     <div className="flex flex-col gap-2 px-2 w-full overflow-hidden">
       {showFullDetails ? (
@@ -504,13 +523,28 @@ const BookingCellContent: React.FC<BookingCellContentProps> = ({ booking, userRo
           <div className="flex items-center gap-1 text-gray-600 whitespace-nowrap">
             <Clock className="w-4 h-4 flex-shrink-0" />
             <span className="text-sm font-semibold">
-              {formatTimeWithoutSeconds(booking.start_time)} - {calculateEndTime(booking.start_time, booking.estimated_duration)}
+              {formatTimeWithoutSeconds(booking.start_time)} - {displayEnd}
             </span>
           </div>
 
-          {/* ✅ Своя запись — показываем "Ваша запись" */}
+          {/* ✅ Своя запись — показываем car_model + plate_number + "Ваша запись" */}
           {isOwnBooking ? (
             <>
+              <div className="w-full border-t border-gray-300" />
+              <div className="flex items-center gap-1 text-gray-700 whitespace-nowrap">
+                <CarFront className="w-4 h-4 flex-shrink-0" />
+                <span className="text-xs font-semibold truncate max-w-full">
+                  {booking.car_model || '—'}
+                </span>
+              </div>
+              {booking.plate_number && (
+                <div className="flex items-center gap-1 text-gray-500 whitespace-nowrap">
+                  <Bandage className="w-3 h-3 flex-shrink-0" />
+                  <span className="text-[10px] truncate max-w-full">
+                    {booking.plate_number}
+                  </span>
+                </div>
+              )}
               <div className="w-full border-t border-gray-300" />
               <span className="text-xs font-semibold text-gray-600 whitespace-nowrap">Ваша запись</span>
             </>

@@ -8,7 +8,7 @@ import { findDriversByPhone } from '../../lib/api/organizations'
 import { getClientOrganizationIds } from '../../lib/api/bookings'
 import { normalizePhoneNumber } from '../../shared/utils/phone'
 import { formatDate, addDays } from '../../shared/utils/date'
-import { TireBooking } from '../../lib/api/tire-bookings'
+import { TireBooking, TireBookingStatus, TireBookingSource } from '../../lib/api/tire-bookings'
 import { Organization, OrganizationDriver, OrganizationCar } from '../../entities/organization/model'
 import { Client } from '../../lib/api/clients'
 import { getTireServiceDayStatus, getNextOpenTireServiceDate } from '../../lib/api/tire-service-days'
@@ -91,6 +91,58 @@ async function postTireBookingToDispatcher(payload: AnyObj): Promise<TireBooking
 
 type AnyObj = Record<string, any>;
 
+// Shape returned by get_public_tire_booking_slots (subset of TireBooking + end_time).
+interface PublicTireSlot {
+  id: string;
+  booking_date: string;
+  start_time: string;
+  end_time: string;
+  status: TireBookingStatus;
+}
+
+async function fetchPublicTireSlots(date: string): Promise<PublicTireSlot[]> {
+  const { data, error } = await supabase.rpc('get_public_tire_booking_slots', {
+    p_target_date: date,
+  });
+  if (error) {
+    console.error('[ClientTireBookingWrapper] get_public_tire_booking_slots failed:', error);
+    return [];
+  }
+  return (data ?? []) as PublicTireSlot[];
+}
+
+function buildSyntheticForeignSlots(
+  publicSlots: PublicTireSlot[],
+  ownIds: Set<string>,
+): TireBooking[] {
+  return publicSlots
+    // Foreign ПРОСРОЧЕН filtered client-side, before merge (no migration needed).
+    .filter(s => s.status !== 'ПРОСРОЧЕН')
+    // Foreign own-collision safety: if same id happens to be in ownBookings
+    // (shouldn't, but defensive), skip — own wins via dedup-by-id later.
+    .filter(s => !ownIds.has(s.id))
+    .map<TireBooking>(s => ({
+      id: s.id,
+      client_name: 'Занято',
+      phone: '',
+      car_model: '',
+      plate_number: '',
+      booking_date: s.booking_date,
+      start_time: s.start_time,
+      estimated_duration: 0,           // RPC не возвращает; display falls back to end_time when === 0
+      services: [],
+      total_price: 0,
+      payment_method: '',
+      is_paid: false,
+      status: s.status,
+      is_org: false,
+      booking_source: 'online' as TireBookingSource,
+      created_at: '',
+      updated_at: '',
+      end_time: s.end_time,
+    }));
+}
+
 interface ClientTireBookingWrapperProps {
   tireServices: any[];
   organizations: Organization[];
@@ -140,6 +192,19 @@ export function ClientTireBookingWrapper({
   const [bookingsByDate, setBookingsByDate] = useState<Record<string, TireBooking[]>>({})
   const bookings = useMemo(() => bookingsByDate[selectedDate] || [], [bookingsByDate, selectedDate])
 
+  // Public (foreign) slots fetched per selectedDate; merged with own bookings below.
+  const [publicSlotsByDate, setPublicSlotsByDate] = useState<Record<string, PublicTireSlot[]>>({})
+
+  // Merge own + synthetic foreign with id-based dedup. Own wins.
+  const mergedBookings = useMemo<TireBooking[]>(() => {
+    const ownIds = new Set(bookings.map(b => b.id));
+    const foreign = buildSyntheticForeignSlots(
+      publicSlotsByDate[selectedDate] ?? [],
+      ownIds,
+    );
+    return [...bookings, ...foreign];
+  }, [bookings, publicSlotsByDate, selectedDate])
+
   // ✅ Удален локальный showWizard state - используем isWizardOpen из props
   const [selectedSlot, setSelectedSlot] = useState<{
     date: string;
@@ -163,6 +228,27 @@ export function ClientTireBookingWrapper({
       loadBookings()
     }
   }, [selectedDate, profileId])
+
+  // Загрузка публичных (foreign) слотов шиномонтажа при изменении даты.
+  useEffect(() => {
+    if (!profileId) return;
+    if (publicSlotsByDate[selectedDate]) return; // cached
+    let cancelled = false;
+    (async () => {
+      try {
+        const slots = await fetchPublicTireSlots(selectedDate);
+        if (!cancelled) {
+          setPublicSlotsByDate(prev => ({
+            ...prev,
+            [selectedDate]: slots,
+          }));
+        }
+      } catch (err) {
+        console.error('[ClientTireBookingWrapper] public slots load error:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [profileId, selectedDate, publicSlotsByDate])
 
   // ✅ Загрузка статуса дня при изменении selectedDate
   useEffect(() => {
@@ -690,7 +776,7 @@ export function ClientTireBookingWrapper({
 
       <div className="bg-white rounded-lg shadow-sm p-4 mb-6 pb-safe telegram-safe-area-bottom">
         <TireTimeline
-          bookings={bookings}
+          bookings={mergedBookings}
           userRole="client"
           currentProfileId={profileId}
           driverOrganizationIds={driverOrganizationIds}
