@@ -176,6 +176,24 @@ export default async function handler(req: any, res: any) {
     profile = created;
   }
 
+  // ✅ Always ensure a clients row exists for this profile. Telegram Mini App
+  // expects `clients.profile_id` to be set; otherwise get-my-cars returns 404
+  // and the client-side fallback tries to link with empty phone → 400.
+  // For EXISTING profiles (returning users), the if-created branch above
+  // never runs — so we must insert here. Catch 23505 (UNIQUE) since
+  // DEMO DB has UNIQUE on phone='' (placeholder limit is 1 row).
+  if (profile?.id) {
+    const { error: insertErr } = await supabaseAdmin.from('clients').insert({
+      profile_id: profile.id,
+      full_name: profile.full_name ?? '',
+      phone: profile.phone ?? '',
+      is_active: true,
+    });
+    if (insertErr && insertErr.code !== '23505') {
+      console.error('[telegram-auth] clients insert (existing profile) error:', insertErr);
+    }
+  }
+
   if (!profile || profile.role !== 'client') {
     return res.status(403).json({ error: 'Role not permitted — Telegram Mini App is for client role only' });
   }
