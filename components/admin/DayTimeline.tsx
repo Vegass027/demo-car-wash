@@ -3,6 +3,7 @@ import { Card, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import { Car, Plus, History, LockOpen, Lock } from 'lucide-react';
 import { Booking } from '../../lib/api/bookings';
+import { formatDate } from '../../shared/utils/date';
 import { DateSelector } from './DateSelector';
 import { isCarWashBookingActive } from '../../shared/utils/time';
 import { QuickBookingCell } from './QuickBookingCell';
@@ -116,12 +117,25 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
   // Возвращает 'Занято' для занятых (не своих) слотов и короткий статус
   // (например, «Ожидает», «Готово», «В работе») для собственных.
   // Возвращает '' если статус неизвестен — тогда рендерим car_model/plate.
+
+  // True если для клиента выбранный час уже прошёл (на сегодня или раньше).
+  // Используется ТОЛЬКО для пустых слотов — реальные записи остаются яркими.
+  const isPastSlotForClient = (hour: number): boolean => {
+    if (userRole !== 'client' || !selectedDate) return false;
+    const now = new Date();
+    const today = formatDate(now);
+    if (selectedDate < today) return true;
+    if (selectedDate > today) return false;
+    return hour <= now.getHours();
+  };
+
   const getBookingDisplayText = (booking: Booking): string => {
     if (userRole === 'client') {
-      // Не-своя запись → показываем просто «Занято», без статуса (избегаем утечки
-      // чужой бизнес-информации через текст статуса в публичном таймлайне).
+      // Не-своя запись → показываем «ГОТОВО» если status завершён, иначе «Занято».
+      // Это позволяет клиенту видеть что бокс уже свободен (можно записаться
+      // на следующий час), без раскрытия PII (ФИО/телефон/авто).
       if (booking.client_name === 'Занято') {
-        return 'Занято';
+        return booking.status === 'ГОТОВО' ? 'ГОТОВО' : 'Занято';
       }
       // Косметика: на клиентском таймлайне статус «ОЖИДАЕТ» не показываем —
       // рендерим только car_model/plate_number как у админа. Чужие записи
@@ -160,7 +174,9 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
     // ниже — оранжевый для ОЖИДАЕТ и т.д. Админ/owner эту ветку не
     // используют: для них весь DayTimeline раскрашен по booking.status.
     if (userRole === 'client' && booking.client_name === 'Занято') {
-      return 'bg-gray-300';
+      // Чужой completed (ГОТОВО) — яркий синий (бокс свободен), без PII.
+      // Чужой активный (ОЖИДАЕТ/В РАБОТЕ) — серый.
+      return booking.status === 'ГОТОВО' ? 'bg-blue-400' : 'bg-gray-300';
     }
     switch (booking.status) {
       case 'В РАБОТЕ':
@@ -276,6 +292,12 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
               const box2Booking = getBookingForHourAndBox(hour, 2);
               const box3Booking = getBookingForHourAndBox(hour, 3);
 
+              // Past styling применяется ТОЛЬКО к пустым слотам —
+              // иначе completed booking стал бы блеклым opacity-50.
+              const isPastEmptyBox1 = !box1Booking && isPastSlotForClient(hour);
+              const isPastEmptyBox2 = !box2Booking && isPastSlotForClient(hour);
+              const isPastEmptyBox3 = !box3Booking && isPastSlotForClient(hour);
+
               return (
                 <div
                   key={hour}
@@ -294,11 +316,15 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                     {hour}:00
                   </div>
 
-                   {/* Бокс 1 */}
-                   <div
-                     className={`flex-1 h-10 rounded-md border-2 flex items-center justify-center relative ${
-                       isBoxClosedForHour(1, hour) && userRole !== 'admin' ? 'cursor-not-allowed' : 'cursor-pointer hover:scale-105'
-                     } transition-transform`}
+                    {/* Бокс 1 */}
+                    <div
+                      className={`flex-1 h-10 rounded-md border-2 flex items-center justify-center relative ${
+                        isBoxClosedForHour(1, hour) && userRole !== 'admin'
+                          ? 'cursor-not-allowed'
+                          : isPastEmptyBox1
+                            ? 'cursor-not-allowed opacity-50'
+                            : 'cursor-pointer hover:scale-105'
+                      } transition-transform`}
                       onClick={() => {
                         console.log('[DayTimeline] Клик на бокс 1, час:', hour, 'userRole:', userRole, 'adminId:', adminId, 'isBoxClosed:', isBoxClosedForHour(1, hour));
 
@@ -320,12 +346,10 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                         // Проверяем что бокс не закрыт на этот час
                         if (isBoxClosedForHour(1, hour)) return;
 
-                        // ✅ Клиенты могут открывать только свои заказы
+                        // Клиенты: existing booking → no-op; past пустой → no-op; будущий пустой → wizard
                         if (userRole === 'client') {
-                          if (box1Booking) {
-                            onBookingClick?.(box1Booking);
-                            return;
-                          }
+                          if (box1Booking) return;
+                          if (isPastSlotForClient(hour)) return;
                           onCreateBooking?.(hour, 1);
                           return;
                         }
@@ -375,8 +399,14 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                         </div>
                       </div>
                      ) : (
-                       <div className={`w-full h-full rounded-md border-2 border-dashed border-gray-200 hover:border-primary/50 flex items-center justify-center ${isBoxClosedForHour(1, hour) ? 'blur-sm' : ''}`}>
-                         <Plus className="w-4 h-4 text-gray-300" />
+                       <div className={`w-full h-full rounded-md flex items-center justify-center ${
+                         isPastEmptyBox1
+                           ? 'bg-gray-100 border border-gray-200'
+                           : `border-2 border-dashed border-gray-200 hover:border-primary/50 ${isBoxClosedForHour(1, hour) ? 'blur-sm' : ''}`
+                       }`}>
+                         {isPastEmptyBox1
+                           ? <span className="text-[10px] text-gray-400">—</span>
+                           : <Plus className="w-4 h-4 text-gray-300" />}
                        </div>
                      )}
                      {isBoxClosedForHour(1, hour) && (
@@ -386,85 +416,93 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                      )}
                   </div>
 
-                   {/* Бокс 2 */}
-                   <div
-                     className={`flex-1 h-10 rounded-md border-2 flex items-center justify-center relative ${
-                       isBoxClosedForHour(2, hour) && userRole !== 'admin' ? 'cursor-not-allowed' : 'cursor-pointer hover:scale-105'
-                     } transition-transform`}
-                     onClick={() => {
-                       // ✅ Если бокс закрыт и админ кликает - открываем на этот час
-                       if (isBoxClosedForHour(2, hour) && userRole === 'admin' && adminId && selectedDate) {
-                         openBoxForHourActionDispatcher(2, selectedDate, hour, adminId)
-                           .then(() => {
-                             // Перезагружаем закрытые боксы
-                             onReloadClosedBoxes?.();
-                           })
-                           .catch(error => {
-                             console.error('[DayTimeline] Ошибка открытия бокса:', error);
-                           });
-                         return;
-                       }
+                    {/* Бокс 2 */}
+                    <div
+                      className={`flex-1 h-10 rounded-md border-2 flex items-center justify-center relative ${
+                        isBoxClosedForHour(2, hour) && userRole !== 'admin'
+                          ? 'cursor-not-allowed'
+                          : isPastEmptyBox2
+                            ? 'cursor-not-allowed opacity-50'
+                            : 'cursor-pointer hover:scale-105'
+                      } transition-transform`}
+                      onClick={() => {
+                        // ✅ Если бокс закрыт и админ кликает - открываем на этот час
+                        if (isBoxClosedForHour(2, hour) && userRole === 'admin' && adminId && selectedDate) {
+                          openBoxForHourActionDispatcher(2, selectedDate, hour, adminId)
+                            .then(() => {
+                              // Перезагружаем закрытые боксы
+                              onReloadClosedBoxes?.();
+                            })
+                            .catch(error => {
+                              console.error('[DayTimeline] Ошибка открытия бокса:', error);
+                            });
+                          return;
+                        }
 
-                       // Проверяем что бокс не закрыт на этот час
-                       if (isBoxClosedForHour(2, hour)) return;
+                        // Проверяем что бокс не закрыт на этот час
+                        if (isBoxClosedForHour(2, hour)) return;
 
-                       // ✅ Клиенты могут открывать только свои заказы
-                       if (userRole === 'client') {
-                         if (box2Booking) {
-                           onBookingClick?.(box2Booking);
-                           return;
-                         }
-                         onCreateBooking?.(hour, 2);
-                         return;
-                       }
+                        // Клиенты: existing booking → no-op; past пустой → no-op; будущий пустой → wizard
+                        if (userRole === 'client') {
+                          if (box2Booking) return;
+                          if (isPastSlotForClient(hour)) return;
+                          onCreateBooking?.(hour, 2);
+                          return;
+                        }
 
-                       // ✅ Админ и владелец могут открывать детали любого заказа
-                       if (box2Booking) {
-                         onBookingClick?.(box2Booking);
-                         return;
-                       }
+                        // ✅ Админ и владелец могут открывать детали любого заказа
+                        if (box2Booking) {
+                          onBookingClick?.(box2Booking);
+                          return;
+                        }
 
-                       // Создаем запись
-                       onCreateBooking?.(hour, 2);
-                     }}
+                        // Создаем запись
+                        onCreateBooking?.(hour, 2);
+                      }}
                   >
-{box2Booking ? (
-                       <div
-                         className={`w-full h-full rounded-md ${getStatusColor(
-                           box2Booking
-                         )} flex items-center justify-center p-1 ${isBoxClosedForHour(2, hour) ? 'blur-sm' : ''}`}
-                         title={`${box2Booking.client_name} - ${box2Booking.car_model}`}
-                      >
-                        <div className="text-black text-center">
-                          {getBookingDisplayText(box2Booking) ? (
-                            <>
-                              <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
-                                {getBookingDisplayText(box2Booking)}
-                              </div>
-                              {String(box2Booking.car_model || '').slice(0, 8) ? (
-                                <div className="text-[8px] opacity-80 leading-tight truncate max-w-full">
-                                  {String(box2Booking.car_model || '').slice(0, 8)}
-                                  {box2Booking.plate_number ? ` · ${box2Booking.plate_number}` : ''}
-                                </div>
-                              ) : null}
-                            </>
-                          ) : (
-                            <>
-                              <div className="text-[9px] font-semibold leading-tight truncate max-w-full">
-                                {String(box2Booking.car_model || '').slice(0, 8)}
-                              </div>
-                              <div className="text-[8px] opacity-80 truncate max-w-full">
-                                {box2Booking.plate_number || ''}
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                     ) : (
-                       <div className={`w-full h-full rounded-md border-2 border-dashed border-gray-200 hover:border-primary/50 flex items-center justify-center ${isBoxClosedForHour(2, hour) ? 'blur-sm' : ''}`}>
-                         <Plus className="w-4 h-4 text-gray-300" />
+ {box2Booking ? (
+                        <div
+                          className={`w-full h-full rounded-md ${getStatusColor(
+                            box2Booking
+                          )} flex items-center justify-center p-1 ${isBoxClosedForHour(2, hour) ? 'blur-sm' : ''}`}
+                          title={`${box2Booking.client_name} - ${box2Booking.car_model}`}
+                       >
+                         <div className="text-black text-center">
+                           {getBookingDisplayText(box2Booking) ? (
+                             <>
+                               <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
+                                 {getBookingDisplayText(box2Booking)}
+                               </div>
+                               {String(box2Booking.car_model || '').slice(0, 8) ? (
+                                 <div className="text-[8px] opacity-80 leading-tight truncate max-w-full">
+                                   {String(box2Booking.car_model || '').slice(0, 8)}
+                                   {box2Booking.plate_number ? ` · ${box2Booking.plate_number}` : ''}
+                                 </div>
+                               ) : null}
+                             </>
+                           ) : (
+                             <>
+                               <div className="text-[9px] font-semibold leading-tight truncate max-w-full">
+                                 {String(box2Booking.car_model || '').slice(0, 8)}
+                               </div>
+                               <div className="text-[8px] opacity-80 truncate max-w-full">
+                                 {box2Booking.plate_number || ''}
+                               </div>
+                             </>
+                           )}
+                         </div>
                        </div>
-                     )}
+                      ) : (
+                        <div className={`w-full h-full rounded-md flex items-center justify-center ${
+                          isPastEmptyBox2
+                            ? 'bg-gray-100 border border-gray-200'
+                            : `border-2 border-dashed border-gray-200 hover:border-primary/50 ${isBoxClosedForHour(2, hour) ? 'blur-sm' : ''}`
+                        }`}>
+                          {isPastEmptyBox2
+                            ? <span className="text-[10px] text-gray-400">—</span>
+                            : <Plus className="w-4 h-4 text-gray-300" />}
+                        </div>
+                      )}
                      {isBoxClosedForHour(2, hour) && (
                        <div className="absolute inset-0 flex items-center justify-center bg-blue-500/10 backdrop-blur-sm pointer-events-none">
                          <Lock className="w-5 h-5 text-blue-600" />
@@ -472,85 +510,93 @@ export const DayTimeline: React.FC<DayTimelineProps> = ({
                      )}
                   </div>
 
-                   {/* Бокс 3 */}
-                   <div
-                     className={`flex-1 h-10 rounded-md border-2 flex items-center justify-center relative ${
-                       isBoxClosedForHour(3, hour) && userRole !== 'admin' ? 'cursor-not-allowed' : 'cursor-pointer hover:scale-105'
-                     } transition-transform`}
-                     onClick={() => {
-                       // ✅ Если бокс закрыт и админ кликает - открываем на этот час
-                       if (isBoxClosedForHour(3, hour) && userRole === 'admin' && adminId && selectedDate) {
-                         openBoxForHourActionDispatcher(3, selectedDate, hour, adminId)
-                           .then(() => {
-                             // Перезагружаем закрытые боксы
-                             onReloadClosedBoxes?.();
-                           })
-                           .catch(error => {
-                             console.error('[DayTimeline] Ошибка открытия бокса:', error);
-                           });
-                         return;
-                       }
+                    {/* Бокс 3 */}
+                    <div
+                      className={`flex-1 h-10 rounded-md border-2 flex items-center justify-center relative ${
+                        isBoxClosedForHour(3, hour) && userRole !== 'admin'
+                          ? 'cursor-not-allowed'
+                          : isPastEmptyBox3
+                            ? 'cursor-not-allowed opacity-50'
+                            : 'cursor-pointer hover:scale-105'
+                      } transition-transform`}
+                      onClick={() => {
+                        // ✅ Если бокс закрыт и админ кликает - открываем на этот час
+                        if (isBoxClosedForHour(3, hour) && userRole === 'admin' && adminId && selectedDate) {
+                          openBoxForHourActionDispatcher(3, selectedDate, hour, adminId)
+                            .then(() => {
+                              // Перезагружаем закрытые боксы
+                              onReloadClosedBoxes?.();
+                            })
+                            .catch(error => {
+                              console.error('[DayTimeline] Ошибка открытия бокса:', error);
+                            });
+                          return;
+                        }
 
-                       // Проверяем что бокс не закрыт на этот час
-                       if (isBoxClosedForHour(3, hour)) return;
+                        // Проверяем что бокс не закрыт на этот час
+                        if (isBoxClosedForHour(3, hour)) return;
 
-                       // ✅ Клиенты могут открывать только свои заказы
-                       if (userRole === 'client') {
-                         if (box3Booking) {
-                           onBookingClick?.(box3Booking);
-                           return;
-                         }
-                         onCreateBooking?.(hour, 3);
-                         return;
-                       }
+                        // Клиенты: existing booking → no-op; past пустой → no-op; будущий пустой → wizard
+                        if (userRole === 'client') {
+                          if (box3Booking) return;
+                          if (isPastSlotForClient(hour)) return;
+                          onCreateBooking?.(hour, 3);
+                          return;
+                        }
 
-                       // ✅ Админ и владелец могут открывать детали любого заказа
-                       if (box3Booking) {
-                         onBookingClick?.(box3Booking);
-                         return;
-                       }
+                        // ✅ Админ и владелец могут открывать детали любого заказа
+                        if (box3Booking) {
+                          onBookingClick?.(box3Booking);
+                          return;
+                        }
 
-                       // Создаем запись
-                       onCreateBooking?.(hour, 3);
-                     }}
+                        // Создаем запись
+                        onCreateBooking?.(hour, 3);
+                      }}
                   >
-{box3Booking ? (
-                       <div
-                         className={`w-full h-full rounded-md ${getStatusColor(
-                           box3Booking
-                         )} flex items-center justify-center p-1 ${isBoxClosedForHour(3, hour) ? 'blur-sm' : ''}`}
-                         title={`${box3Booking.client_name} - ${box3Booking.car_model}`}
-                      >
-                        <div className="text-black text-center">
-                          {getBookingDisplayText(box3Booking) ? (
-                            <>
-                              <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
-                                {getBookingDisplayText(box3Booking)}
-                              </div>
-                              {String(box3Booking.car_model || '').slice(0, 8) ? (
-                                <div className="text-[8px] opacity-80 leading-tight truncate max-w-full">
-                                  {String(box3Booking.car_model || '').slice(0, 8)}
-                                  {box3Booking.plate_number ? ` · ${box3Booking.plate_number}` : ''}
-                                </div>
-                              ) : null}
-                            </>
-                          ) : (
-                            <>
-                              <div className="text-[9px] font-semibold leading-tight truncate max-w-full">
-                                {String(box3Booking.car_model || '').slice(0, 8)}
-                              </div>
-                              <div className="text-[8px] opacity-80 truncate max-w-full">
-                                {box3Booking.plate_number || ''}
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                     ) : (
-                       <div className={`w-full h-full rounded-md border-2 border-dashed border-gray-200 hover:border-primary/50 flex items-center justify-center ${isBoxClosedForHour(3, hour) ? 'blur-sm' : ''}`}>
-                         <Plus className="w-4 h-4 text-gray-300" />
+ {box3Booking ? (
+                        <div
+                          className={`w-full h-full rounded-md ${getStatusColor(
+                            box3Booking
+                          )} flex items-center justify-center p-1 ${isBoxClosedForHour(3, hour) ? 'blur-sm' : ''}`}
+                          title={`${box3Booking.client_name} - ${box3Booking.car_model}`}
+                       >
+                         <div className="text-black text-center">
+                           {getBookingDisplayText(box3Booking) ? (
+                             <>
+                               <div className="text-[10px] font-semibold leading-tight truncate max-w-full">
+                                 {getBookingDisplayText(box3Booking)}
+                               </div>
+                               {String(box3Booking.car_model || '').slice(0, 8) ? (
+                                 <div className="text-[8px] opacity-80 leading-tight truncate max-w-full">
+                                   {String(box3Booking.car_model || '').slice(0, 8)}
+                                   {box3Booking.plate_number ? ` · ${box3Booking.plate_number}` : ''}
+                                 </div>
+                               ) : null}
+                             </>
+                           ) : (
+                             <>
+                               <div className="text-[9px] font-semibold leading-tight truncate max-w-full">
+                                 {String(box3Booking.car_model || '').slice(0, 8)}
+                               </div>
+                               <div className="text-[8px] opacity-80 truncate max-w-full">
+                                 {box3Booking.plate_number || ''}
+                               </div>
+                             </>
+                           )}
+                         </div>
                        </div>
-                     )}
+                      ) : (
+                        <div className={`w-full h-full rounded-md flex items-center justify-center ${
+                          isPastEmptyBox3
+                            ? 'bg-gray-100 border border-gray-200'
+                            : `border-2 border-dashed border-gray-200 hover:border-primary/50 ${isBoxClosedForHour(3, hour) ? 'blur-sm' : ''}`
+                        }`}>
+                          {isPastEmptyBox3
+                            ? <span className="text-[10px] text-gray-400">—</span>
+                            : <Plus className="w-4 h-4 text-gray-300" />}
+                        </div>
+                      )}
                      {isBoxClosedForHour(3, hour) && (
                        <div className="absolute inset-0 flex items-center justify-center bg-blue-500/10 backdrop-blur-sm pointer-events-none">
                          <Lock className="w-5 h-5 text-blue-600" />

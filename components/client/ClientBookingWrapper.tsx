@@ -390,7 +390,7 @@ export function ClientBookingWrapper({
       box_number: s.box_number,
       is_quick_booking: false,
       is_org: false,
-      status: 'ОЖИДАЕТ',          // active statuses only returned by RPC
+      status: (s as any).status ?? 'ОЖИДАЕТ',  // берём реальный status из RPC (после migration 046)
       client_name: 'Занято',       // matches DayTimeline's redact label
       car_model: '',
       plate_number: '',
