@@ -103,10 +103,25 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'Invalid JSON body' });
   }
 
-  const { initData } = body || {};
+  const { initData, role: requestedRole } = body || {};
   if (!initData || typeof initData !== 'string') {
     return res.status(400).json({ error: 'initData (string) required in body' });
   }
+
+  // Phase 2A.1 — extended role branching for staff flow.
+  // Client flow (default): body { initData } OR { initData, role: 'client' }
+  //   - existing self-register path preserved
+  //   - role 'client' is accepted for backward compatibility
+  // Staff flow: body { initData, role: 'admin' | 'owner' }
+  //   - NO self-registration
+  //   - profile.role in DB MUST equal requestedRole
+  //   - HMAC verification is MANDATORY (already enforced above)
+  //   - JWT app_role is always from verified profile.role, never from request
+  //
+  // Function count remains 1 (no new Vercel function). This restores the
+  // b757774 design intent without adding a separate telegram-auth-staff.ts.
+  const STAFF_ROLES = ['admin', 'owner'] as const;
+  const isStaffFlow = requestedRole === 'admin' || requestedRole === 'owner';
 
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   if (!botToken) {
@@ -141,8 +156,15 @@ export default async function handler(req: any, res: any) {
     .single();
   profile = existing;
 
-  // 4. Self-register if no profile (role HARDCODED 'client' — never from request)
+  // 4. Self-register if no profile (role HARDCODED 'client' — never from request).
+  //    Staff flow NEVER self-registers — only pre-provisioned admin/owner profiles allowed.
   if (!profile) {
+    if (isStaffFlow) {
+      return res.status(403).json({
+        error: 'Profile not found for staff login — admin/owner profiles must be pre-provisioned',
+      });
+    }
+
     const fullName =
       [user.first_name, user.last_name].filter(Boolean).join(' ') ||
       'Telegram User';
@@ -176,26 +198,23 @@ export default async function handler(req: any, res: any) {
     profile = created;
   }
 
-  // ✅ Always ensure a clients row exists for this profile. Telegram Mini App
-  // expects `clients.profile_id` to be set; otherwise get-my-cars returns 404
-  // and the client-side fallback tries to link with empty phone → 400.
-  // For EXISTING profiles (returning users), the if-created branch above
-  // never runs — so we must insert here. Catch 23505 (UNIQUE) since
-  // DEMO DB has UNIQUE on phone='' (placeholder limit is 1 row).
-  if (profile?.id) {
-    const { error: insertErr } = await supabaseAdmin.from('clients').insert({
-      profile_id: profile.id,
-      full_name: profile.full_name ?? '',
-      phone: profile.phone ?? '',
-      is_active: true,
-    });
-    if (insertErr && insertErr.code !== '23505') {
-      console.error('[telegram-auth] clients insert (existing profile) error:', insertErr);
+  // 5. Role enforcement.
+  //    Client flow: profile.role must be 'client' (rejects staff/admin on client endpoints).
+  //    Staff flow: profile.role MUST equal requestedRole (strict — no privilege escalation).
+  if (isStaffFlow) {
+    if (!profile || !(STAFF_ROLES as readonly string[]).includes(profile.role)) {
+      return res.status(403).json({ error: 'Profile does not have staff role' });
     }
-  }
-
-  if (!profile || profile.role !== 'client') {
-    return res.status(403).json({ error: 'Role not permitted — Telegram Mini App is for client role only' });
+    if (profile.role !== requestedRole) {
+      return res.status(403).json({
+        error: `Role mismatch — requested '${requestedRole}', profile.role is '${profile.role}'`,
+      });
+    }
+  } else {
+    // Client flow (or unspecified role).
+    if (!profile || profile.role !== 'client') {
+      return res.status(403).json({ error: 'Role not permitted — Telegram Mini App is for client role only' });
+    }
   }
 
   // Best-effort: bump last_auth_method on existing profiles.
