@@ -2553,7 +2553,14 @@ async function markStaffTireReadyAction(_claims: StaffClaims, body: AnyObj): Pro
   const tire_booking_id = readUuidRequired(body, 'tire_booking_id');
   const current = await lockTireBooking(tire_booking_id);
   if (current.status === 'ГОТОВО') return { status: 200, body: { data: { booking: current, idempotent: true } } };
-  if (current.status !== 'ОЖИДАЕТ' && current.status !== 'В РАБОТЕ') {
+  // ✅ Разрешаем также переход из ПРОСРОЧЕН (autoUpdateTireBookingStatuses
+  // переводит в ПРОСРОЧЕН когда current time >= end_time; админ может
+  // закрыть такой заказ вручную, если работа фактически выполнена).
+  if (
+    current.status !== 'ОЖИДАЕТ' &&
+    current.status !== 'В РАБОТЕ' &&
+    current.status !== 'ПРОСРОЧЕН'
+  ) {
     return failAction(409, 'invalid_status_transition', { status: current.status });
   }
   if (!current.is_paid) {
