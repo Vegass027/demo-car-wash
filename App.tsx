@@ -19,6 +19,7 @@ import { ClientTireBookingWrapper } from './components/client/ClientTireBookingW
 import { UnifiedClientBooking } from './components/client/UnifiedClientBooking';
 import { PaymentReturnPage } from './components/client/PaymentReturnPage';
 import { PublicPage } from './components/public/PublicPage';
+import { Landing } from './components/public/Landing';
 import { ShowerHead, LifeBuoy, Users, Package, BarChart3, Car } from 'lucide-react';
 import { cn } from './lib/utils';
 import { PostStatus, Booking, CarType } from './types';
@@ -101,6 +102,10 @@ export default function App() {
   const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string>('');
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false); // Отслеживание состояния клавиатуры
   const [initialViewportHeight, setInitialViewportHeight] = useState<number | null>(null); // Начальная высота viewport
+  // DEMO: landing page before login. Toggled by the "Войти в демо" button on Landing.
+  const [showLanding, setShowLanding] = useState<boolean>(
+    typeof window !== 'undefined' && !window.location.search.includes('login=1')
+  );
 
   // Phase 1.6a + Issue 14: legacy localStorage migration + 401 handler +
   //   F5-resilience for staff tokens.
@@ -1053,6 +1058,8 @@ export default function App() {
     setUserId('');
     setUserRole('admin');
     setIsAuthenticated(false);
+    // DEMO: return to landing on logout so demo visitors can re-explore the showcase
+    setShowLanding(true);
     // Bug #3: очищаем in-memory staff state, чтобы следующий пользователь
     // не увидел данные предыдущего на login screen / dashboard.
     // Public/reference resources (services, tireServices, clients) и client-only
@@ -1795,6 +1802,9 @@ export default function App() {
 
   // Для админских views показываем Login если не авторизован
   if (!isAuthenticated) {
+    if (showLanding) {
+      return <Landing onEnterDemo={() => setShowLanding(false)} />;
+    }
     return <Login
       onLogin={(id, role) => {
         setUserId(id);

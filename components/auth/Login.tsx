@@ -4,7 +4,7 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card';
 import { cn } from '../../lib/utils';
-import { Lock } from 'lucide-react';
+import { Lock, Eye, EyeOff, Info } from 'lucide-react';
 import { setSessionToken } from '../../lib/supabase';
 
 interface LoginProps {
@@ -26,6 +26,23 @@ export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showDemoCreds, setShowDemoCreds] = useState(false);
+  const [showDemoPassword, setShowDemoPassword] = useState(false);
+
+  // DEMO credentials (placeholder — actual passwords set by owner in DEMO DB).
+  // Click a chip to autofill the form. In a real production build these
+  // would not exist; this block is gated on the DEMO_URL hostname below.
+  const isDemoBuild =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.includes('demo') ||
+      window.location.hostname === 'localhost' ||
+      window.location.hostname.startsWith('192.168.') ||
+      window.location.hostname.endsWith('.vercel.app') && window.location.hostname.startsWith('demo'));
+  const demoCreds = [
+    { label: 'Owner', login: 'owner_demo', password: 'demo_owner_123', role: 'owner', color: 'amber' },
+    { label: 'Admin', login: 'admin_demo', password: 'demo_admin_123', role: 'admin', color: 'blue' },
+    { label: 'Client (Telegram)', login: '', password: '', role: 'client', color: 'green', isClient: true },
+  ];
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,6 +139,73 @@ export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
               {loading ? 'Вход...' : 'Войти'}
             </Button>
           </form>
+
+          {isDemoBuild && (
+            <div className="mt-6 pt-4 border-t border-dashed border-amber-300">
+              <button
+                type="button"
+                onClick={() => setShowDemoCreds(!showDemoCreds)}
+                className="flex items-center gap-2 text-xs font-semibold text-amber-700 hover:text-amber-900 transition-colors"
+              >
+                <Info className="w-3.5 h-3.5" />
+                <span>Демо-аккаунты (нажмите чтобы развернуть)</span>
+              </button>
+              {showDemoCreds && (
+                <div className="mt-3 space-y-2 text-xs">
+                  <div className="flex items-center justify-between text-gray-500 mb-1">
+                    <span>Пароли в DEMO БД установлены владельцем. Если не входит — обратитесь к владельцу demo.</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowDemoPassword(!showDemoPassword)}
+                      className="text-gray-400 hover:text-gray-700"
+                      title={showDemoPassword ? 'Скрыть пароли' : 'Показать пароли'}
+                    >
+                      {showDemoPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                  {demoCreds.map((cred) => (
+                    <button
+                      key={cred.role}
+                      type="button"
+                      onClick={() => {
+                        if (cred.isClient) return;
+                        setLogin(cred.login);
+                        setPassword(cred.password);
+                        setError('');
+                      }}
+                      disabled={cred.isClient}
+                      className={cn(
+                        "w-full text-left p-2 rounded-md border transition-all hover:shadow-sm",
+                        cred.color === 'amber' && "border-amber-300 bg-amber-50 hover:bg-amber-100",
+                        cred.color === 'blue' && "border-blue-300 bg-blue-50 hover:bg-blue-100",
+                        cred.color === 'green' && "border-green-300 bg-green-50 cursor-default opacity-90",
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-semibold text-gray-900">{cred.label}</div>
+                        {cred.isClient ? (
+                          <span className="text-[10px] text-green-700 bg-green-200 px-1.5 py-0.5 rounded">через Telegram Mini App</span>
+                        ) : (
+                          <span className="text-[10px] text-gray-500 bg-white px-1.5 py-0.5 rounded border">клик → заполнить</span>
+                        )}
+                      </div>
+                      <div className="text-gray-600 mt-0.5 font-mono text-[11px]">
+                        {cred.isClient ? (
+                          <span>логин: — • пароль: —</span>
+                        ) : (
+                          <>
+                            <span>логин: {cred.login}</span>
+                            <span className="mx-1.5">•</span>
+                            <span>пароль: {showDemoPassword ? cred.password : '••••••••'}</span>
+                          </>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
