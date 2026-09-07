@@ -256,95 +256,85 @@ const VOICES = [
 // ----------------------------------------------------------------------------
 
 const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => {
-  const isEven = index % 2 === 0;
   const bgClass = s.tone === 'white' ? 'bg-white' : 'bg-slate-50';
-  const textPrimary = 'text-slate-900';
-  const textSecondary = 'text-slate-600';
-  const cardBg = s.tone === 'white' ? 'bg-slate-50' : 'bg-white';
   const borderColor = 'border-slate-200';
   const [zoom, setZoom] = useState<string | null>(null);
 
   return (
-    <section id={s.id} className={`py-20 lg:py-28 ${bgClass}`}>
-      <div className="max-w-7xl mx-auto px-6">
-        {/* Section header */}
-        <div className="flex items-baseline gap-3 mb-2">
+    <section id={s.id} className={`py-16 lg:py-20 ${bgClass}`}>
+      {/* Шапка секции — узкая, по центру */}
+      <div className="max-w-5xl mx-auto px-6 mb-8 text-center">
+        <div className="inline-flex items-baseline gap-3 mb-3">
           <span className="text-3xl lg:text-4xl">{s.emoji}</span>
           <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#7BC74D]">
             Раздел {index + 1} / {SECTIONS.length}
           </span>
         </div>
+        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-3 leading-[1.05] text-slate-900">
+          {s.title}. <span className="text-[#7BC74D]">{s.titleAccent}.</span>
+        </h2>
+        <p className="text-lg text-slate-600 leading-relaxed max-w-3xl mx-auto">{s.intro}</p>
+      </div>
 
-        <div className={`grid lg:grid-cols-12 gap-10 lg:gap-12 items-start ${isEven ? '' : 'lg:flex-row-reverse'}`}>
-          {/* LEFT: text — узкая колонка */}
-          <div className={isEven ? 'lg:col-span-4' : 'lg:col-span-4 lg:col-start-9 lg:order-2'}>
-            <h2 className={`text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-3 leading-[1.05] ${textPrimary}`}>
-              {s.title}.
-              <br />
-              <span className="text-[#7BC74D]">{s.titleAccent}.</span>
-            </h2>
-            <p className={`text-lg ${textSecondary} mb-6 leading-relaxed`}>{s.intro}</p>
+      {/* СКРИНШОТ — на всю ширину экрана; текстовые карточки overlay поверх */}
+      <div className="relative px-4 sm:px-6 lg:px-8 mb-8">
+        <button
+          type="button"
+          onClick={() => setZoom(s.image)}
+          className={`group block w-full max-w-[1600px] mx-auto rounded-2xl overflow-hidden border ${borderColor} shadow-2xl shadow-slate-900/15 bg-white cursor-zoom-in`}
+          aria-label={`Увеличить скриншот: ${s.imageAlt}`}
+        >
+          <img
+            src={s.image}
+            alt={s.imageAlt}
+            className="w-full h-auto block"
+            loading="lazy"
+          />
+        </button>
 
-            {/* Что внутри */}
-            <div className={`${cardBg} rounded-2xl border ${borderColor} p-5 mb-6`}>
-              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 mb-3">
-                Что внутри
-              </div>
-              <ul className="space-y-2.5">
-                {s.bullets.map((b, i) => (
-                  <li key={i} className="flex items-start gap-2.5 text-sm leading-snug text-slate-700">
-                    <div className="w-5 h-5 rounded-full bg-[#7BC74D] flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
-                    </div>
-                    <span>{b}</span>
-                  </li>
-                ))}
-              </ul>
-              {/* Inline Telegram CTA — только в секции moyka (online booking упоминается именно здесь) */}
-              {s.id === 'moyka' && (
-                <a
-                  href={TG_BOT_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-4 inline-flex items-center justify-center gap-2 w-full px-4 h-11 rounded-xl bg-[#229ED9] hover:bg-[#1E8FC4] text-white font-semibold transition-colors shadow-sm"
-                >
-                  <Send className="w-4 h-4" />
-                  Записаться через Telegram-бот
-                </a>
-              )}
-            </div>
-
-            {/* Проблема → Решение (без лейбла «Заключительный спич») */}
-            <div className="border-l-4 border-[#7BC74D] pl-4">
-              <div className={`text-sm ${textSecondary} leading-relaxed`}>
-                <span className="font-semibold text-slate-900">Проблема: </span>
-                {s.problem}
-              </div>
-              <div className={`text-sm ${textSecondary} leading-relaxed mt-2`}>
-                <span className="font-semibold text-[#7BC74D]">Решение: </span>
-                {s.solution}
-              </div>
-            </div>
-          </div>
-
-          {/* RIGHT: real product image — широкая колонка с zoom */}
-          <div className={isEven ? 'lg:col-span-8' : 'lg:col-span-8 lg:order-1 lg:row-start-1'}>
-            <button
-              type="button"
-              onClick={() => setZoom(s.image)}
-              className={`group block w-full rounded-3xl overflow-hidden border ${borderColor} shadow-2xl shadow-slate-900/15 bg-white cursor-zoom-in transition-transform hover:scale-[1.01]`}
-              aria-label={`Увеличить скриншот: ${s.imageAlt}`}
+        {/* Overlay-карточка с буллетами — поверх правой части скриншота (только desktop) */}
+        <div
+          className="hidden lg:block absolute top-1/2 -translate-y-1/2 right-12 xl:right-20 w-[380px] bg-white/97 backdrop-blur-md rounded-2xl border border-slate-200 shadow-2xl p-6 max-h-[80%] overflow-y-auto"
+        >
+          <ul className="space-y-3">
+            {s.bullets.map((b, i) => (
+              <li key={i} className="flex items-start gap-2.5 text-[13px] leading-snug text-slate-700">
+                <div className="w-4 h-4 rounded-full bg-[#7BC74D] flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
+                </div>
+                <span>{b}</span>
+              </li>
+            ))}
+          </ul>
+          {s.id === 'moyka' && (
+            <a
+              href={TG_BOT_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-4 inline-flex items-center justify-center gap-2 w-full px-3 h-10 rounded-lg bg-[#229ED9] hover:bg-[#1E8FC4] text-white text-sm font-semibold transition-colors"
             >
-              <img
-                src={s.image}
-                alt={s.imageAlt}
-                className="w-full h-auto block"
-                loading="lazy"
-              />
-            </button>
-            <div className="mt-2 text-center text-xs text-slate-400">
-              Кликните, чтобы рассмотреть детали →
-            </div>
+              <Send className="w-3.5 h-3.5" />
+              Записаться в Telegram
+            </a>
+          )}
+        </div>
+
+        {/* Bottom hint */}
+        <div className="max-w-7xl mx-auto mt-3 text-center text-xs text-slate-400">
+          Кликните на скриншот, чтобы открыть на весь экран →
+        </div>
+      </div>
+
+      {/* Проблема → Решение — отдельный блок под скриншотом, по центру */}
+      <div className="max-w-3xl mx-auto px-6">
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 lg:p-8">
+          <div className="text-base text-slate-600 leading-relaxed mb-3">
+            <span className="font-semibold text-slate-900">Проблема: </span>
+            {s.problem}
+          </div>
+          <div className="text-base text-slate-700 leading-relaxed">
+            <span className="font-semibold text-[#5BA634]">Решение: </span>
+            {s.solution}
           </div>
         </div>
       </div>
