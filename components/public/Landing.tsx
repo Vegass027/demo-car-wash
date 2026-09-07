@@ -1,6 +1,34 @@
 import React from 'react';
-import { Droplets, ArrowRight, Check, ChevronRight, ChevronLeft } from 'lucide-react';
+import React, { useState } from 'react';
+import { Droplets, ArrowRight, Check, ChevronRight, ChevronLeft, Send, X } from 'lucide-react';
 import { Button } from '../ui/button';
+
+// Telegram bot link — открой бота, нажми /start, бот откроет Mini App.
+const TG_BOT_URL = 'https://t.me/demo_car_wash_bot';
+
+// ----------------------------------------------------------------------------
+// Lightbox для скриншотов: клик → полноэкранный просмотр.
+// ----------------------------------------------------------------------------
+const Lightbox: React.FC<{ src: string; alt: string; onClose: () => void }> = ({ src, alt, onClose }) => (
+  <div
+    className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-6 cursor-zoom-out"
+    onClick={onClose}
+  >
+    <button
+      onClick={onClose}
+      className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center transition-colors"
+      aria-label="Закрыть"
+    >
+      <X className="w-5 h-5" />
+    </button>
+    <img
+      src={src}
+      alt={alt}
+      className="max-w-full max-h-full object-contain rounded-2xl shadow-2xl"
+      onClick={(e) => e.stopPropagation()}
+    />
+  </div>
+);
 
 interface LandingProps {
   onEnterDemo: () => void;
@@ -234,6 +262,7 @@ const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => 
   const textSecondary = 'text-slate-600';
   const cardBg = s.tone === 'white' ? 'bg-slate-50' : 'bg-white';
   const borderColor = 'border-slate-200';
+  const [zoom, setZoom] = useState<string | null>(null);
 
   return (
     <section id={s.id} className={`py-20 lg:py-28 ${bgClass}`}>
@@ -246,9 +275,9 @@ const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => 
           </span>
         </div>
 
-        <div className={`grid lg:grid-cols-12 gap-10 lg:gap-14 items-start ${isEven ? '' : 'lg:flex-row-reverse'}`}>
-          {/* LEFT: text */}
-          <div className={isEven ? 'lg:col-span-5' : 'lg:col-span-5 lg:col-start-8 lg:order-2'}>
+        <div className={`grid lg:grid-cols-12 gap-10 lg:gap-12 items-start ${isEven ? '' : 'lg:flex-row-reverse'}`}>
+          {/* LEFT: text — узкая колонка */}
+          <div className={isEven ? 'lg:col-span-4' : 'lg:col-span-4 lg:col-start-9 lg:order-2'}>
             <h2 className={`text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-3 leading-[1.05] ${textPrimary}`}>
               {s.title}.
               <br />
@@ -271,13 +300,22 @@ const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => 
                   </li>
                 ))}
               </ul>
+              {/* Inline Telegram CTA — только в секции moyka (online booking упоминается именно здесь) */}
+              {s.id === 'moyka' && (
+                <a
+                  href={TG_BOT_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-4 inline-flex items-center justify-center gap-2 w-full px-4 h-11 rounded-xl bg-[#229ED9] hover:bg-[#1E8FC4] text-white font-semibold transition-colors shadow-sm"
+                >
+                  <Send className="w-4 h-4" />
+                  Записаться через Telegram-бот
+                </a>
+              )}
             </div>
 
-            {/* Заключительный спич */}
+            {/* Проблема → Решение (без лейбла «Заключительный спич») */}
             <div className="border-l-4 border-[#7BC74D] pl-4">
-              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 mb-2">
-                Заключительный спич
-              </div>
               <div className={`text-sm ${textSecondary} leading-relaxed`}>
                 <span className="font-semibold text-slate-900">Проблема: </span>
                 {s.problem}
@@ -289,19 +327,35 @@ const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => 
             </div>
           </div>
 
-          {/* RIGHT: real product image */}
-          <div className={isEven ? 'lg:col-span-7' : 'lg:col-span-7 lg:order-1 lg:row-start-1'}>
-            <div className={`relative rounded-3xl overflow-hidden border ${borderColor} shadow-2xl shadow-slate-900/10 bg-white`}>
+          {/* RIGHT: real product image — широкая колонка с zoom */}
+          <div className={isEven ? 'lg:col-span-8' : 'lg:col-span-8 lg:order-1 lg:row-start-1'}>
+            <button
+              type="button"
+              onClick={() => setZoom(s.image)}
+              className={`group block w-full rounded-3xl overflow-hidden border ${borderColor} shadow-2xl shadow-slate-900/15 bg-white cursor-zoom-in transition-transform hover:scale-[1.01]`}
+              aria-label={`Увеличить скриншот: ${s.imageAlt}`}
+            >
               <img
                 src={s.image}
                 alt={s.imageAlt}
                 className="w-full h-auto block"
                 loading="lazy"
               />
+            </button>
+            <div className="mt-2 text-center text-xs text-slate-400">
+              Кликните, чтобы рассмотреть детали →
             </div>
           </div>
         </div>
       </div>
+
+      {zoom && (
+        <Lightbox
+          src={zoom}
+          alt={SECTIONS.find((x) => x.image === zoom)?.imageAlt ?? ''}
+          onClose={() => setZoom(null)}
+        />
+      )}
     </section>
   );
 };
@@ -363,6 +417,15 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
                 >
                   Открыть демо <ArrowRight className="w-4 h-4" />
                 </Button>
+                <a
+                  href={TG_BOT_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center gap-2 px-6 h-12 rounded-full bg-white border-2 border-[#7BC74D] text-[#5BA634] font-semibold hover:bg-[#7BC74D]/5 transition-colors shadow-sm"
+                >
+                  <Send className="w-4 h-4" />
+                  Онлайн-запись в Telegram
+                </a>
               </div>
               <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-slate-500">
                 <div className="flex items-center gap-1.5">
@@ -509,13 +572,24 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
             Открывается за один клик. Тестовые данные уже загружены — мойка, шиномонтаж,
             сотрудники, клиенты, организации. Логин и пароль покажутся на экране входа.
           </p>
-          <Button
-            onClick={onEnterDemo}
-            size="lg"
-            className="bg-white hover:bg-slate-50 text-[#5BA634] font-bold rounded-full px-8 h-13 text-base shadow-lg gap-2"
-          >
-            Войти в демо <ArrowRight className="w-5 h-5" />
-          </Button>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Button
+              onClick={onEnterDemo}
+              size="lg"
+              className="bg-white hover:bg-slate-50 text-[#5BA634] font-bold rounded-full px-8 h-13 text-base shadow-lg gap-2"
+            >
+              Войти в демо <ArrowRight className="w-5 h-5" />
+            </Button>
+            <a
+              href={TG_BOT_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-2 px-7 h-13 rounded-full bg-[#229ED9] hover:bg-[#1E8FC4] text-white font-bold text-base shadow-lg transition-colors"
+            >
+              <Send className="w-5 h-5" />
+              Открыть Telegram-бот
+            </a>
+          </div>
         </div>
       </section>
 
