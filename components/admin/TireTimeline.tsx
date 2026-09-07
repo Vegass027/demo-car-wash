@@ -46,6 +46,15 @@ export const TireTimeline: React.FC<TireTimelineProps> = ({
   const [currentTime, setCurrentTime] = React.useState(new Date());
   const timelineRef = useRef<HTMLDivElement>(null);
 
+  // ✅ Определяем, является ли запись собственной для клиента.
+  // Объявлен ДО getFilteredBookings чтобы избежать TDZ при вызове во время рендера.
+  const isOwnTireBooking = (booking: TireBooking): boolean => {
+    if (userRole !== 'client') return false;
+    const isPersonal = !!(currentProfileId && booking.created_by_profile_id === currentProfileId);
+    const isOrg = !!(booking.is_org && booking.organization_id && driverOrganizationIds.includes(booking.organization_id));
+    return isPersonal || isOrg;
+  };
+
   // Форматируем текущую дату для сравнения
   const today = formatDate(currentTime);
   const isToday = selectedDate === today;
@@ -130,14 +139,6 @@ export const TireTimeline: React.FC<TireTimelineProps> = ({
   };
 
   const cellBookings = getBookingsForCells();
-
-  // ✅ Определяем, является ли запись собственной для клиента
-  const isOwnTireBooking = (booking: TireBooking): boolean => {
-    if (userRole !== 'client') return false;
-    const isPersonal = !!(currentProfileId && booking.created_by_profile_id === currentProfileId);
-    const isOrg = !!(booking.is_org && booking.organization_id && driverOrganizationIds.includes(booking.organization_id));
-    return isPersonal || isOrg;
-  };
 
   // Определяем цвет статуса записи
   const getStatusColor = (status: string): string => {
