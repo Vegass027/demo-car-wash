@@ -28,6 +28,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { verifyJwt } from './_lib/jwt.js';
 import { LOYALTY_CONFIG } from '../shared/config/loyalty.js';
+import { recomputeBookingServices } from './_lib/booking-services.js';
 import {
   ValidationError,
   readBody,
@@ -406,6 +407,27 @@ async function createBooking(claims: { profile_id: string }, body: AnyObj): Prom
     }
   }
 
+  // (5b) Build services_with_quantities from services (UUIDs) + car_type.
+  // Без этого мойщик получает 0₽ при закрытии client-созданной брони:
+  // calculateWorkerEarnings итерирует services_with_quantities, при пустом
+  // массиве gross=0 → earnings=0. Используем тот же helper что и staff-флоу.
+  // allow_override=false: клиент НИКОГДА не получает antifreeze override.
+  // Если helper бросит — бронь всё равно создастся, но мойщик получит 0₽
+  // для этой брони (статус-кво). Не фатально.
+  let services_with_quantities: unknown = [];
+  try {
+    const recomputed = await recomputeBookingServices(supabaseAdmin, {
+      services,
+      car_type,
+      antifreeze_intents: [],
+      allow_override: false,
+      discount: 0,
+    });
+    services_with_quantities = recomputed.services_with_quantities;
+  } catch (e: any) {
+    console.error('[client:create-booking] services_with_quantities recompute failed (non-fatal):', e?.message);
+  }
+
   // (6) INSERT
   const insertPayload: AnyObj = {
     client_id: ownClientId,
@@ -424,6 +446,7 @@ async function createBooking(claims: { profile_id: string }, body: AnyObj): Prom
     plate_number,
     car_type,
     services,
+    services_with_quantities,
     price,
     payment_method,
     is_paid: false,
