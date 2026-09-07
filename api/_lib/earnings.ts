@@ -27,7 +27,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ValidationError } from './validation.js';
-import { WORKER_CONFIG } from '../../shared/config/worker.js';
+import { TIRE_TECHNICIAN_CONFIG } from '../../shared/config/worker.js';
 
 interface TireServiceItemForEarnings {
   service_id: string;
@@ -103,8 +103,10 @@ export interface TireEarningsArgs {
 // истины для analytics в lib/api/reports.ts). Дополнительно добавляем
 // короткую форму 'Сезонное хранение' (используется в DEMO seed-данных;
 // PROD использует 'Сезонное хранение резины' — обе формы покрыты).
+// IMPORTANT: storage names live in TIRE_TECHNICIAN_CONFIG (не WORKER_CONFIG —
+// тот только для carwash BASE_SALARY/PERCENTAGE).
 const STORAGE_SERVICE_NAMES = new Set<string>([
-  ...WORKER_CONFIG.STORAGE_SERVICE_NAMES,
+  ...TIRE_TECHNICIAN_CONFIG.STORAGE_SERVICE_NAMES,
   'Сезонное хранение',
 ]);
 
