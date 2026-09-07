@@ -469,14 +469,18 @@ useEffect(() => {
             <Users className="w-4 h-4 mr-2" />
             Условия персонала
           </Button>
-          <Button
-            size="default"
-            className="w-full h-10 text-base bg-black text-white hover:bg-gray-800"
-            onClick={() => setShowChangePasswordWizard(true)}
-          >
-            <Key className="w-4 h-4 mr-2" />
-            Смена пароля
-          </Button>
+          {/* Смена пароля отключена в DEMO-сборке (чтобы зритель демо не мог поменять пароль).
+              Раскомментируйте блок ниже, если нужно разрешить смену пароля. */}
+          {false && (
+            <Button
+              size="default"
+              className="w-full h-10 text-base bg-black text-white hover:bg-gray-800"
+              onClick={() => setShowChangePasswordWizard(true)}
+            >
+              <Key className="w-4 h-4 mr-2" />
+              Смена пароля
+            </Button>
+          )}
         </div>
       )}
 
@@ -1712,8 +1716,8 @@ useEffect(() => {
         document.body
       )}
 
-      {/* Мастер смены пароля */}
-      {showChangePasswordWizard && createPortal(
+      {/* Мастер смены пароля — ЗАКОММЕНТИРОВАНО в DEMO-сборке (чтобы никто не менял пароли) */}
+      {/* {false && showChangePasswordWizard && createPortal(
         <div className="fixed inset-0 w-full h-full bg-white z-50 overflow-auto">
           <div className="max-w-2xl mx-auto px-4 py-6">
             <ChangePasswordWizard
@@ -1723,7 +1727,7 @@ useEffect(() => {
           </div>
         </div>,
         document.body
-      )}
+      )} */}
     </div>
   );
 };

@@ -148,26 +148,26 @@ export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
           </form>
 
           {isDemoBuild && (
-            <div className="mt-6 pt-4 border-t border-dashed border-amber-300">
+            <div className="mt-6 pt-4 border-t-2 border-amber-400 bg-amber-50 rounded-lg p-4 -mx-2">
               <button
                 type="button"
                 onClick={() => setShowDemoCreds(!showDemoCreds)}
-                className="flex items-center gap-2 text-xs font-semibold text-amber-700 hover:text-amber-900 transition-colors"
+                className="w-full flex items-center justify-center gap-2 text-base font-bold text-amber-900 hover:text-amber-700 transition-colors py-2"
               >
-                <Info className="w-3.5 h-3.5" />
-                <span>Демо-аккаунты (нажмите чтобы развернуть)</span>
+                <Info className="w-5 h-5" />
+                <span>Демо акаунты разверни чтобы получить логи и пароль</span>
               </button>
               {showDemoCreds && (
-                <div className="mt-3 space-y-2 text-xs">
-                  <div className="flex items-center justify-between text-gray-500 mb-1">
-                    <span>Пароли в DEMO БД установлены владельцем. Если не входит — обратитесь к владельцу demo.</span>
+                <div className="mt-4 space-y-2 text-xs">
+                  <div className="flex items-center justify-end mb-2">
                     <button
                       type="button"
                       onClick={() => setShowDemoPassword(!showDemoPassword)}
-                      className="text-gray-400 hover:text-gray-700"
+                      className="text-gray-500 hover:text-gray-800 flex items-center gap-1 text-xs"
                       title={showDemoPassword ? 'Скрыть пароли' : 'Показать пароли'}
                     >
-                      {showDemoPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      {showDemoPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      <span>{showDemoPassword ? 'Скрыть' : 'Показать'}</span>
                     </button>
                   </div>
                   {demoCreds.map((cred) => (
