@@ -27,6 +27,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { ValidationError } from './validation.js';
+import { WORKER_CONFIG } from '../../shared/config/worker.js';
 
 interface TireServiceItemForEarnings {
   service_id: string;
@@ -98,11 +99,13 @@ export interface TireEarningsArgs {
   storage_fee: number;        // from settings.tire_worker_storage_fee, default 300
 }
 
-// Storage service slugs match shared/config/worker.ts
-const STORAGE_SERVICE_NAMES = new Set([
-  'Хранение резины (сезон)',
-  'Хранение резины (месяц)',
-  'Хранение',
+// Storage service slugs imported from shared/config/worker.ts (единый источник
+// истины для analytics в lib/api/reports.ts). Дополнительно добавляем
+// короткую форму 'Сезонное хранение' (используется в DEMO seed-данных;
+// PROD использует 'Сезонное хранение резины' — обе формы покрыты).
+const STORAGE_SERVICE_NAMES = new Set<string>([
+  ...WORKER_CONFIG.STORAGE_SERVICE_NAMES,
+  'Сезонное хранение',
 ]);
 
 export function calculateTireEarnings(args: TireEarningsArgs): {
