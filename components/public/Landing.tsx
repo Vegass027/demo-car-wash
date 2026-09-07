@@ -282,7 +282,9 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
             <a href="#tire" className="hover:text-slate-900 transition-colors">Шиномонтаж</a>
             <a href="#online" className="hover:text-slate-900 transition-colors">Запись</a>
             <a href="#staff" className="hover:text-slate-900 transition-colors">Персонал</a>
-            <a href="#garage" className="hover:text-slate-900 transition-colors">Клиенты</a>
+            <a href="#analytics" className="hover:text-slate-900 transition-colors">Аналитика</a>
+            <a href="#admins" className="hover:text-slate-900 transition-colors">Админы</a>
+            <a href="#reports" className="hover:text-slate-900 transition-colors">Отчёты</a>
           </div>
           <Button
             onClick={onEnterDemo}
@@ -579,6 +581,255 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
                 <div className="text-xs text-slate-500 leading-snug">{s.label}</div>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* АНАЛИТИКА — KPI dashboard inline mockup */}
+      <section id="analytics" className="py-20 lg:py-24 bg-white">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="grid lg:grid-cols-12 gap-12 items-start">
+            <div className="lg:col-span-5">
+              <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-6 leading-[1.1]">
+                Аналитика&nbsp;для&nbsp;владельца.
+                <br />
+                Не&nbsp;в&nbsp;Excel.
+              </h2>
+              <p className="text-lg text-slate-600 mb-6 leading-relaxed">
+                Вся финансовая картина в одном экране. Сколько заработали,
+                сколько потратили, что осталось. По любому периоду.
+              </p>
+              <div className="space-y-3">
+                {[
+                  'Выручка, расходы, чистая прибыль — KPI в реальном времени',
+                  'Разбивка расходов по категориям с историей правок',
+                  'Графики выручки за день / неделю / месяц / любой период',
+                  'Сравнение периодов: «как сейчас» vs «как было»',
+                ].map((t) => (
+                  <div key={t} className="flex items-start gap-3">
+                    <div className="w-5 h-5 rounded-full bg-[#7BC74D] flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </div>
+                    <span className="text-slate-700">{t}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xl shadow-slate-200/40">
+              <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-widest text-slate-400 font-semibold">Сентябрь 2026</div>
+                  <div className="text-lg font-bold text-slate-900">Сводка периода</div>
+                </div>
+                <div className="text-[10px] px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 font-semibold">+18%</div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-slate-100 border-b border-slate-100">
+                {[
+                  { label: 'Выручка', value: '684К ₽', delta: '+12%', color: 'text-emerald-600' },
+                  { label: 'Расходы', value: '128К ₽', delta: '−4%', color: 'text-rose-600' },
+                  { label: 'Зарплаты', value: '142К ₽', delta: '+8%', color: 'text-amber-600' },
+                  { label: 'Прибыль', value: '414К ₽', delta: '+22%', color: 'text-violet-600' },
+                ].map((k) => (
+                  <div key={k.label} className="p-4 text-center">
+                    <div className="text-[10px] uppercase tracking-widest text-slate-400 font-semibold">{k.label}</div>
+                    <div className={cn('text-xl font-bold mt-1', k.color)}>{k.value}</div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">{k.delta}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="p-5">
+                <svg viewBox="0 0 400 100" className="w-full h-24">
+                  <defs>
+                    <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#10b981" stopOpacity="0.3" />
+                      <stop offset="100%" stopColor="#10b981" stopOpacity="0" />
+                    </linearGradient>
+                  </defs>
+                  <path d="M 0 80 L 33 70 L 66 75 L 100 60 L 133 65 L 166 45 L 200 50 L 233 35 L 266 40 L 300 25 L 333 30 L 366 15 L 400 10" fill="url(#ag)" />
+                  <path d="M 0 80 L 33 70 L 66 75 L 100 60 L 133 65 L 166 45 L 200 50 L 233 35 L 266 40 L 300 25 L 333 30 L 366 15 L 400 10" stroke="#10b981" strokeWidth="2" fill="none" />
+                </svg>
+                <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+                  <span>1 сен</span><span>10</span><span>20</span><span>30</span>
+                </div>
+              </div>
+              <div className="border-t border-slate-100 p-4 bg-slate-50">
+                <div className="text-[10px] uppercase tracking-widest text-slate-400 font-semibold mb-2">Расходы по категориям</div>
+                <div className="space-y-1.5">
+                  {[
+                    { name: 'Чай/Кофе', v: 18, max: 40, color: 'bg-amber-500' },
+                    { name: 'Ремонт', v: 32, max: 40, color: 'bg-rose-500' },
+                    { name: 'Коммуналка', v: 48, max: 60, color: 'bg-blue-500' },
+                    { name: 'Канцелярия', v: 6, max: 60, color: 'bg-violet-500' },
+                  ].map((c) => (
+                    <div key={c.name} className="flex items-center gap-3 text-xs">
+                      <div className="w-24 text-slate-600">{c.name}</div>
+                      <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                        <div className={cn('h-full', c.color)} style={{ width: `${(c.v / c.max) * 100}%` }} />
+                      </div>
+                      <div className="w-16 text-right text-slate-900 font-medium">{c.v * 1000} ₽</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* СВОДКА АДМИНОВ — admin cards inline mockup */}
+      <section id="admins" className="py-20 lg:py-24 bg-slate-50">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="grid lg:grid-cols-12 gap-12 items-start">
+            <div className="lg:col-span-5">
+              <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-6 leading-[1.1]">
+                Сводка&nbsp;админов.
+                <br />
+                Кто&nbsp;работает, кто&nbsp;закрыл&nbsp;смену.
+              </h2>
+              <p className="text-lg text-slate-600 mb-6 leading-relaxed">
+                Все админы на одном экране. Смена открыта/закрыта,
+                зарплата начислена, аванс выдан. Кнопки для действий в один клик.
+              </p>
+              <div className="space-y-3">
+                {[
+                  'Список всех админов с фотографиями и контактами',
+                  'Открытие/закрытие смены, история транзакций по каждому',
+                  'Выдача аванса, перевод заработанного в баланс, выплата',
+                  'История всех операций с возможностью отката',
+                ].map((t) => (
+                  <div key={t} className="flex items-start gap-3">
+                    <div className="w-5 h-5 rounded-full bg-[#7BC74D] flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </div>
+                    <span className="text-slate-700">{t}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="lg:col-span-7 space-y-4">
+              {[
+                { initials: 'О', name: 'Ольга Морозова', phone: '+7 999 222-11-33', shift: 'В работе · с 09:00', earned: '4 200 ₽', balance: '1 580 ₽', accent: 'from-rose-400 to-rose-600' },
+                { initials: 'Д', name: 'Дмитрий Козлов', phone: '+7 999 333-22-44', shift: 'В работе · с 08:00', earned: '3 800 ₽', balance: '920 ₽', accent: 'from-blue-400 to-blue-600' },
+                { initials: 'А', name: 'Анна Соколова', phone: '+7 999 444-33-55', shift: 'Смена закрыта · 18:00', earned: '5 100 ₽', balance: '0 ₽', accent: 'from-violet-400 to-violet-600' },
+              ].map((a) => (
+                <div key={a.name} className="bg-white rounded-2xl border border-slate-200 p-5 hover:shadow-lg hover:shadow-slate-200/40 transition-all">
+                  <div className="flex items-center gap-4 mb-4">
+                    <div className={cn('w-14 h-14 rounded-2xl flex items-center justify-center text-white font-bold text-xl bg-gradient-to-br', a.accent)}>
+                      {a.initials}
+                    </div>
+                    <div className="flex-1">
+                      <div className="font-bold text-slate-900">{a.name}</div>
+                      <div className="text-sm text-slate-500">{a.phone}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">{a.shift}</div>
+                    </div>
+                    <button className="px-3 py-1.5 text-xs font-medium bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200">
+                      Выплатить
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 pt-4 border-t border-slate-100">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-widest text-slate-400">Заработано</div>
+                      <div className="text-lg font-bold text-slate-900">{a.earned}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-widest text-slate-400">В балансе</div>
+                      <div className={cn('text-lg font-bold', a.balance === '0 ₽' ? 'text-slate-400' : 'text-emerald-600')}>{a.balance}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ОТЧЁТЫ / ВЕДОМОСТИ / PDF */}
+      <section id="reports" className="py-20 lg:py-24 bg-white">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="grid lg:grid-cols-2 gap-12 items-center">
+            <div className="order-2 lg:order-1">
+              <div className="relative max-w-md mx-auto">
+                {/* PDF document mockup */}
+                <div className="bg-white rounded-lg shadow-2xl shadow-slate-900/20 border border-slate-200 overflow-hidden">
+                  <div className="bg-slate-50 px-4 py-2 border-b border-slate-200 flex items-center justify-between">
+                    <div className="text-[10px] text-slate-500 font-mono">SCHET-2026-09-084.pdf</div>
+                    <div className="flex gap-1">
+                      <div className="w-2 h-2 rounded-full bg-red-400" />
+                      <div className="w-2 h-2 rounded-full bg-amber-400" />
+                      <div className="w-2 h-2 rounded-full bg-green-400" />
+                    </div>
+                  </div>
+                  <div className="p-5 space-y-3">
+                    <div className="text-center pb-3 border-b border-slate-200">
+                      <div className="text-[9px] uppercase tracking-widest text-slate-500">Счёт на оплату</div>
+                      <div className="text-xl font-bold text-slate-900 mt-1">№ 2026-09-084</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">от 5 сентября 2026</div>
+                    </div>
+                    <div className="text-[11px] space-y-2">
+                      <div className="flex justify-between"><span className="text-slate-500">Получатель:</span><span className="font-semibold text-slate-900">ИП Горячкин М. Г.</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">Плательщик:</span><span className="font-semibold text-slate-900">ООО «Южный Метрологический Центр»</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">ИНН:</span><span className="font-mono text-slate-700">614315195201</span></div>
+                    </div>
+                    <div className="border-t border-b border-slate-200 py-2 space-y-1.5 text-[11px]">
+                      <div className="flex justify-between font-semibold">
+                        <span>Сезонная смена шин × 4</span>
+                        <span>2 000 ₽</span>
+                      </div>
+                      <div className="flex justify-between text-slate-500">
+                        <span>Балансировка × 4</span>
+                        <span>800 ₽</span>
+                      </div>
+                    </div>
+                    <div className="flex justify-between text-base font-bold border-t border-slate-200 pt-2">
+                      <span>Итого:</span>
+                      <span>2 800 ₽</span>
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 px-5 py-2 border-t border-slate-200 flex items-center justify-between">
+                    <div className="text-[10px] text-slate-500">Подпись: ✓ получена стилусом</div>
+                    <div className="text-[10px] text-[#7BC74D] font-semibold">✓ Оплачено</div>
+                  </div>
+                </div>
+                {/* Floating: PDF export button */}
+                <div className="absolute -bottom-3 -right-3 bg-white rounded-xl shadow-lg border border-slate-200 px-4 py-3 flex items-center gap-2">
+                  <div className="w-9 h-9 rounded-lg bg-rose-500 flex items-center justify-center text-white">
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M6 20V4h7v5h5v11z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-widest text-slate-400 font-semibold">Экспорт</div>
+                    <div className="text-sm font-bold text-slate-900">PDF · 1 клик</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="order-1 lg:order-2">
+              <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-6 leading-[1.1]">
+                Счета, акты, ведомости.
+                <br />
+                Без&nbsp;бумаги.
+              </h2>
+              <p className="text-lg text-slate-600 mb-6 leading-relaxed">
+                Все документы для бухгалтерии формируются в один клик —
+                с реквизитами компании, печатью и подписью клиента стилусом.
+              </p>
+              <div className="space-y-3">
+                {[
+                  'Счета на оплату с авто-нумерацией и реквизитами юрлица',
+                  'Акты выполненных работ с подписью стилусом на экране',
+                  'Ведомости по организациям — ежемесячно для каждого клиента',
+                  'История всех документов с возможностью повторной генерации',
+                ].map((t) => (
+                  <div key={t} className="flex items-start gap-3">
+                    <div className="w-5 h-5 rounded-full bg-[#7BC74D] flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                    </div>
+                    <span className="text-slate-700">{t}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </section>
