@@ -257,12 +257,13 @@ const VOICES = [
 
 const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => {
   const bgClass = s.tone === 'white' ? 'bg-white' : 'bg-slate-50';
+  const cardBg = s.tone === 'white' ? 'bg-slate-50' : 'bg-white';
   const borderColor = 'border-slate-200';
   const [zoom, setZoom] = useState<string | null>(null);
 
   return (
     <section id={s.id} className={`py-16 lg:py-20 ${bgClass}`}>
-      {/* Шапка секции — узкая, по центру */}
+      {/* Шапка секции — заголовок центрирован */}
       <div className="max-w-5xl mx-auto px-6 mb-8 text-center">
         <div className="inline-flex items-baseline gap-3 mb-3">
           <span className="text-3xl lg:text-4xl">{s.emoji}</span>
@@ -276,12 +277,13 @@ const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => 
         <p className="text-lg text-slate-600 leading-relaxed max-w-3xl mx-auto">{s.intro}</p>
       </div>
 
-      {/* СКРИНШОТ — на всю ширину экрана; текстовые карточки overlay поверх */}
-      <div className="relative px-4 sm:px-6 lg:px-8 mb-8">
+      {/* СКРИНШОТ — ограничен max-w (на ~15% меньше чем полный max-w-7xl = 1280px),
+          чтобы текстовые блоки снизу не конкурировали за ширину */}
+      <div className="px-4 sm:px-6 lg:px-8 mb-8">
         <button
           type="button"
           onClick={() => setZoom(s.image)}
-          className={`group block w-full max-w-[1600px] mx-auto rounded-2xl overflow-hidden border ${borderColor} shadow-2xl shadow-slate-900/15 bg-white cursor-zoom-in`}
+          className={`group block w-full max-w-[1100px] mx-auto rounded-2xl overflow-hidden border ${borderColor} shadow-2xl shadow-slate-900/15 bg-white cursor-zoom-in transition-transform hover:scale-[1.005]`}
           aria-label={`Увеличить скриншот: ${s.imageAlt}`}
         >
           <img
@@ -291,50 +293,49 @@ const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => 
             loading="lazy"
           />
         </button>
-
-        {/* Overlay-карточка с буллетами — поверх правой части скриншота (только desktop) */}
-        <div
-          className="hidden lg:block absolute top-1/2 -translate-y-1/2 right-12 xl:right-20 w-[380px] bg-white/97 backdrop-blur-md rounded-2xl border border-slate-200 shadow-2xl p-6 max-h-[80%] overflow-y-auto"
-        >
-          <ul className="space-y-3">
-            {s.bullets.map((b, i) => (
-              <li key={i} className="flex items-start gap-2.5 text-[13px] leading-snug text-slate-700">
-                <div className="w-4 h-4 rounded-full bg-[#7BC74D] flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />
-                </div>
-                <span>{b}</span>
-              </li>
-            ))}
-          </ul>
-          {s.id === 'moyka' && (
-            <a
-              href={TG_BOT_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-4 inline-flex items-center justify-center gap-2 w-full px-3 h-10 rounded-lg bg-[#229ED9] hover:bg-[#1E8FC4] text-white text-sm font-semibold transition-colors"
-            >
-              <Send className="w-3.5 h-3.5" />
-              Записаться в Telegram
-            </a>
-          )}
-        </div>
-
-        {/* Bottom hint */}
         <div className="max-w-7xl mx-auto mt-3 text-center text-xs text-slate-400">
           Кликните на скриншот, чтобы открыть на весь экран →
         </div>
       </div>
 
-      {/* Проблема → Решение — отдельный блок под скриншотом, по центру */}
-      <div className="max-w-3xl mx-auto px-6">
-        <div className="bg-white rounded-2xl border border-slate-200 p-6 lg:p-8">
-          <div className="text-base text-slate-600 leading-relaxed mb-3">
-            <span className="font-semibold text-slate-900">Проблема: </span>
-            {s.problem}
+      {/* Текстовая часть — две колонки ПОД скриншотом (НЕ поверх) */}
+      <div className="max-w-5xl mx-auto px-6">
+        <div className="grid md:grid-cols-2 gap-6 lg:gap-10">
+          {/* Что внутри */}
+          <div className={`${cardBg} rounded-2xl border ${borderColor} p-6`}>
+            <ul className="space-y-3">
+              {s.bullets.map((b, i) => (
+                <li key={i} className="flex items-start gap-2.5 text-sm leading-snug text-slate-700">
+                  <div className="w-5 h-5 rounded-full bg-[#7BC74D] flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                  </div>
+                  <span>{b}</span>
+                </li>
+              ))}
+            </ul>
+            {s.id === 'moyka' && (
+              <a
+                href={TG_BOT_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-5 inline-flex items-center justify-center gap-2 w-full px-4 h-12 rounded-xl bg-[#229ED9] hover:bg-[#1E8FC4] text-white font-semibold transition-colors shadow-sm"
+              >
+                <Send className="w-4 h-4" />
+                Записаться через Telegram-бот
+              </a>
+            )}
           </div>
-          <div className="text-base text-slate-700 leading-relaxed">
-            <span className="font-semibold text-[#5BA634]">Решение: </span>
-            {s.solution}
+
+          {/* Проблема → Решение */}
+          <div className="border-l-4 border-[#7BC74D] pl-5 flex flex-col justify-center">
+            <div className="text-base text-slate-600 leading-relaxed mb-3">
+              <span className="font-semibold text-slate-900">Проблема: </span>
+              {s.problem}
+            </div>
+            <div className="text-base text-slate-700 leading-relaxed">
+              <span className="font-semibold text-[#5BA634]">Решение: </span>
+              {s.solution}
+            </div>
           </div>
         </div>
       </div>
