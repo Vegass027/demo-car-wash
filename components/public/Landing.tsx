@@ -329,23 +329,23 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
 
         {/* Текст в рамке справа (3/12 колонок на PC) — sticky-колонка
             с индивидуальным размером текста и высотой рамки,
-            подобранной под высоту картинки (см. SECTIONS). */}
-        <div className="lg:col-span-3 lg:sticky lg:top-24">
+            подобранной под высоту картинки (см. SECTIONS).
+            overflow-y НЕТ — текст НЕ скроллится внутри рамки,
+            выходит за её границы если параграфов больше. */}
+        <div className="lg:col-span-3">
           <div
-            className={`bg-white border-2 border-slate-200 rounded-2xl shadow-sm overflow-y-auto ${
+            className={`bg-white border-2 border-slate-200 rounded-2xl shadow-sm ${
               s.paddingScale === 1 ? 'p-4' : s.paddingScale === 1.5 ? 'p-6' : 'p-5'
             }`}
-            style={{ maxHeight: `${s.frameMaxHeight}px` }}
+            style={{ minHeight: `${s.frameMaxHeight}px` }}
           >
             {s.paragraphs.map((p, i) => {
-              // textSize → Tailwind класс
               const sizeMap = {
                 xs: 'text-xs',
                 sm: 'text-sm',
                 base: 'text-base',
                 lg: 'text-lg',
               } as const;
-              // Размер оранжевой ● тоже масштабируется
               const dotSizeMap = {
                 xs: 'w-1.5 h-1.5 mt-1.5',
                 sm: 'w-1.5 h-1.5 mt-1.5',
