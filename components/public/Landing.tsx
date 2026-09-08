@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, type ReactNode } from 'react';
-import { ArrowRight, Check, X, ChevronDown, Droplets } from 'lucide-react';
+import { ArrowRight, Check, X, ChevronDown, Droplets, Phone, Send } from 'lucide-react';
 import { Button } from '../ui/button';
 
 // Telegram bot link — открой бота, нажми /start, бот откроет Mini App.
@@ -8,6 +8,7 @@ const TG_BOT_URL = 'https://t.me/demo_car_wash_bot';
 // Акцентный цвет сайта — зелёный #5BA634 (тёмный) / #7BC74D (светлый).
 const ACCENT_GREEN = '#5BA634';
 const ACCENT_GREEN_LIGHT = '#7BC74D';
+const ACCENT_ORANGE = '#F97316'; // для мобильных буллетов ●
 
 // Helper: span с зелёным акцентом (полужирный).
 const G = ({ children }: { children: ReactNode }) => (
@@ -282,12 +283,17 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
         </div>
       </div>
 
-      {/* Текст в рамке */}
+      {/* Текст в рамке — на мобиле меньше и с оранжевым ● перед каждым абзацем */}
       <div className="max-w-3xl mx-auto px-6">
-        <div className="bg-white border-2 border-slate-200 rounded-2xl p-6 lg:p-8 shadow-sm">
+        <div className="bg-white border-2 border-slate-200 rounded-2xl p-5 sm:p-6 lg:p-8 shadow-sm">
           {s.paragraphs.map((p, i) => (
-            <p key={i} className="text-lg sm:text-xl font-medium text-slate-700 leading-relaxed mb-5 last:mb-0">
-              {p}
+            <p key={i} className="text-base sm:text-xl font-medium text-slate-700 leading-relaxed mb-5 last:mb-0 flex items-start gap-2.5 sm:gap-3">
+              <span
+                className="flex-shrink-0 mt-2 sm:mt-2.5 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full"
+                style={{ backgroundColor: ACCENT_ORANGE }}
+                aria-hidden="true"
+              />
+              <span className="flex-1">{p}</span>
             </p>
           ))}
         </div>
@@ -331,26 +337,25 @@ const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
 
   return (
     <nav className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100">
-      <div className="max-w-7xl mx-auto px-6 h-16 flex items-center gap-6">
-        {/* Логотип */}
-        <div className="flex items-center gap-2.5">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 h-16 flex items-center gap-2 sm:gap-6">
+        {/* Логотип (на мобиле только иконка, на PC — иконка + название) */}
+        <div className="flex items-center gap-2.5 flex-shrink-0">
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#7BC74D] to-[#5BA634] flex items-center justify-center">
             <Droplets className="w-5 h-5 text-white" />
           </div>
-          <div className="leading-tight">
+          <div className="leading-tight hidden sm:block">
             <div className="font-bold text-[17px] tracking-tight">Автомойка CRM</div>
-            <div className="text-[10px] text-slate-500 tracking-widest uppercase">Demo</div>
           </div>
         </div>
 
-        {/* Выпадающее меню разделов */}
-        <div className="relative" ref={ref}>
+        {/* Выпадающее меню разделов — центрируется на всех ширинах */}
+        <div className="relative flex-1 flex justify-center" ref={ref}>
           <button
             type="button"
             onClick={() => setOpen((o) => !o)}
             aria-expanded={open}
             aria-haspopup="menu"
-            className="inline-flex items-center gap-2 h-10 px-4 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
+            className="inline-flex items-center gap-2 h-10 px-3 sm:px-4 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
           >
             <span>Разделы</span>
             <ChevronDown
@@ -361,7 +366,7 @@ const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
           {open && (
             <div
               role="menu"
-              className="absolute top-full left-0 mt-2 w-[300px] max-h-[80vh] overflow-y-auto bg-white border border-slate-200 rounded-2xl shadow-2xl shadow-slate-900/15 py-2 z-30"
+              className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-[300px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto bg-white border border-slate-200 rounded-2xl shadow-2xl shadow-slate-900/15 py-2 z-30"
             >
               {SECTIONS.map((s) => (
                 <a
@@ -387,7 +392,7 @@ const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
         {/* Кнопка Войти в демо */}
         <Button
           onClick={onEnterDemo}
-          className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-5 h-10 gap-1.5 shadow-sm"
+          className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-3 sm:px-5 h-10 gap-1.5 shadow-sm flex-shrink-0"
         >
           Войти в демо <ArrowRight className="w-4 h-4" />
         </Button>
@@ -398,7 +403,7 @@ const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
 
 export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
   return (
-    <div className="min-h-screen bg-white text-slate-900 font-sans antialiased">
+    <div className="min-h-screen bg-white text-slate-900 font-sans antialiased overflow-x-hidden">
       {/* NAV — только выпадающее меню разделов + кнопка Войти в демо */}
       <Nav onEnterDemo={onEnterDemo} />
 
@@ -480,54 +485,56 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
       </section>
 
       {/* FOOTER */}
-      <footer className="py-12 bg-slate-900 text-slate-400">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-8 mb-8">
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#7BC74D] to-[#5BA634] flex items-center justify-center">
-                  <Droplets className="w-4 h-4 text-white" />
-                </div>
-                <div className="font-bold text-white">Автомойка CRM</div>
-              </div>
-              <div className="text-sm leading-relaxed">
-                Восемь разделов для мойки и шиномонтажа. Telegram-бот для записи,
-                онлайн-оплата, чеки 54-ФЗ.
-              </div>
-            </div>
-            <div>
-              <div className="text-white font-semibold text-sm mb-3">Разделы 1–4</div>
-              <div className="space-y-1.5 text-sm">
-                {SECTIONS.slice(0, 4).map((s) => (
-                  <a key={s.id} href={`#${s.id}`} className="block hover:text-white transition-colors">
-                    {s.emoji} {s.title}
-                  </a>
-                ))}
-              </div>
-            </div>
-            <div>
-              <div className="text-white font-semibold text-sm mb-3">Разделы 5–8</div>
-              <div className="space-y-1.5 text-sm">
-                {SECTIONS.slice(4).map((s) => (
-                  <a key={s.id} href={`#${s.id}`} className="block hover:text-white transition-colors">
-                    {s.emoji} {s.title}
-                  </a>
-                ))}
-              </div>
-            </div>
-            <div>
-              <div className="text-white font-semibold text-sm mb-3">Демо</div>
-              <div className="space-y-1.5 text-sm">
-                <button onClick={onEnterDemo} className="block hover:text-white transition-colors">
-                  Открыть демо
-                </button>
-                <div className="text-xs text-slate-500">Тестовые данные · Demo-аккаунты</div>
-              </div>
+      {/* Блок Контакты (в рамке, виден и на PC, и на мобиле) */}
+      <section className="py-12 bg-white">
+        <div className="max-w-3xl mx-auto px-6">
+          <div className="bg-white border-2 border-slate-200 rounded-2xl p-6 shadow-sm">
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-5 leading-tight text-slate-900 text-center">
+              Контакты
+            </h2>
+            <div className="space-y-3">
+              <a
+                href="tel:+79930838101"
+                className="flex items-center gap-3 text-base sm:text-lg text-slate-700 hover:text-[#5BA634] transition-colors"
+              >
+                <span
+                  className="flex-shrink-0 w-10 h-10 rounded-full bg-[#7BC74D]/10 flex items-center justify-center"
+                  aria-hidden="true"
+                >
+                  <Phone className="w-5 h-5 text-[#5BA634]" />
+                </span>
+                <span className="font-medium">+7 993 083 81 01</span>
+              </a>
+              <a
+                href="https://t.me/ivanov1331"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 text-base sm:text-lg text-slate-700 hover:text-[#229ED9] transition-colors"
+              >
+                <span
+                  className="flex-shrink-0 w-10 h-10 rounded-full bg-[#229ED9]/10 flex items-center justify-center"
+                  aria-hidden="true"
+                >
+                  <Send className="w-5 h-5 text-[#229ED9]" />
+                </span>
+                <span className="font-medium">@ivanov1331</span>
+              </a>
             </div>
           </div>
-          <div className="pt-6 border-t border-slate-800 text-xs flex flex-wrap items-center justify-between gap-2">
-            <div>© Автомойка CRM · demo-сборка</div>
-            <div className="text-slate-500">8 разделов · 8 реальных скриншотов</div>
+        </div>
+      </section>
+
+      {/* FOOTER — упрощённый: только логотип + центрированный копирайт */}
+      <footer className="py-10 bg-slate-900 text-slate-400">
+        <div className="max-w-7xl mx-auto px-6 text-center">
+          <div className="flex items-center justify-center gap-2 mb-4">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#7BC74D] to-[#5BA634] flex items-center justify-center">
+              <Droplets className="w-4 h-4 text-white" />
+            </div>
+            <div className="font-bold text-white">Автомойка CRM</div>
+          </div>
+          <div className="text-xs text-slate-500">
+            © Автомойка CRM · demo-сборка
           </div>
         </div>
       </footer>
