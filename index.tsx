@@ -31,14 +31,10 @@ window.addEventListener('resize', setVh);
 window.addEventListener('orientationchange', setVh);
 
 // Регистрируем Service Worker для PWA (только если поддерживается)
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
-      .catch((error) => {
-        console.error('ServiceWorker registration failed: ', error);
-      });
-  });
-}
+// Service Worker DISABLED — он кешировал только /index.html без JS chunks,
+// что после каждого деплоя давало белый экран (старый HTML ссылается на
+// уже удалённый bundle). Если нужна offline-логика — реализовать через
+// Workbox precaching или вернуть аккуратную cache-стратегию.
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
