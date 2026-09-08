@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, type ReactNode } from 'react';
-import { ArrowRight, Check, X, ChevronDown } from 'lucide-react';
+import { ArrowRight, Check, X, ChevronDown, Droplets } from 'lucide-react';
 import { Button } from '../ui/button';
 
 // Telegram bot link — открой бота, нажми /start, бот откроет Mini App.
@@ -331,7 +331,18 @@ const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
 
   return (
     <nav className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100">
-      <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
+      <div className="max-w-7xl mx-auto px-6 h-16 flex items-center gap-6">
+        {/* Логотип */}
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#7BC74D] to-[#5BA634] flex items-center justify-center">
+            <Droplets className="w-5 h-5 text-white" />
+          </div>
+          <div className="leading-tight">
+            <div className="font-bold text-[17px] tracking-tight">Автомойка CRM</div>
+            <div className="text-[10px] text-slate-500 tracking-widest uppercase">Demo</div>
+          </div>
+        </div>
+
         {/* Выпадающее меню разделов */}
         <div className="relative" ref={ref}>
           <button
