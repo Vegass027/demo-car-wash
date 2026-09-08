@@ -257,17 +257,19 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
 
   return (
     <section id={s.id} className={`py-16 lg:py-20 ${bgClass}`}>
-      <div className="max-w-6xl mx-auto px-6 mb-8 text-center">
+      <div className="max-w-7xl mx-auto px-6 mb-8 text-center">
         <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-3 leading-[1.05] text-slate-900">
           <span className="mr-2 text-4xl lg:text-5xl">{s.emoji}</span>
           {s.title}. <span style={{ color: ACCENT_GREEN_LIGHT }}>{s.titleAccent}</span>
         </h2>
       </div>
 
-      {/* Картинка слева + текст в рамке справа на одной линии (на PC), стек на мобиле */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 mb-8 grid lg:grid-cols-12 gap-6 lg:gap-8 items-start">
-        {/* Картинка слева (8/12 колонок на PC) */}
-        <div className="lg:col-span-8">
+      {/* Картинка слева + текст в рамке справа на одной линии (на PC), стек на мобиле.
+          max-w-7xl (1280px) + col-span-9 image + col-span-3 text —
+          картинка использует почти всю ширину страницы. */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mb-8 grid lg:grid-cols-12 gap-6 lg:gap-6 items-start">
+        {/* Картинка слева (9/12 колонок на PC) — большая, на всю ширину */}
+        <div className="lg:col-span-9">
           <button
             type="button"
             onClick={() => setZoom(s.image)}
@@ -286,11 +288,11 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
           </div>
         </div>
 
-        {/* Текст в рамке справа (4/12 колонок на PC) — на одной линии с картинкой */}
-        <div className="lg:col-span-4 lg:sticky lg:top-24">
-          <div className="bg-white border-2 border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm">
+        {/* Текст в рамке справа (3/12 колонок на PC) — компактная колонка, sticky */}
+        <div className="lg:col-span-3 lg:sticky lg:top-24">
+          <div className="bg-white border-2 border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
             {s.paragraphs.map((p, i) => (
-              <p key={i} className="text-sm sm:text-base font-medium text-slate-700 leading-relaxed mb-4 last:mb-0 flex items-start gap-2.5">
+              <p key={i} className="text-xs sm:text-sm font-medium text-slate-700 leading-relaxed mb-3 last:mb-0 flex items-start gap-2">
                 <span
                   className="flex-shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full"
                   style={{ backgroundColor: ACCENT_ORANGE }}
