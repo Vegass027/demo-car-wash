@@ -151,7 +151,7 @@ const SECTIONS: Section[] = [
         Есть <G>настраиваемая бонус система для клиента</G>.
       </>,
     ],
-    image: '/landing/online-booking.jpg',
+    image: '/landing/online-booking-2.png',
     imageAlt: 'Онлайн-запись в Telegram — реальный интерфейс CRM',
     tone: 'slate',
   },
@@ -348,54 +348,59 @@ const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
           </div>
         </div>
 
-        {/* Выпадающее меню разделов — центрируется на всех ширинах */}
-        <div className="relative flex-1 flex justify-center" ref={ref}>
-          <button
-            type="button"
-            onClick={() => setOpen((o) => !o)}
-            aria-expanded={open}
-            aria-haspopup="menu"
-            className="inline-flex items-center gap-2 h-10 px-3 sm:px-4 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
-          >
-            <span>Разделы</span>
-            <ChevronDown
-              className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`}
-            />
-          </button>
+        {/* Обе кнопки (Разделы + Войти в демо) — центрированы по центру экрана */}
+        <div className="flex-1 flex justify-center">
+          <div className="flex items-center gap-3">
+            {/* Выпадающее меню разделов */}
+            <div className="relative" ref={ref}>
+              <button
+                type="button"
+                onClick={() => setOpen((o) => !o)}
+                aria-expanded={open}
+                aria-haspopup="menu"
+                className="inline-flex items-center gap-2 h-10 px-3 sm:px-4 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
+              >
+                <span>Разделы</span>
+                <ChevronDown
+                  className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`}
+                />
+              </button>
 
-          {open && (
-            <div
-              role="menu"
-              className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-[300px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto bg-white border border-slate-200 rounded-2xl shadow-2xl shadow-slate-900/15 py-2 z-30"
-            >
-              {SECTIONS.map((s) => (
-                <a
-                  key={s.id}
-                  href={`#${s.id}`}
-                  onClick={() => setOpen(false)}
-                  role="menuitem"
-                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+              {open && (
+                <div
+                  role="menu"
+                  className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-[300px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto bg-white border border-slate-200 rounded-2xl shadow-2xl shadow-slate-900/15 py-2 z-30"
                 >
-                  <span className="text-xl flex-shrink-0">{s.emoji}</span>
-                  <span className="flex-1 truncate">
-                    <span className="font-semibold text-slate-900">{s.title}</span>
-                    <span className="block text-xs text-slate-500 truncate">
-                      {s.titleAccent}
-                    </span>
-                  </span>
-                </a>
-              ))}
+                  {SECTIONS.map((s) => (
+                    <a
+                      key={s.id}
+                      href={`#${s.id}`}
+                      onClick={() => setOpen(false)}
+                      role="menuitem"
+                      className="flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                    >
+                      <span className="text-xl flex-shrink-0">{s.emoji}</span>
+                      <span className="flex-1 truncate">
+                        <span className="font-semibold text-slate-900">{s.title}</span>
+                        <span className="block text-xs text-slate-500 truncate">
+                          {s.titleAccent}
+                        </span>
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Кнопка Войти в демо */}
-        <Button
-          onClick={onEnterDemo}
-          className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-3 sm:px-5 h-10 gap-1.5 shadow-sm flex-shrink-0"
-        >
-          Войти в демо <ArrowRight className="w-4 h-4" />
-        </Button>
+            {/* Кнопка Войти в демо */}
+            <Button
+              onClick={onEnterDemo}
+              className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-3 sm:px-5 h-10 gap-1.5 shadow-sm"
+            >
+              Войти в демо <ArrowRight className="w-4 h-4" />
+            </Button>
+          </div>
+        </div>
       </div>
     </nav>
   );
@@ -468,7 +473,7 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
             <Button
               onClick={onEnterDemo}
               size="lg"
-              className="bg-white hover:bg-slate-50 text-[#5BA634] font-bold rounded-full px-8 h-13 text-base shadow-lg gap-2"
+              className="bg-white hover:bg-slate-50 text-[#5BA634] font-bold rounded-full px-10 h-16 text-lg shadow-lg gap-2"
             >
               Войти в демо <ArrowRight className="w-5 h-5" />
             </Button>
@@ -476,9 +481,9 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
               href={TG_BOT_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center justify-center gap-2 px-7 h-13 rounded-full bg-[#229ED9] hover:bg-[#1E8FC4] text-white font-bold text-base shadow-lg transition-colors"
+              className="inline-flex items-center justify-center gap-2 px-10 h-16 rounded-full bg-[#229ED9] hover:bg-[#1E8FC4] text-white font-bold text-lg shadow-lg transition-colors"
             >
-              Открыть Telegram-бот
+              Открыть демо онлайн запись
             </a>
           </div>
         </div>
@@ -489,8 +494,8 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
       <section className="py-12 bg-white">
         <div className="max-w-3xl mx-auto px-6">
           <div className="bg-white border-2 border-slate-200 rounded-2xl p-6 shadow-sm">
-            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-5 leading-tight text-slate-900 text-center">
-              Контакты
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-5 leading-tight text-slate-900">
+              Контакты для связи
             </h2>
             <div className="space-y-3">
               <a
