@@ -1,9 +1,20 @@
-import React, { useState } from 'react';
-import { Droplets, ArrowRight, Check, X } from 'lucide-react';
+import React, { useState, useEffect, useRef, type ReactNode } from 'react';
+import { ArrowRight, Check, X, ChevronDown } from 'lucide-react';
 import { Button } from '../ui/button';
 
 // Telegram bot link — открой бота, нажми /start, бот откроет Mini App.
 const TG_BOT_URL = 'https://t.me/demo_car_wash_bot';
+
+// Акцентный цвет сайта — зелёный #5BA634 (тёмный) / #7BC74D (светлый).
+const ACCENT_GREEN = '#5BA634';
+const ACCENT_GREEN_LIGHT = '#7BC74D';
+
+// Helper: span с зелёным акцентом (полужирный).
+const G = ({ children }: { children: ReactNode }) => (
+  <span style={{ color: ACCENT_GREEN }} className="font-bold">
+    {children}
+  </span>
+);
 
 // ----------------------------------------------------------------------------
 // Lightbox для скриншотов: клик → полноэкранный просмотр.
@@ -34,17 +45,17 @@ interface LandingProps {
 }
 
 // ============================================================================
-// 8 sections matching CRM_landing_texts.md (финальная версия).
-// Каждая секция: номер + h2 заголовок + h2 подзаголовок + параграфы.
-// Реальные скриншоты из /public/landing/.
+// 8 sections matching CRM_landing_texts.md.
+// Каждая секция: эмодзи + h2 заголовок + h2 подзаголовок + параграфы (JSX,
+// с зелёными акцентами через <G>). Реальные скриншоты из /public/landing/.
 // ============================================================================
 
 type Section = {
   id: string;
-  number: string;
+  emoji: string;
   title: string;
   titleAccent: string;
-  paragraphs: string[];
+  paragraphs: ReactNode[];
   image: string;
   imageAlt: string;
   tone: 'white' | 'slate';
@@ -53,14 +64,27 @@ type Section = {
 const SECTIONS: Section[] = [
   {
     id: 'moyka',
-    number: '1',
+    emoji: '🧽',
     title: 'Автомойка',
     titleAccent: 'Все боксы и заказы — перед глазами',
     paragraphs: [
-      'Таймлайн в реальном времени показывает загрузку боксов, текущие заказы и время освобождения. Администратор записывает клиента за 30 секунд: телефон, автомобиль, услуги — система сама рассчитывает стоимость изходя из класса авто и ваше прайс листу.',
-      'Заказы закрываются в один тап: оплата фиксируется, а зарплата мойщику пересчитывается автоматически. Можно работать одному или в паре с автоматическим делением доли 50/50.',
-      'Для корпоративных клиентов предусмотрена запись автомобиля из автопарка и подпись водителя на экране — она попадает в акт.',
-      'Записи с улицы, временное закрытие боксов, очередь мойщиков и защита от частых отмен помогают поддерживать порядок даже в загруженные смены.',
+      <>
+        <G>Таймлайн в реальном времени</G> показывает загрузку боксов, текущие заказы и время освобождения. Администратор{' '}
+        <G>записывает клиента за 30 секунд</G>: телефон, автомобиль, услуги — система сама рассчитывает стоимость{' '}
+        <G>изходя из класса авто и ваше прайс листу</G>.
+      </>,
+      <>
+        <G>Заказы закрываются в один тап</G>: оплата фиксируется, а зарплата мойщику пересчитывается{' '}
+        <G>автоматически</G>. Можно работать одному или в паре с <G>автоматическим делением доли 50/50</G>.
+      </>,
+      <>
+        Для корпоративных клиентов предусмотрена запись автомобиля <G>из автопарка и подпись водителя на экране</G>{' '}
+        — она попадает в акт.
+      </>,
+      <>
+        Записи с улицы, <G>временное закрытие боксов</G>, очередь мойщиков и{' '}
+        <G>защита от частых отмен</G> помогают <G>поддерживать порядок даже в загруженные смены</G>.
+      </>,
     ],
     image: '/landing/moyka.png',
     imageAlt: 'Таймлайн боксов автомойки — реальный интерфейс CRM',
@@ -68,13 +92,21 @@ const SECTIONS: Section[] = [
   },
   {
     id: 'upravlenie-boksami',
-    number: '2',
+    emoji: '🧽',
     title: 'Управление боксами',
     titleAccent: 'Бокс закрыт — записи под контролем',
     paragraphs: [
-      'Если оборудование вышло из строя, начался ремонт или нужно закрыть бокс на обед, администратор может закрыть бокс на нужное время.',
-      'Новые записи на закрытый бокс не попадут. Уже созданные заказы сохраняются.',
-      'Все изменения сразу отображаются на таймлайне, поэтому команда видит актуальную загрузку без звонков и уточнений.',
+      <>
+        Если оборудование вышло из строя, начался ремонт или нужно закрыть бокс на обед, администратор может{' '}
+        <G>закрыть бокс на нужное время</G>.
+      </>,
+      <>
+        <G>Новые записи на закрытый бокс не попадут</G>. <G>Уже созданные заказы сохраняются</G>.
+      </>,
+      <>
+        <G>Все изменения сразу отображаются на таймлайне</G>, поэтому команда видит актуальную загрузку{' '}
+        <G>без звонков и уточнений</G>.
+      </>,
     ],
     image: '/landing/blok-boksov.png',
     imageAlt: 'Управление боксами автомойки — реальный интерфейс CRM',
@@ -82,12 +114,19 @@ const SECTIONS: Section[] = [
   },
   {
     id: 'shinomontazh',
-    number: '3',
+    emoji: '🛞',
     title: 'Шиномонтаж',
     titleAccent: 'Отдельная запись для шиномонтажа',
     paragraphs: [
-      'Мойка и шиномонтаж работают в разных потоках, поэтому записи не смешиваются. Клиент выбирает нужную услугу шиномонтажа по вашему прайс листу.',
-      'Мастер видит свою очередь, а начисления формируются по факту выполненных услуг. Все настройки условий зарплаты персоналу настраиваются владельцем. История визитов помогает заранее связаться с клиентами перед началом сезона.',
+      <>
+        Мойка и шиномонтаж работают <G>в разных потоках, поэтому записи не смешиваются</G>. Клиент выбирает
+        нужную услугу шиномонтажа по <G>вашему прайс листу</G>.
+      </>,
+      <>
+        Мастер видит свою очередь, а начисления формируются <G>по факту выполненных услуг</G>. Все настройки
+        условий зарплаты персоналу настраиваются владельцем. <G>История визитов помогает заранее связаться с
+        клиентами перед началом сезона</G>.
+      </>,
     ],
     image: '/landing/shinomontazh.png',
     imageAlt: 'Таймлайн шиномонтажа — реальный интерфейс CRM',
@@ -95,13 +134,21 @@ const SECTIONS: Section[] = [
   },
   {
     id: 'online-booking',
-    number: '4',
+    emoji: '💬',
     title: 'Онлайн-запись через Telegram',
     titleAccent: 'Клиенты записываются сами — круглосуточно',
     paragraphs: [
-      'Telegram Mini App показывает свободные слоты на сегодня и на ближайшие 3 дня. Клиент выбирает время, автомобиль и услугу без звонка администратору.',
-      'Бот сохранит автомобили и историю посещений. Новая запись сразу появляется на таймлайне — без бумажных журналов и переписок.',
-      'Есть настраиваемая бонус система для клиента.',
+      <>
+        Telegram Mini App показывает <G>свободные слоты на сегодня и на ближайшие 3 дня</G>. Клиент выбирает
+        время, автомобиль и услугу <G>без звонка администратору</G>.
+      </>,
+      <>
+        Бот сохранит автомобили и историю посещений. <G>Новая запись сразу появляется на таймлайне</G> —{' '}
+        <G>без бумажных журналов и переписок</G>.
+      </>,
+      <>
+        Есть <G>настраиваемая бонус система для клиента</G>.
+      </>,
     ],
     image: '/landing/online-booking.jpg',
     imageAlt: 'Онлайн-запись в Telegram — реальный интерфейс CRM',
@@ -109,13 +156,21 @@ const SECTIONS: Section[] = [
   },
   {
     id: 'personal',
-    number: '5',
+    emoji: '👥',
     title: 'Персонал',
     titleAccent: 'Балансы и смены без ручного учета',
     paragraphs: [
-      'В карточке каждого сотрудника хранятся контакты, ставка, баланс и статус смены. Сотрудник отмечает начало и окончание работы, а при работе в паре система автоматически делит долю чека.',
-      'Авансы и выплаты фиксируются в один клик. В истории начислений видно, сколько сотрудник заработал и какие выплаты уже получил.',
-      'Сотрудников можно добавлять, отключать и возвращать в список без потери истории.',
+      <>
+        В карточке каждого сотрудника хранятся контакты, ставка, баланс и статус смены. Сотрудник отмечает начало
+        и окончание работы, а при работе в паре система <G>автоматически делит долю чека</G>.
+      </>,
+      <>
+        Авансы и выплаты <G>фиксируются в один клик</G>. В истории начислений видно, сколько сотрудник
+        заработал и какие выплаты уже получил.
+      </>,
+      <>
+        Сотрудников можно добавлять, отключать и возвращать в список <G>без потери истории</G>.
+      </>,
     ],
     image: '/landing/personal.png',
     imageAlt: 'Карточки сотрудников — реальный интерфейс CRM',
@@ -123,13 +178,21 @@ const SECTIONS: Section[] = [
   },
   {
     id: 'svodka',
-    number: '6',
+    emoji: '📊',
     title: 'Сводка',
     titleAccent: 'Итоги дня — на одном экране',
     paragraphs: [
-      'Сводка показывает выручку, расходы, зарплаты и чистую прибыль за выбранный день или период.',
-      'Данные можно посмотреть по направлениям, способам оплаты и сотрудникам. Зарплаты рассчитываются автоматически после закрытия заказов.',
-      'Для работы с юрлицами система формирует ведомость, акт и счет-фактуру в PDF. В акте отображается подпись водителя, а ежедневные отчеты сохраняются в архиве.',
+      <>
+        Сводка показывает выручку, расходы, зарплаты и чистую прибыль за выбранный день или период.
+      </>,
+      <>
+        Данные можно посмотреть по направлениям, способам оплаты и сотрудникам.{' '}
+        <G>Зарплаты рассчитываются автоматически после закрытия заказов</G>.
+      </>,
+      <>
+        Для работы с юрлицами система <G>формирует ведомость, акт и счет-фактуру в PDF</G>. В акте
+        отображается <G>подпись водителя</G>, а <G>ежедневные отчеты сохраняются в архиве</G>.
+      </>,
     ],
     image: '/landing/svodka.png',
     imageAlt: 'Сводка дня — реальный интерфейс CRM',
@@ -137,28 +200,45 @@ const SECTIONS: Section[] = [
   },
   {
     id: 'analitika',
-    number: '7',
+    emoji: '📈',
     title: 'Аналитика',
     titleAccent: 'Решения на основе реальных цифр',
     paragraphs: [
-      'Система показывает выручку по дням, сотрудникам и услугам, загрузку по периодам и эффективность команды.',
-      'В Telegram-боте доступны отчеты по сменам, записям, выручке, популярным услугам, загрузке, сотрудникам и скорости мойки.',
-      'В Mini App можно выбрать день, неделю, месяц или любой произвольный период. Отчеты по юрлицам покажут, кто приезжал и на какую сумму.',
-      'Историю автомобиля можно найти по его номеру прямо в Telegram. Готовые отчеты доступны в архиве и выгружаются в PDF или DOCX.',
+      <>
+        Система показывает <G>выручку по дням, сотрудникам и услугам</G>, загрузку по периодам и эффективность команды.
+      </>,
+      <>
+        <G>В Telegram-боте</G> доступны отчеты по сменам, записям, выручке, популярным услугам, загрузке, сотрудникам и скорости мойки.
+      </>,
+      <>
+        В Mini App можно выбрать день, неделю, месяц или любой произвольный период.{' '}
+        <G>Отчеты по юрлицам покажут, кто приезжал и на какую сумму</G>.
+      </>,
+      <>
+        Историю автомобиля можно найти <G>по его номеру прямо в Telegram</G>. Готовые отчеты доступны в архиве и{' '}
+        <G>выгружаются в PDF или DOCX</G>.
+      </>,
     ],
-    image: '/landing/analitika.png',
+    image: '/landing/analitika-2.png',
     imageAlt: 'Аналитика — реальный интерфейс CRM',
     tone: 'white',
   },
   {
     id: 'sklad',
-    number: '8',
+    emoji: '📦',
     title: 'Склад',
     titleAccent: 'Остатки и расходники без учета «на глаз»',
     paragraphs: [
-      'В складе видны категории товаров, приходы, продажи, чеки и текущие остатки. Когда товар/расхдник заканчивается, карточка подсвечивается.',
-      'Продажа автоматически списывает товар со склада, а история приходов сохраняет информацию по каждой позиции.',
-      'Так проще вовремя заметить и контролировать нехватку расходников и не искать нужный товар в последний момент.',
+      <>
+        В складе видны категории товаров, приходы, продажи, чеки и текущие остатки. Когда товар/расхдник заканчивается,{' '}
+        <G>карточка подсвечивается</G>.
+      </>,
+      <>
+        <G>Продажа автоматически списывает товар со склада</G>, а история приходов сохраняет информацию по каждой позиции.
+      </>,
+      <>
+        Так проще вовремя заметить и контролировать нехватку расходников и не искать нужный товар в последний момент.
+      </>,
     ],
     image: '/landing/sklad.png',
     imageAlt: 'Склад — реальный интерфейс CRM',
@@ -167,7 +247,7 @@ const SECTIONS: Section[] = [
 ];
 
 // ----------------------------------------------------------------------------
-// SectionBlock: номер + заголовок + параграфы + большой скриншот (с lightbox).
+// SectionBlock: эмодзи + заголовок + параграфы (в рамке) + большой скриншот.
 // ----------------------------------------------------------------------------
 const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
   const bgClass = s.tone === 'white' ? 'bg-white' : 'bg-slate-50';
@@ -178,8 +258,8 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
     <section id={s.id} className={`py-16 lg:py-20 ${bgClass}`}>
       <div className="max-w-5xl mx-auto px-6 mb-8 text-center">
         <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-3 leading-[1.05] text-slate-900">
-          <span className="mr-2">{s.number}.</span>
-          {s.title}. <span className="text-[#7BC74D]">{s.titleAccent}</span>
+          <span className="mr-2 text-4xl lg:text-5xl">{s.emoji}</span>
+          {s.title}. <span style={{ color: ACCENT_GREEN_LIGHT }}>{s.titleAccent}</span>
         </h2>
       </div>
 
@@ -202,12 +282,15 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
         </div>
       </div>
 
+      {/* Текст в рамке */}
       <div className="max-w-3xl mx-auto px-6">
-        {s.paragraphs.map((p, i) => (
-          <p key={i} className="text-base sm:text-lg text-slate-700 leading-relaxed mb-4 last:mb-0">
-            {p}
-          </p>
-        ))}
+        <div className="bg-white border-2 border-slate-200 rounded-2xl p-6 lg:p-8 shadow-sm">
+          {s.paragraphs.map((p, i) => (
+            <p key={i} className="text-lg sm:text-xl font-medium text-slate-700 leading-relaxed mb-5 last:mb-0">
+              {p}
+            </p>
+          ))}
+        </div>
       </div>
 
       {zoom && (
@@ -224,36 +307,89 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
 // ----------------------------------------------------------------------------
 // Landing
 // ----------------------------------------------------------------------------
+
+// Выпадающее меню разделов в шапке — клик вне закрывает.
+const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+
+  return (
+    <nav className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100">
+      <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-4">
+        {/* Выпадающее меню разделов */}
+        <div className="relative" ref={ref}>
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            aria-haspopup="menu"
+            className="inline-flex items-center gap-2 h-10 px-4 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
+          >
+            <span>Разделы</span>
+            <ChevronDown
+              className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`}
+            />
+          </button>
+
+          {open && (
+            <div
+              role="menu"
+              className="absolute top-full left-0 mt-2 w-[300px] max-h-[80vh] overflow-y-auto bg-white border border-slate-200 rounded-2xl shadow-2xl shadow-slate-900/15 py-2 z-30"
+            >
+              {SECTIONS.map((s) => (
+                <a
+                  key={s.id}
+                  href={`#${s.id}`}
+                  onClick={() => setOpen(false)}
+                  role="menuitem"
+                  className="flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  <span className="text-xl flex-shrink-0">{s.emoji}</span>
+                  <span className="flex-1 truncate">
+                    <span className="font-semibold text-slate-900">{s.title}</span>
+                    <span className="block text-xs text-slate-500 truncate">
+                      {s.titleAccent}
+                    </span>
+                  </span>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Кнопка Войти в демо */}
+        <Button
+          onClick={onEnterDemo}
+          className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-5 h-10 gap-1.5 shadow-sm"
+        >
+          Войти в демо <ArrowRight className="w-4 h-4" />
+        </Button>
+      </div>
+    </nav>
+  );
+};
+
 export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
   return (
     <div className="min-h-screen bg-white text-slate-900 font-sans antialiased">
-      {/* NAV */}
-      <nav className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#7BC74D] to-[#5BA634] flex items-center justify-center">
-              <Droplets className="w-5 h-5 text-white" />
-            </div>
-            <div className="leading-tight">
-              <div className="font-bold text-[17px] tracking-tight">Автомойка CRM</div>
-              <div className="text-[10px] text-slate-500 tracking-widest uppercase">Demo</div>
-            </div>
-          </div>
-          <div className="hidden lg:flex items-center gap-5 text-sm text-slate-700">
-            {SECTIONS.map((s) => (
-              <a key={s.id} href={`#${s.id}`} className="hover:text-slate-900 transition-colors whitespace-nowrap">
-                {s.title}
-              </a>
-            ))}
-          </div>
-          <Button
-            onClick={onEnterDemo}
-            className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-5 h-10 gap-1.5 shadow-sm"
-          >
-            Войти в демо <ArrowRight className="w-4 h-4" />
-          </Button>
-        </div>
-      </nav>
+      {/* NAV — только выпадающее меню разделов + кнопка Войти в демо */}
+      <Nav onEnterDemo={onEnterDemo} />
 
       {/* HERO — текст из CRM_landing_texts.md «# Заголовок» */}
       <section className="relative overflow-hidden bg-gradient-to-br from-slate-50 via-white to-slate-50 pt-16 pb-20">
@@ -353,7 +489,7 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
               <div className="space-y-1.5 text-sm">
                 {SECTIONS.slice(0, 4).map((s) => (
                   <a key={s.id} href={`#${s.id}`} className="block hover:text-white transition-colors">
-                    {s.number}. {s.title}
+                    {s.emoji} {s.title}
                   </a>
                 ))}
               </div>
@@ -363,7 +499,7 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
               <div className="space-y-1.5 text-sm">
                 {SECTIONS.slice(4).map((s) => (
                   <a key={s.id} href={`#${s.id}`} className="block hover:text-white transition-colors">
-                    {s.number}. {s.title}
+                    {s.emoji} {s.title}
                   </a>
                 ))}
               </div>
