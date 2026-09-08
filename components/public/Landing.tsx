@@ -60,6 +60,12 @@ type Section = {
   image: string;
   imageAlt: string;
   tone: 'white' | 'slate';
+  // Индивидуальные размеры текста и высоты рамки — подогнаны под высоту картинки
+  // (textSize: размер шрифта параграфов, frameMaxHeight: max-h рамки в px,
+  //  paddingScale: множитель padding внутри рамки)
+  textSize: 'xs' | 'sm' | 'base' | 'lg';
+  frameMaxHeight: number; // px
+  paddingScale: 1 | 1.25 | 1.5; // для p-4/p-5/p-6
 };
 
 const SECTIONS: Section[] = [
@@ -90,6 +96,9 @@ const SECTIONS: Section[] = [
     image: '/landing/moyka.png',
     imageAlt: 'Таймлайн боксов автомойки — реальный интерфейс CRM',
     tone: 'white',
+    textSize: 'sm',         // 596px картинка, 4 длинных параграфа
+    frameMaxHeight: 596,
+    paddingScale: 1.25,     // p-5
   },
   {
     id: 'upravlenie-boksami',
@@ -112,6 +121,9 @@ const SECTIONS: Section[] = [
     image: '/landing/blok-boksov.png',
     imageAlt: 'Управление боксами автомойки — реальный интерфейс CRM',
     tone: 'slate',
+    textSize: 'base',      // 502px картинка, 3 параграфа
+    frameMaxHeight: 502,
+    paddingScale: 1.5,      // p-6
   },
   {
     id: 'shinomontazh',
@@ -132,12 +144,15 @@ const SECTIONS: Section[] = [
     image: '/landing/shinomontazh.png',
     imageAlt: 'Таймлайн шиномонтажа — реальный интерфейс CRM',
     tone: 'white',
+    textSize: 'lg',         // 596px картинка, всего 2 параграфа — можно крупно
+    frameMaxHeight: 596,
+    paddingScale: 1.5,      // p-6
   },
   {
     id: 'online-booking',
     emoji: '💬',
-    title: 'Онлайн-запись через Telegram',
-    titleAccent: 'Клиенты записываются сами — круглосуточно',
+    title: 'Онлайн запись',
+    titleAccent: 'через Телеграм',
     paragraphs: [
       <>
         Telegram Mini App показывает <G>свободные слоты на сегодня и на ближайшие 3 дня</G>. Клиент выбирает
@@ -154,6 +169,9 @@ const SECTIONS: Section[] = [
     image: '/landing/online-booking-2.png',
     imageAlt: 'Онлайн-запись в Telegram — реальный интерфейс CRM',
     tone: 'slate',
+    textSize: 'base',      // 502px картинка, 3 параграфа
+    frameMaxHeight: 502,
+    paddingScale: 1.5,      // p-6
   },
   {
     id: 'personal',
@@ -176,6 +194,9 @@ const SECTIONS: Section[] = [
     image: '/landing/personal.png',
     imageAlt: 'Карточки сотрудников — реальный интерфейс CRM',
     tone: 'white',
+    textSize: 'lg',         // 447px картинка, 3 параграфа
+    frameMaxHeight: 447,
+    paddingScale: 1.25,     // p-5
   },
   {
     id: 'svodka',
@@ -198,6 +219,9 @@ const SECTIONS: Section[] = [
     image: '/landing/svodka.png',
     imageAlt: 'Сводка дня — реальный интерфейс CRM',
     tone: 'slate',
+    textSize: 'lg',         // 397px картинка, 3 параграфа
+    frameMaxHeight: 397,
+    paddingScale: 1.5,      // p-6
   },
   {
     id: 'analitika',
@@ -223,6 +247,9 @@ const SECTIONS: Section[] = [
     image: '/landing/analitika-2.png',
     imageAlt: 'Аналитика — реальный интерфейс CRM',
     tone: 'white',
+    textSize: 'xs',         // 672px картинка, 4 длинных параграфа
+    frameMaxHeight: 672,
+    paddingScale: 1,        // p-4 (компактнее)
   },
   {
     id: 'sklad',
@@ -244,6 +271,9 @@ const SECTIONS: Section[] = [
     image: '/landing/sklad.png',
     imageAlt: 'Склад — реальный интерфейс CRM',
     tone: 'slate',
+    textSize: 'xs',         // 894px картинка, 3 параграфа
+    frameMaxHeight: 894,
+    paddingScale: 1,        // p-4
   },
 ];
 
@@ -297,21 +327,47 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
           </div>
         </div>
 
-        {/* Текст в рамке справа (3/12 колонок на PC) — компактная sticky-колонка
-            с max-h + overflow-y-auto: текст не превращается в портянку,
-            если параграфов много — внутренний скролл в рамке. */}
+        {/* Текст в рамке справа (3/12 колонок на PC) — sticky-колонка
+            с индивидуальным размером текста и высотой рамки,
+            подобранной под высоту картинки (см. SECTIONS). */}
         <div className="lg:col-span-3 lg:sticky lg:top-24">
-          <div className="bg-white border-2 border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm max-h-[640px] overflow-y-auto">
-            {s.paragraphs.map((p, i) => (
-              <p key={i} className="text-xs sm:text-sm font-medium text-slate-700 leading-relaxed mb-3 last:mb-0 flex items-start gap-2">
-                <span
-                  className="flex-shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full"
-                  style={{ backgroundColor: ACCENT_ORANGE }}
-                  aria-hidden="true"
-                />
-                <span className="flex-1">{p}</span>
-              </p>
-            ))}
+          <div
+            className={`bg-white border-2 border-slate-200 rounded-2xl shadow-sm overflow-y-auto ${
+              s.paddingScale === 1 ? 'p-4' : s.paddingScale === 1.5 ? 'p-6' : 'p-5'
+            }`}
+            style={{ maxHeight: `${s.frameMaxHeight}px` }}
+          >
+            {s.paragraphs.map((p, i) => {
+              // textSize → Tailwind класс
+              const sizeMap = {
+                xs: 'text-xs',
+                sm: 'text-sm',
+                base: 'text-base',
+                lg: 'text-lg',
+              } as const;
+              // Размер оранжевой ● тоже масштабируется
+              const dotSizeMap = {
+                xs: 'w-1.5 h-1.5 mt-1.5',
+                sm: 'w-1.5 h-1.5 mt-1.5',
+                base: 'w-2 h-2 mt-2',
+                lg: 'w-2 h-2 mt-2.5',
+              } as const;
+              const gapMap = { xs: 'gap-2', sm: 'gap-2', base: 'gap-2.5', lg: 'gap-3' } as const;
+              const mbMap = { xs: 'mb-3', sm: 'mb-3', base: 'mb-4', lg: 'mb-5' } as const;
+              return (
+                <p
+                  key={i}
+                  className={`${sizeMap[s.textSize]} font-medium text-slate-700 leading-relaxed ${mbMap[s.textSize]} last:mb-0 flex items-start ${gapMap[s.textSize]}`}
+                >
+                  <span
+                    className={`flex-shrink-0 ${dotSizeMap[s.textSize]} rounded-full`}
+                    style={{ backgroundColor: ACCENT_ORANGE }}
+                    aria-hidden="true"
+                  />
+                  <span className="flex-1">{p}</span>
+                </p>
+              );
+            })}
           </div>
         </div>
       </div>
