@@ -337,9 +337,9 @@ const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
 
   return (
     <nav className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100">
-      <div className="max-w-7xl mx-auto px-3 sm:px-6 h-16 flex items-center gap-2 sm:gap-6">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 h-16 grid grid-cols-3 items-center gap-2">
         {/* Логотип (на мобиле только иконка, на PC — иконка + название) */}
-        <div className="flex items-center gap-2.5 flex-shrink-0">
+        <div className="flex items-center gap-2.5 justify-self-start">
           <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#7BC74D] to-[#5BA634] flex items-center justify-center">
             <Droplets className="w-5 h-5 text-white" />
           </div>
@@ -348,59 +348,60 @@ const Nav: React.FC<{ onEnterDemo: () => void }> = ({ onEnterDemo }) => {
           </div>
         </div>
 
-        {/* Обе кнопки (Разделы + Войти в демо) — центрированы по центру экрана */}
-        <div className="flex-1 flex justify-center">
-          <div className="flex items-center gap-3">
-            {/* Выпадающее меню разделов */}
-            <div className="relative" ref={ref}>
-              <button
-                type="button"
-                onClick={() => setOpen((o) => !o)}
-                aria-expanded={open}
-                aria-haspopup="menu"
-                className="inline-flex items-center gap-2 h-10 px-3 sm:px-4 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
-              >
-                <span>Разделы</span>
-                <ChevronDown
-                  className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`}
-                />
-              </button>
-
-              {open && (
-                <div
-                  role="menu"
-                  className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-[300px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto bg-white border border-slate-200 rounded-2xl shadow-2xl shadow-slate-900/15 py-2 z-30"
-                >
-                  {SECTIONS.map((s) => (
-                    <a
-                      key={s.id}
-                      href={`#${s.id}`}
-                      onClick={() => setOpen(false)}
-                      role="menuitem"
-                      className="flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
-                    >
-                      <span className="text-xl flex-shrink-0">{s.emoji}</span>
-                      <span className="flex-1 truncate">
-                        <span className="font-semibold text-slate-900">{s.title}</span>
-                        <span className="block text-xs text-slate-500 truncate">
-                          {s.titleAccent}
-                        </span>
-                      </span>
-                    </a>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Кнопка Войти в демо */}
-            <Button
-              onClick={onEnterDemo}
-              className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-3 sm:px-5 h-10 gap-1.5 shadow-sm"
+        {/* Обе кнопки (Разделы + Войти в демо) — СТРОГО по центру экрана */}
+        <div className="flex items-center justify-center gap-3 col-start-2">
+          {/* Выпадающее меню разделов */}
+          <div className="relative" ref={ref}>
+            <button
+              type="button"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              aria-haspopup="menu"
+              className="inline-flex items-center gap-2 h-10 px-3 sm:px-4 rounded-full bg-white border border-slate-200 text-slate-700 text-sm font-medium hover:border-slate-300 hover:bg-slate-50 transition-colors shadow-sm"
             >
-              Войти в демо <ArrowRight className="w-4 h-4" />
-            </Button>
+              <span>Разделы</span>
+              <ChevronDown
+                className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`}
+              />
+            </button>
+
+            {open && (
+              <div
+                role="menu"
+                className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-[300px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-y-auto bg-white border border-slate-200 rounded-2xl shadow-2xl shadow-slate-900/15 py-2 z-30"
+              >
+                {SECTIONS.map((s) => (
+                  <a
+                    key={s.id}
+                    href={`#${s.id}`}
+                    onClick={() => setOpen(false)}
+                    role="menuitem"
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    <span className="text-xl flex-shrink-0">{s.emoji}</span>
+                    <span className="flex-1 truncate">
+                      <span className="font-semibold text-slate-900">{s.title}</span>
+                      <span className="block text-xs text-slate-500 truncate">
+                        {s.titleAccent}
+                      </span>
+                    </span>
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
+
+          {/* Кнопка Войти в демо */}
+          <Button
+            onClick={onEnterDemo}
+            className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-3 sm:px-5 h-10 gap-1.5 shadow-sm"
+          >
+            Войти в демо <ArrowRight className="w-4 h-4" />
+          </Button>
         </div>
+
+        {/* Пустой 3-й столбец — балансирует grid так, что центральная колонка ровно по центру */}
+        <div aria-hidden="true" />
       </div>
     </nav>
   );
@@ -491,22 +492,22 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
 
       {/* FOOTER */}
       {/* Блок Контакты (в рамке, виден и на PC, и на мобиле) */}
-      <section className="py-12 bg-white">
-        <div className="max-w-3xl mx-auto px-6">
-          <div className="bg-white border-2 border-slate-200 rounded-2xl p-6 shadow-sm">
-            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight mb-5 leading-tight text-slate-900">
+      <section className="py-10 bg-white">
+        <div className="max-w-md mx-auto px-6">
+          <div className="bg-white border-2 border-slate-200 rounded-2xl p-5 shadow-sm text-center">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-4 leading-tight text-slate-900">
               Контакты для связи
             </h2>
-            <div className="space-y-3">
+            <div className="flex flex-col items-center gap-2.5">
               <a
                 href="tel:+79930838101"
-                className="flex items-center gap-3 text-base sm:text-lg text-slate-700 hover:text-[#5BA634] transition-colors"
+                className="inline-flex items-center gap-2.5 text-base text-slate-700 hover:text-[#5BA634] transition-colors"
               >
                 <span
-                  className="flex-shrink-0 w-10 h-10 rounded-full bg-[#7BC74D]/10 flex items-center justify-center"
+                  className="flex-shrink-0 w-9 h-9 rounded-full bg-[#7BC74D]/10 flex items-center justify-center"
                   aria-hidden="true"
                 >
-                  <Phone className="w-5 h-5 text-[#5BA634]" />
+                  <Phone className="w-4 h-4 text-[#5BA634]" />
                 </span>
                 <span className="font-medium">+7 993 083 81 01</span>
               </a>
@@ -514,13 +515,13 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
                 href="https://t.me/ivanov1331"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-3 text-base sm:text-lg text-slate-700 hover:text-[#229ED9] transition-colors"
+                className="inline-flex items-center gap-2.5 text-base text-slate-700 hover:text-[#229ED9] transition-colors"
               >
                 <span
-                  className="flex-shrink-0 w-10 h-10 rounded-full bg-[#229ED9]/10 flex items-center justify-center"
+                  className="flex-shrink-0 w-9 h-9 rounded-full bg-[#229ED9]/10 flex items-center justify-center"
                   aria-hidden="true"
                 >
-                  <Send className="w-5 h-5 text-[#229ED9]" />
+                  <Send className="w-4 h-4 text-[#229ED9]" />
                 </span>
                 <span className="font-medium">@ivanov1331</span>
               </a>
