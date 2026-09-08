@@ -257,45 +257,49 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
 
   return (
     <section id={s.id} className={`py-16 lg:py-20 ${bgClass}`}>
-      <div className="max-w-5xl mx-auto px-6 mb-8 text-center">
+      <div className="max-w-6xl mx-auto px-6 mb-8 text-center">
         <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-3 leading-[1.05] text-slate-900">
           <span className="mr-2 text-4xl lg:text-5xl">{s.emoji}</span>
           {s.title}. <span style={{ color: ACCENT_GREEN_LIGHT }}>{s.titleAccent}</span>
         </h2>
       </div>
 
-      <div className="px-4 sm:px-6 lg:px-8 mb-8">
-        <button
-          type="button"
-          onClick={() => setZoom(s.image)}
-          className={`group block w-full max-w-[1100px] mx-auto rounded-2xl overflow-hidden border ${borderColor} shadow-2xl shadow-slate-900/15 bg-white cursor-zoom-in transition-transform hover:scale-[1.005]`}
-          aria-label={`Увеличить скриншот: ${s.imageAlt}`}
-        >
-          <img
-            src={s.image}
-            alt={s.imageAlt}
-            className="w-full h-auto block"
-            loading="lazy"
-          />
-        </button>
-        <div className="max-w-7xl mx-auto mt-3 text-center text-xs text-slate-400">
-          Кликните на скриншот, чтобы открыть на весь экран →
+      {/* Картинка слева + текст в рамке справа на одной линии (на PC), стек на мобиле */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 mb-8 grid lg:grid-cols-12 gap-6 lg:gap-8 items-start">
+        {/* Картинка слева (8/12 колонок на PC) */}
+        <div className="lg:col-span-8">
+          <button
+            type="button"
+            onClick={() => setZoom(s.image)}
+            className={`group block w-full rounded-2xl overflow-hidden border ${borderColor} shadow-2xl shadow-slate-900/15 bg-white cursor-zoom-in transition-transform hover:scale-[1.005]`}
+            aria-label={`Увеличить скриншот: ${s.imageAlt}`}
+          >
+            <img
+              src={s.image}
+              alt={s.imageAlt}
+              className="w-full h-auto block"
+              loading="lazy"
+            />
+          </button>
+          <div className="mt-3 text-center text-xs text-slate-400">
+            Кликните на скриншот, чтобы открыть на весь экран →
+          </div>
         </div>
-      </div>
 
-      {/* Текст в рамке — на мобиле меньше и с оранжевым ● перед каждым абзацем */}
-      <div className="max-w-3xl mx-auto px-6">
-        <div className="bg-white border-2 border-slate-200 rounded-2xl p-5 sm:p-6 lg:p-8 shadow-sm">
-          {s.paragraphs.map((p, i) => (
-            <p key={i} className="text-base sm:text-xl font-medium text-slate-700 leading-relaxed mb-5 last:mb-0 flex items-start gap-2.5 sm:gap-3">
-              <span
-                className="flex-shrink-0 mt-2 sm:mt-2.5 w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full"
-                style={{ backgroundColor: ACCENT_ORANGE }}
-                aria-hidden="true"
-              />
-              <span className="flex-1">{p}</span>
-            </p>
-          ))}
+        {/* Текст в рамке справа (4/12 колонок на PC) — на одной линии с картинкой */}
+        <div className="lg:col-span-4 lg:sticky lg:top-24">
+          <div className="bg-white border-2 border-slate-200 rounded-2xl p-5 sm:p-6 shadow-sm">
+            {s.paragraphs.map((p, i) => (
+              <p key={i} className="text-sm sm:text-base font-medium text-slate-700 leading-relaxed mb-4 last:mb-0 flex items-start gap-2.5">
+                <span
+                  className="flex-shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full"
+                  style={{ backgroundColor: ACCENT_ORANGE }}
+                  aria-hidden="true"
+                />
+                <span className="flex-1">{p}</span>
+              </p>
+            ))}
+          </div>
         </div>
       </div>
 
