@@ -184,24 +184,24 @@ const SECTIONS: Section[] = [
     tone: 'slate',
   },
   {
-    id: 'cheki',
-    emoji: '🧾',
-    title: 'Чеки и оплата',
-    titleAccent: 'ЮKassa и СБП встроены',
+    id: 'online-booking',
+    emoji: '💬',
+    title: 'Онлайн запись',
+    titleAccent: 'через Телеграм',
     intro:
-      'Оплата через ЮKassa и СБП прямо в системе, QR-оплата за 5 секунд. Чеки по 54-ФЗ автоматически.',
+      'Клиент открывает Telegram-бот, выбирает услугу и время — без звонков и переписок. Бот работает в 11 вечера так же, как утром.',
     bullets: [
-      'Оплата через ЮKassa и СБП прямо в системе, QR-оплата за 5 секунд.',
-      'Автоматические чеки по 54-ФЗ и email-чек клиенту.',
-      'Webhook-подтверждение оплаты, привязка к заказу — никаких «потерянных» платежей.',
-      'Автоотмена неоплаченных заказов через 15 минут.',
-      'Оффлайн-оплата без чека — просто отметка «оплачено».',
+      'Запись в Telegram Mini App — без установки отдельного приложения, телефон уже в руке.',
+      'Свободные слоты на сегодня и на завтра — клиент видит и бронирует в один клик.',
+      'Бот сам напомнит за час до визита через push в Telegram.',
+      'Все машины клиента и история визитов — в одном боте, без отдельного кабинета.',
+      'Запись из бота попадает прямо на таймлайн администратора — без бумаги и переписок.',
     ],
-    problem: 'Клиенты хотят платить картой или по QR, а у вас только наличные; чеки по 54-ФЗ выбиваются вручную и теряются.',
+    problem: 'Телефон разрывается, клиенты записываются «на словах», кто-то уезжает, потому что его забыли внести в журнал.',
     solution:
-      'СБП и ЮKassa встроены в систему, чек по 54-ФЗ уходит клиенту на почту автоматически — отдельная касса не нужна.',
+      'Бот записывает 24/7, клиент видит свободные слоты и бронирует сам. Все записи мгновенно на таймлайне администратора — без бумаги и переписок.',
     image: '/landing/online-booking.jpg',
-    imageAlt: 'Онлайн-запись и оплата — реальный интерфейс CRM',
+    imageAlt: 'Онлайн-запись в Telegram — реальный интерфейс CRM',
     tone: 'white',
   },
   {
@@ -219,8 +219,8 @@ const SECTIONS: Section[] = [
     problem: 'Бокс сломался, а на него уже записаны клиенты — приходится обзванивать и переносить вручную.',
     solution:
       'Один клик — бокс закрыт на нужные часы или день, новые записи туда не идут. При экстренном закрытии клиенты получают уведомление об отмене автоматически.',
-    image: '/landing/moyka.png',
-    imageAlt: 'Управление боксами — реальный интерфейс CRM',
+    image: '/landing/blok-boksov.png',
+    imageAlt: 'Блок боксов автомойки — реальный интерфейс CRM',
     tone: 'slate',
   },
 ];
@@ -263,15 +263,10 @@ const SectionBlock: React.FC<{ s: Section; index: number }> = ({ s, index }) => 
 
   return (
     <section id={s.id} className={`py-16 lg:py-20 ${bgClass}`}>
-      {/* Шапка секции — заголовок центрирован */}
+      {/* Шапка секции — заголовок центрирован, эмодзи встроен в h2 */}
       <div className="max-w-5xl mx-auto px-6 mb-8 text-center">
-        <div className="inline-flex items-baseline gap-3 mb-3">
-          <span className="text-3xl lg:text-4xl">{s.emoji}</span>
-          <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#7BC74D]">
-            Раздел {index + 1} / {SECTIONS.length}
-          </span>
-        </div>
         <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-3 leading-[1.05] text-slate-900">
+          <span className="mr-2">{s.emoji}</span>
           {s.title}. <span className="text-[#7BC74D]">{s.titleAccent}.</span>
         </h2>
         <p className="text-lg text-slate-600 leading-relaxed max-w-3xl mx-auto">{s.intro}</p>
@@ -387,58 +382,44 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
       </nav>
 
       {/* HERO */}
-      <section className="relative overflow-hidden bg-gradient-to-br from-slate-50 via-white to-slate-50 pt-12 pb-16">
-        <div className="max-w-7xl mx-auto px-6">
-          <div className="grid lg:grid-cols-12 gap-8 items-center">
-            <div className="lg:col-span-6">
-              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight leading-[1.05] mb-5">
-                Мойка и&nbsp;шиномонтаж.
-                <br />
-                <span className="text-[#7BC74D]">Без Excel.</span>
-              </h1>
-              <p className="text-lg text-slate-600 mb-8 leading-relaxed max-w-xl">
-                CRM, которая записывает клиентов, считает зарплаты сотрудникам
-                и показывает прибыль. Восемь разделов — от боксов до аналитики.
-              </p>
-              <div className="flex flex-wrap gap-3 mb-8">
-                <Button
-                  onClick={onEnterDemo}
-                  size="lg"
-                  className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-7 h-12 gap-2 shadow-md"
-                >
-                  Открыть демо <ArrowRight className="w-4 h-4" />
-                </Button>
-                <a
-                  href={TG_BOT_URL}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-2 px-6 h-12 rounded-full bg-white border-2 border-[#7BC74D] text-[#5BA634] font-semibold hover:bg-[#7BC74D]/5 transition-colors shadow-sm"
-                >
-                  <Send className="w-4 h-4" />
-                  Онлайн-запись в Telegram
-                </a>
-              </div>
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-slate-500">
-                <div className="flex items-center gap-1.5">
-                  <Check className="w-3.5 h-3.5 text-[#7BC74D]" /> Без регистрации
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Check className="w-3.5 h-3.5 text-[#7BC74D]" /> Тестовые данные
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Check className="w-3.5 h-3.5 text-[#7BC74D]" /> Открывается за 1 клик
-                </div>
-              </div>
+      <section className="relative overflow-hidden bg-gradient-to-br from-slate-50 via-white to-slate-50 pt-16 pb-20">
+        <div className="max-w-4xl mx-auto px-6 text-center">
+          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight leading-[1.05] mb-5">
+            Мойка и&nbsp;шиномонтаж.
+            <br />
+            <span className="text-[#7BC74D]">Без Excel.</span>
+          </h1>
+          <p className="text-lg text-slate-600 mb-8 leading-relaxed max-w-2xl mx-auto">
+            CRM, которая записывает клиентов, считает зарплаты сотрудникам
+            и показывает прибыль. Восемь разделов — от боксов до аналитики.
+          </p>
+          <div className="flex flex-wrap gap-3 mb-8 justify-center">
+            <Button
+              onClick={onEnterDemo}
+              size="lg"
+              className="bg-[#7BC74D] hover:bg-[#6AB73E] text-white font-semibold rounded-full px-7 h-12 gap-2 shadow-md"
+            >
+              Открыть демо <ArrowRight className="w-4 h-4" />
+            </Button>
+            <a
+              href={TG_BOT_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-2 px-6 h-12 rounded-full bg-white border-2 border-[#7BC74D] text-[#5BA634] font-semibold hover:bg-[#7BC74D]/5 transition-colors shadow-sm"
+            >
+              <Send className="w-4 h-4" />
+              Онлайн-запись в Telegram
+            </a>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-slate-500">
+            <div className="flex items-center gap-1.5">
+              <Check className="w-3.5 h-3.5 text-[#7BC74D]" /> Без регистрации
             </div>
-
-            <div className="lg:col-span-6">
-              <div className="relative rounded-3xl overflow-hidden border border-slate-200 shadow-2xl shadow-slate-900/15 bg-white">
-                <img
-                  src="/landing/moyka.png"
-                  alt="Автомойка CRM — таймлайн боксов"
-                  className="w-full h-auto block"
-                />
-              </div>
+            <div className="flex items-center gap-1.5">
+              <Check className="w-3.5 h-3.5 text-[#7BC74D]" /> Тестовые данные
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Check className="w-3.5 h-3.5 text-[#7BC74D]" /> Открывается за 1 клик
             </div>
           </div>
         </div>
