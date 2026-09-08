@@ -263,15 +263,10 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
       {/* Акцентная полоса сверху — как разделитель слайдов */}
       <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-[#7BC74D]/30 to-transparent" />
 
-      {/* Номер слайда + эмодзи — как в презентации */}
-      <div className="max-w-7xl mx-auto px-6 mb-6 lg:mb-8 text-center">
-        <div className="inline-flex items-center gap-3 mb-3">
-          <span className="text-3xl lg:text-4xl">{s.emoji}</span>
-          <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-[#7BC74D]">
-            Слайд {s.number} / {SECTIONS.length}
-          </span>
-        </div>
-        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-2 leading-[1.05] text-slate-900">
+      {/* Заголовок секции — эмодзи внутри h2 (как было) */}
+      <div className="max-w-7xl mx-auto px-6 mb-8 text-center">
+        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight mb-3 leading-[1.05] text-slate-900">
+          <span className="mr-2 text-4xl lg:text-5xl">{s.emoji}</span>
           {s.title}. <span style={{ color: ACCENT_GREEN_LIGHT }}>{s.titleAccent}</span>
         </h2>
         {/* Тонкий разделитель под заголовком */}
