@@ -288,9 +288,11 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
           </div>
         </div>
 
-        {/* Текст в рамке справа (3/12 колонок на PC) — компактная колонка, sticky */}
+        {/* Текст в рамке справа (3/12 колонок на PC) — компактная sticky-колонка
+            с max-h + overflow-y-auto: текст не превращается в портянку,
+            если параграфов много — внутренний скролл в рамке. */}
         <div className="lg:col-span-3 lg:sticky lg:top-24">
-          <div className="bg-white border-2 border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm">
+          <div className="bg-white border-2 border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm max-h-[640px] overflow-y-auto">
             {s.paragraphs.map((p, i) => (
               <p key={i} className="text-xs sm:text-sm font-medium text-slate-700 leading-relaxed mb-3 last:mb-0 flex items-start gap-2">
                 <span
