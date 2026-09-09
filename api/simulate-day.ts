@@ -271,7 +271,7 @@ export default async function handler(req: any, res: any) {
           plate_number: '',
           car_type: 'SEDAN',
           services: [service.id],
-          services_with_quantities: [{ service_id: service.id, quantity: 1, price, price, total: price }],
+          services_with_quantities: [{ service_id: service.id, quantity: 1, price: 0, total: 0 }],
           price: 0,
           status,
           booking_date: targetDate,
