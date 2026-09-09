@@ -1581,6 +1581,21 @@ export const BookingWizard: React.FC<BookingWizardProps> = ({
                     setSelectedCarClass(carType as CarType);
                     setStep(2);
                   }}
+                  onSelectCar={async (data) => {
+                    setSelectedOrganizationId(data.organizationId);
+                    setSelectedDriverId(data.driverId);
+                    setSelectedCarId(data.carId);
+                    setClientName(data.driverName);
+                    setCarModel(data.carModel);
+                    setCarNumber(data.plateNumber);
+                    setClientType('ORG');
+                    setPhone(data.phone);
+                    setIsEditingOrganization(false);
+                    setIsCreatingNewClient(false);
+
+                    setSelectedCarClass(data.carType as CarType);
+                    setStep(2);
+                  }}
                 />
               </div>
             </div>

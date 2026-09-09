@@ -8,6 +8,19 @@ import type { Organization, OrganizationCar, OrganizationDriver } from '../../li
 
 interface ClientDatabaseAccordionProps {
   onSelectClient?: (clientId: string, clientCarId: string, clientName: string, phone: string, carModel: string, carNumber: string, carType: string) => void;
+  // Колбэк при клике на машину организации (после выбора водителя):
+  // содержит выбранного driver_id + car_id + org_id + driver/org/car метаданные.
+  onSelectCar?: (data: {
+    organizationId: string;
+    carId: string;
+    driverId: string;
+    organizationName: string;
+    driverName: string;
+    phone: string;
+    carModel: string;
+    plateNumber: string;
+    carType: string;
+  }) => void;
 }
 
 /**
@@ -15,10 +28,14 @@ interface ClientDatabaseAccordionProps {
  * Отображает физ. лица и организации с их автомобилями
  */
 export const ClientDatabaseAccordion: React.FC<ClientDatabaseAccordionProps> = ({
-  onSelectClient
+  onSelectClient,
+  onSelectCar
 }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Выбранный водитель в раскрытой организации — сбрасывается при смене org
+  const [selectedDriverId, setSelectedDriverId] = useState<string | null>(null);
 
   // Данные клиентов
   const [clientsWithCars, setClientsWithCars] = useState<Array<{
@@ -276,7 +293,12 @@ export const ClientDatabaseAccordion: React.FC<ClientDatabaseAccordionProps> = (
                           .map(({ organization, drivers, cars }) => (
                           <div key={organization.id} className="border border-gray-200 rounded-lg bg-gray-50">
                             <div
-                              onClick={() => setOpenOrganizationId(openOrganizationId === organization.id ? null : organization.id)}
+                              onClick={() => {
+                                const newOpenId = openOrganizationId === organization.id ? null : organization.id;
+                                setOpenOrganizationId(newOpenId);
+                                // При смене организации сбрасываем выбор водителя
+                                if (newOpenId !== organization.id) setSelectedDriverId(null);
+                              }}
                               className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-100 transition-colors cursor-pointer select-none rounded-lg"
                             >
                               <div className="flex items-center gap-3 flex-1">
@@ -312,64 +334,110 @@ export const ClientDatabaseAccordion: React.FC<ClientDatabaseAccordionProps> = (
                                <>
                                  <div className="border-t border-gray-200"></div>
                                  <div className="px-4 py-2">
-                                   {/* Список водителей */}
-                                   {drivers.length === 0 ? (
-                                     <div className="text-center py-4 text-sm text-gray-500">
-                                       Нет водителей
-                                     </div>
-                                   ) : (
-                                     <div className="space-y-2 mb-4">
-                                       {drivers.map((driver) => (
-                                         <div key={driver.id} className="bg-gray-100 p-3 rounded-lg">
-                                           <div className="font-medium text-gray-900 mb-2">{driver.full_name}</div>
-                                           {driver.phone && (
-                                             <div className="text-sm text-gray-500 flex items-center gap-1">
-                                               <Phone className="w-3 h-3" />
-                                               {formatPhone(driver.phone)}
-                                             </div>
-                                           )}
-                                         </div>
-                                       ))}
-                                     </div>
-                                   )}
-
-                                    {/* Список машин */}
-                                    {cars.length === 0 ? (
+                                    {/* Список водителей */}
+                                    {drivers.length === 0 ? (
                                       <div className="text-center py-4 text-sm text-gray-500">
-                                        Нет автомобилей
+                                        Нет водителей
                                       </div>
                                     ) : (
-                                      <div className="space-y-2">
-                                        {cars.map((car) => (
-                                          <div
-                                            key={car.id}
-                                            className="flex items-center gap-3 bg-white p-3 rounded-lg border border-gray-200"
-                                          >
-                                            <Car className="w-4 h-4 text-gray-600" />
-                                            <div className="flex-1">
-                                              <div className="font-medium text-gray-900">{car.car_model}</div>
-                                              <div className="text-sm text-gray-500 flex items-center gap-2">
-                                                {car.plate_number}
-                                                <button
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    copyToClipboard(car.plate_number, car.id);
-                                                  }}
-                                                  className="p-1 hover:bg-gray-100 rounded transition-colors"
-                                                  title={copiedPlateNumbers.has(car.id) ? 'Скопировано!' : 'Скопировать'}
-                                                >
-                                                  {copiedPlateNumbers.has(car.id) ? (
-                                                    <Check className="w-3 h-3 text-green-600" />
-                                                  ) : (
-                                                    <Copy className="w-3 h-3 text-gray-500 hover:text-purple-600" />
+                                      <div className="space-y-2 mb-4">
+                                        {drivers.map((driver) => {
+                                          const isSelected = selectedDriverId === driver.id;
+                                          return (
+                                            <div
+                                              key={driver.id}
+                                              onClick={() => setSelectedDriverId(driver.id)}
+                                              className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                                                isSelected
+                                                  ? 'bg-purple-100 border-purple-500 ring-2 ring-purple-300'
+                                                  : 'bg-gray-100 border-transparent hover:bg-gray-200'
+                                              }`}
+                                            >
+                                              <div className="flex items-center gap-2">
+                                                <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${
+                                                  isSelected ? 'bg-purple-600' : 'bg-white border border-gray-300'
+                                                }`}>
+                                                  {isSelected && <Check className="w-3 h-3 text-white" />}
+                                                </div>
+                                                <div className="flex-1">
+                                                  <div className={`font-medium ${isSelected ? 'text-purple-900' : 'text-gray-900'}`}>
+                                                    {driver.full_name}
+                                                  </div>
+                                                  {driver.phone && (
+                                                    <div className="text-sm text-gray-500 flex items-center gap-1">
+                                                      <Phone className="w-3 h-3" />
+                                                      {formatPhone(driver.phone)}
+                                                    </div>
                                                   )}
-                                                </button>
+                                                </div>
                                               </div>
                                             </div>
-                                          </div>
-                                        ))}
+                                          );
+                                        })}
                                       </div>
                                     )}
+
+                                     {/* Список машин */}
+                                     {cars.length === 0 ? (
+                                       <div className="text-center py-4 text-sm text-gray-500">
+                                         Нет автомобилей
+                                       </div>
+                                     ) : (
+                                       <div className="space-y-2">
+                                         {cars.map((car) => {
+                                           const driverSelected = !!selectedDriverId;
+                                           return (
+                                             <div
+                                               key={car.id}
+                                               onClick={() => {
+                                                 if (!selectedDriverId) return;
+                                                 const driver = drivers.find(d => d.id === selectedDriverId);
+                                                 if (!driver) return;
+                                                 onSelectCar && onSelectCar({
+                                                   organizationId: organization.id,
+                                                   carId: car.id,
+                                                   driverId: driver.id,
+                                                   organizationName: organization.name,
+                                                   driverName: driver.full_name,
+                                                   phone: organization.contact_phone || '',
+                                                   carModel: car.car_model,
+                                                   plateNumber: car.plate_number,
+                                                   carType: car.car_type,
+                                                 });
+                                               }}
+                                               className={`flex items-center gap-3 bg-white p-3 rounded-lg border transition-colors ${
+                                                 driverSelected
+                                                   ? 'border-gray-200 cursor-pointer hover:border-purple-600 hover:bg-purple-50'
+                                                   : 'border-gray-100 opacity-60 cursor-not-allowed'
+                                               }`}
+                                               title={driverSelected ? 'Нажмите чтобы создать запись' : 'Сначала выберите водителя'}
+                                             >
+                                               <Car className={`w-4 h-4 ${driverSelected ? 'text-gray-600' : 'text-gray-400'}`} />
+                                               <div className="flex-1">
+                                                 <div className={`font-medium ${driverSelected ? 'text-gray-900' : 'text-gray-500'}`}>{car.car_model}</div>
+                                                 <div className="text-sm text-gray-500 flex items-center gap-2">
+                                                   {car.plate_number}
+                                                   <button
+                                                     onClick={(e) => {
+                                                       e.stopPropagation();
+                                                       copyToClipboard(car.plate_number, car.id);
+                                                     }}
+                                                     className="p-1 hover:bg-gray-100 rounded transition-colors"
+                                                     title={copiedPlateNumbers.has(car.id) ? 'Скопировано!' : 'Скопировать'}
+                                                   >
+                                                     {copiedPlateNumbers.has(car.id) ? (
+                                                       <Check className="w-3 h-3 text-green-600" />
+                                                     ) : (
+                                                       <Copy className="w-3 h-3 text-gray-500 hover:text-purple-600" />
+                                                     )}
+                                                   </button>
+                                                 </div>
+                                               </div>
+                                             </div>
+                                           );
+                                         })}
+                                       </div>
+                                     )}
                                  </div>
                                </>
                              )}
