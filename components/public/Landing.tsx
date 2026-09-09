@@ -349,7 +349,7 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
             className={`bg-white border-2 border-slate-200 rounded-2xl shadow-sm ${
               s.paddingScale === 1 ? 'p-4' : s.paddingScale === 1.5 ? 'p-6' : 'p-5'
             }`}
-            style={{ minHeight: s.layout === 'stacked' ? undefined : `${s.frameMaxHeight}px` }}
+            style={s.layout === 'stacked' ? undefined : { minHeight: 'auto' }}
           >
             {s.paragraphs.map((p, i) => {
               const sizeMap = {
@@ -594,7 +594,7 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
                 >
                   <Phone className="w-4 h-4 text-[#5BA634]" />
                 </span>
-                <span className="font-medium">+7 993 083 81 01</span>
+                <span className="font-medium">+7 993 083 81 01 <span className="text-slate-400 font-normal">— Дмитрий Николаевич</span></span>
               </a>
               <a
                 href="https://t.me/ivanov1331"
