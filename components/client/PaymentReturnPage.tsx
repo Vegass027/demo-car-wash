@@ -18,7 +18,11 @@ export function PaymentReturnPage() {
 
   const checkPaymentStatus = async (paymentId: string) => {
     try {
-      const response = await fetch(`/api/check-payment-status?paymentId=${paymentId}`);
+      const response = await fetch(`/api/payment?action=check-payment-status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paymentId }),
+      });
 
       if (!response.ok) {
         throw new Error('Ошибка проверки статуса платежа');

@@ -112,7 +112,7 @@ export const BankSelectionStep: React.FC<BankSelectionStepProps> = ({
       console.log('[BankSelectionStep] profileId:', profileId, 'type:', typeof profileId);
 
       // Создаем pending booking
-      const pendingResponse = await fetch('/api/create-pending-booking', {
+      const pendingResponse = await fetch('/api/payment?action=create-pending-booking', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestData),
@@ -132,7 +132,7 @@ export const BankSelectionStep: React.FC<BankSelectionStepProps> = ({
 
       // Создаем платеж СБП (без указания банка!)
       console.log('[BankSelectionStep] Creating payment with pending_booking_id:', pendingData.pending_booking_id);
-      const paymentResponse = await fetch('/api/create-payment-sbp', {
+      const paymentResponse = await fetch('/api/payment?action=create-payment-sbp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -202,7 +202,7 @@ export const BankSelectionStep: React.FC<BankSelectionStepProps> = ({
       setIsCheckingStatus(true); // Показываем загрузку только на кнопке
       setError(null);
 
-      const response = await fetch('/api/check-payment-status', {
+      const response = await fetch('/api/payment?action=check-payment-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pending_booking_id: pendingBookingId }),
