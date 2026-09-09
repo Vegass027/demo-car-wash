@@ -583,27 +583,27 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
             <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-4 leading-tight text-slate-900">
               Контакты для связи
             </h2>
-            <div className="flex flex-col items-start gap-3">
-              <div>
-                <a
-                  href="tel:+79930838101"
-                  className="flex items-center gap-2.5 text-base text-slate-700 hover:text-[#5BA634] transition-colors"
+            <div className="flex flex-col items-center gap-3 w-56 mx-auto">
+              <a
+                href="tel:+79930838101"
+                className="grid grid-cols-[36px_1fr] gap-2.5 items-center text-base text-slate-700 hover:text-[#5BA634] transition-colors"
+              >
+                <span
+                  className="flex-shrink-0 w-9 h-9 rounded-full bg-[#5BC634]/10 flex items-center justify-center"
+                  aria-hidden="true"
                 >
-                  <span
-                    className="flex-shrink-0 w-9 h-9 rounded-full bg-[#5BA634]/10 flex items-center justify-center"
-                    aria-hidden="true"
-                  >
-                    <Phone className="w-4 h-4 text-[#5BA634]" />
-                  </span>
-                  <span className="font-medium">+7 993 083 81 01</span>
-                </a>
-                <div className="ml-11 text-sm text-slate-500 mt-0.5">Дмитрий Николаевич</div>
-              </div>
+                  <Phone className="w-4 h-4 text-[#5BC634]" />
+                </span>
+                <div className="text-left">
+                  <div className="font-medium">+7 993 083 81 01</div>
+                  <div className="text-sm text-slate-500 mt-0.5">Дмитрий Николаевич</div>
+                </div>
+              </a>
               <a
                 href="https://t.me/ivanov1331"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-2.5 text-base text-slate-700 hover:text-[#229ED9] transition-colors"
+                className="grid grid-cols-[36px_1fr] gap-2.5 items-center text-base text-slate-700 hover:text-[#229ED9] transition-colors"
               >
                 <span
                   className="flex-shrink-0 w-9 h-9 rounded-full bg-[#229ED9]/10 flex items-center justify-center"
