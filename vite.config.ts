@@ -12,7 +12,6 @@
     server: {
       port: 3000,
       watch: {
-        // Игнорируй изменения в этих файлах
         ignored: [
           '**/.env',
           '**/.env.local',

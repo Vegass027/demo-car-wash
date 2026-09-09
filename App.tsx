@@ -1801,6 +1801,15 @@ export default function App() {
   }
 
   // Для админских views показываем Login если не авторизован
+  // DEMO: ?demo-landing=1 принудительно показывает Landing (минуя auth-check)
+  const forceLanding = typeof window !== 'undefined' && window.location.search.includes('demo-landing');
+  if (forceLanding) {
+    return <Landing onEnterDemo={() => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('demo-landing');
+      window.location.href = url.toString();
+    }} />;
+  }
   if (!isAuthenticated) {
     if (showLanding) {
       return <Landing onEnterDemo={() => setShowLanding(false)} />;
