@@ -144,7 +144,9 @@ export default async function handler(req: any, res: any) {
   console.log(`[SIMULATE-DAY] Started at: ${startTime.toISOString()}`);
 
   const authHeader = req.headers['authorization'];
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const cronHeader = req.headers['x-vercel-cron-schedule'] || req.headers['x-vercel-cron'];
+  const isVercelCron = !!cronHeader || req.headers['user-agent'] === 'vercel-cron/1.0';
+  if (!isVercelCron && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
