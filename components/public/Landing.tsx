@@ -584,18 +584,16 @@ export const Landing: React.FC<LandingProps> = ({ onEnterDemo }) => {
               Контакты для связи
             </h2>
             <div className="flex flex-col items-center gap-2.5">
-              <a
-                href="tel:+79930838101"
-                className="inline-flex items-center gap-2.5 text-base text-slate-700 hover:text-[#5BA634] transition-colors"
-              >
-                <span
-                  className="flex-shrink-0 w-9 h-9 rounded-full bg-[#7BC74D]/10 flex items-center justify-center"
-                  aria-hidden="true"
+              <div className="text-left">
+                <a
+                  href="tel:+79930838101"
+                  className="flex items-center gap-2 text-base text-slate-700 hover:text-[#5BA634] transition-colors"
                 >
-                  <Phone className="w-4 h-4 text-[#5BA634]" />
-                </span>
-                <span className="font-medium">+7 993 083 81 01 <span className="text-slate-400 font-normal">— Дмитрий Николаевич</span></span>
-              </a>
+                  <Phone className="w-4 h-4 text-[#5BA634] flex-shrink-0" />
+                  <span className="font-medium">+7 993 083 81 01</span>
+                </a>
+                <div className="ml-6 text-sm text-slate-500 mt-0.5">Дмитрий Николаевич</div>
+              </div>
               <a
                 href="https://t.me/ivanov1331"
                 target="_blank"
