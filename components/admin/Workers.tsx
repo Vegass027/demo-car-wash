@@ -742,16 +742,19 @@ export const Workers: React.FC<WorkersProps> = ({
                     <User className="w-6 h-6 text-gray-500" />
                   </div>
                   <div>
-                    <div className="font-bold text-lg flex items-center gap-2">
-                      {worker.full_name}
-                      <span className="text-gray-400">|</span>
-                      <button
-                        onClick={() => handleDeleteWorker(worker.id)}
-                        className="text-red-500 hover:text-red-700"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                     <div className="font-bold text-lg flex items-center gap-2">
+                       {worker.full_name}
+                       <span className="text-gray-400">|</span>
+                       {/* Кнопка удаления сотрудника отключена в DEMO */}
+                       {false && (
+                         <button
+                           onClick={() => handleDeleteWorker(worker.id)}
+                           className="text-red-500 hover:text-red-700"
+                         >
+                           <Trash2 className="w-4 h-4" />
+                         </button>
+                       )}
+                     </div>
                     <div className="text-sm text-gray-500 flex items-center gap-1">
                       <Phone className="w-3 h-3" /> {worker.phone}
                     </div>
@@ -1290,8 +1293,8 @@ export const Workers: React.FC<WorkersProps> = ({
                                         {transaction.transaction_type === 'PAYOUT' ? 'Выплата зарплаты' : 'Аванс'}
                                       </span>
                                     </div>
-                                    {/* Кнопка удаления только для owner */}
-                                    {userRole === 'owner' && (
+                                    {/* Кнопка удаления отключена в DEMO */}
+                                    {userRole === 'owner' && false && (
                                       <button
                                         onClick={() => handleDeleteTransaction(worker.id, transaction)}
                                         className="text-gray-400 hover:text-red-600 transition-colors"

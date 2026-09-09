@@ -241,7 +241,8 @@ export const InventoryItemCard: React.FC<InventoryItemCardProps> = ({
                 <span className="text-lg">{statusIndicator}</span>
               </>
             )}
-            {onDelete && (
+            {/* Кнопка удаления позиции со склада отключена в DEMO */}
+            {false && onDelete && (
               <>
                 <span className="text-gray-300 mx-1">|</span>
                 <button

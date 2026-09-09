@@ -66,6 +66,9 @@ type Section = {
   textSize: 'xs' | 'sm' | 'base' | 'lg';
   frameMaxHeight: number; // px
   paddingScale: 1 | 1.25 | 1.5; // для p-4/p-5/p-6
+  // 'side' = картинка слева + текст справа (default),
+  // 'stacked' = картинка сверху на всю ширину + текст снизу
+  layout: 'side' | 'stacked';
 };
 
 const SECTIONS: Section[] = [
@@ -99,6 +102,7 @@ const SECTIONS: Section[] = [
     textSize: 'sm',         // 596px картинка, 4 длинных параграфа
     frameMaxHeight: 596,
     paddingScale: 1.25,     // p-5
+    layout: 'side',
   },
   {
     id: 'upravlenie-boksami',
@@ -124,6 +128,7 @@ const SECTIONS: Section[] = [
     textSize: 'base',      // 502px картинка, 3 параграфа
     frameMaxHeight: 502,
     paddingScale: 1.5,      // p-6
+    layout: 'side',
   },
   {
     id: 'shinomontazh',
@@ -147,6 +152,7 @@ const SECTIONS: Section[] = [
     textSize: 'lg',         // 596px картинка, всего 2 параграфа — можно крупно
     frameMaxHeight: 596,
     paddingScale: 1.5,      // p-6
+    layout: 'side',
   },
   {
     id: 'online-booking',
@@ -172,6 +178,7 @@ const SECTIONS: Section[] = [
     textSize: 'base',      // 502px картинка, 3 параграфа
     frameMaxHeight: 502,
     paddingScale: 1.5,      // p-6
+    layout: 'side',
   },
   {
     id: 'personal',
@@ -196,7 +203,8 @@ const SECTIONS: Section[] = [
     tone: 'white',
     textSize: 'lg',         // 447px картинка, 3 параграфа
     frameMaxHeight: 447,
-    paddingScale: 1.25,     // p-5
+    paddingScale: 1.5,      // p-6
+    layout: 'stacked',     // картинка сверху на всю ширину, текст под ней
   },
   {
     id: 'svodka',
@@ -222,6 +230,7 @@ const SECTIONS: Section[] = [
     textSize: 'lg',         // 397px картинка, 3 параграфа
     frameMaxHeight: 397,
     paddingScale: 1.5,      // p-6
+    layout: 'stacked',     // картинка сверху на всю ширину, текст под ней
   },
   {
     id: 'analitika',
@@ -247,9 +256,10 @@ const SECTIONS: Section[] = [
     image: '/landing/analitika-2.png',
     imageAlt: 'Аналитика — реальный интерфейс CRM',
     tone: 'white',
-    textSize: 'xs',         // 672px картинка, 4 длинных параграфа
+    textSize: 'lg',         // 672px картинка, 4 параграфа — крупный текст
     frameMaxHeight: 672,
-    paddingScale: 1,        // p-4 (компактнее)
+    paddingScale: 1.25,     // p-5
+    layout: 'side',
   },
   {
     id: 'sklad',
@@ -271,9 +281,10 @@ const SECTIONS: Section[] = [
     image: '/landing/sklad.png',
     imageAlt: 'Склад — реальный интерфейс CRM',
     tone: 'slate',
-    textSize: 'xs',         // 894px картинка, 3 параграфа
+    textSize: 'lg',         // 894px картинка, 3 параграфа — крупный текст
     frameMaxHeight: 894,
-    paddingScale: 1,        // p-4
+    paddingScale: 1.5,      // p-6
+    layout: 'side',
   },
 ];
 
@@ -305,10 +316,15 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
 
       {/* Картинка слева + текст в рамке справа на одной линии (на PC), стек на мобиле.
           max-w-7xl (1280px) + col-span-9 image + col-span-3 text —
-          картинка использует почти всю ширину страницы. */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid lg:grid-cols-12 gap-6 lg:gap-6 items-start">
-        {/* Картинка слева (9/12 колонок на PC) — большая, на всю ширину */}
-        <div className="lg:col-span-9">
+          картинка использует почти всю ширину страницы.
+          Для layout='stacked' — картинка на всю ширину над текстом. */}
+      <div className={`max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 ${
+        s.layout === 'stacked'
+          ? 'flex flex-col gap-8'
+          : 'grid lg:grid-cols-12 gap-6 lg:gap-6 items-start'
+      }`}>
+        {/* Картинка (9/12 колонок на PC если side, или full width если stacked) */}
+        <div className={s.layout === 'stacked' ? 'w-full' : 'lg:col-span-9'}>
           <button
             type="button"
             onClick={() => setZoom(s.image)}
@@ -327,17 +343,13 @@ const SectionBlock: React.FC<{ s: Section }> = ({ s }) => {
           </div>
         </div>
 
-        {/* Текст в рамке справа (3/12 колонок на PC) — sticky-колонка
-            с индивидуальным размером текста и высотой рамки,
-            подобранной под высоту картинки (см. SECTIONS).
-            overflow-y НЕТ — текст НЕ скроллится внутри рамки,
-            выходит за её границы если параграфов больше. */}
-        <div className="lg:col-span-3">
+        {/* Текст в рамке (3/12 колонок справа если side, full width снизу если stacked) */}
+        <div className={s.layout === 'stacked' ? 'w-full max-w-3xl mx-auto' : 'lg:col-span-3'}>
           <div
             className={`bg-white border-2 border-slate-200 rounded-2xl shadow-sm ${
               s.paddingScale === 1 ? 'p-4' : s.paddingScale === 1.5 ? 'p-6' : 'p-5'
             }`}
-            style={{ minHeight: `${s.frameMaxHeight}px` }}
+            style={{ minHeight: s.layout === 'stacked' ? undefined : `${s.frameMaxHeight}px` }}
           >
             {s.paragraphs.map((p, i) => {
               const sizeMap = {

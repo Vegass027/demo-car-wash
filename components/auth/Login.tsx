@@ -4,7 +4,7 @@ import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card';
 import { cn } from '../../lib/utils';
-import { Lock, Eye, EyeOff, Info } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { setSessionToken } from '../../lib/supabase';
 
 interface LoginProps {
@@ -26,8 +26,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [showDemoCreds, setShowDemoCreds] = useState(false);
-  const [showDemoPassword, setShowDemoPassword] = useState(false);
+  const [showDemoPassword] = useState(false); // unused, kept for backward compat
 
   // DEMO credentials (placeholder — actual passwords set by owner in DEMO DB).
   // Click a chip to autofill the form. In a real production build these
@@ -39,8 +38,8 @@ export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
       window.location.hostname.startsWith('192.168.') ||
       window.location.hostname.endsWith('.vercel.app') && window.location.hostname.startsWith('demo'));
   const demoCreds = [
-    { label: 'Владелец', login: 'demo_owner', password: 'demo123', role: 'owner', color: 'amber' },
-    { label: 'Админ',    login: 'demo_admin', password: 'demo123', role: 'admin', color: 'blue' },
+    { label: 'Владелец', login: 'demo_owner', password: 'demo123', role: 'owner' },
+    { label: 'Админ',    login: 'demo_admin', password: 'demo123', role: 'admin' },
   ];
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -148,29 +147,14 @@ export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
           </form>
 
           {isDemoBuild && (
-            <div className="mt-6 pt-4 border-t-2 border-amber-400 bg-amber-50 rounded-lg p-4 -mx-2">
-              <button
-                type="button"
-                onClick={() => setShowDemoCreds(!showDemoCreds)}
-                className="w-full flex items-center justify-center gap-2 text-base font-bold text-amber-900 hover:text-amber-700 transition-colors py-2"
-              >
-                <Info className="w-5 h-5" />
-                <span>Демо акаунты разверни чтобы получить логи и пароль</span>
-              </button>
-              {showDemoCreds && (
-                <div className="mt-4 space-y-2 text-xs">
-                  <div className="flex items-center justify-end mb-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowDemoPassword(!showDemoPassword)}
-                      className="text-gray-500 hover:text-gray-800 flex items-center gap-1 text-xs"
-                      title={showDemoPassword ? 'Скрыть пароли' : 'Показать пароли'}
-                    >
-                      {showDemoPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      <span>{showDemoPassword ? 'Скрыть' : 'Показать'}</span>
-                    </button>
-                  </div>
-                  {demoCreds.map((cred) => (
+            <div className="mt-6 pt-4 border-t border-slate-200">
+              <p className="text-center text-sm text-slate-500 mb-3">
+                Нажмите на роль — данные заполнятся автоматически
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                {demoCreds.map((cred) => {
+                  const isSelected = login === cred.login && password === cred.password;
+                  return (
                     <button
                       key={cred.role}
                       type="button"
@@ -180,24 +164,17 @@ export const Login: React.FC<LoginProps> = ({ onLogin, expiredMessage }) => {
                         setError('');
                       }}
                       className={cn(
-                        "w-full text-left p-2 rounded-md border transition-all hover:shadow-sm",
-                        cred.color === 'amber' && "border-amber-300 bg-amber-50 hover:bg-amber-100",
-                        cred.color === 'blue' && "border-blue-300 bg-blue-50 hover:bg-blue-100",
+                        "h-14 rounded-xl border-2 font-bold text-base transition-all",
+                        isSelected
+                          ? "border-[#5BA634] bg-[#7BC74D] text-white shadow-md"
+                          : "border-slate-200 bg-white text-slate-700 hover:border-[#7BC74D] hover:bg-[#7BC74D]/5"
                       )}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="font-semibold text-gray-900">{cred.label}</div>
-                        <span className="text-[10px] text-gray-500 bg-white px-1.5 py-0.5 rounded border">клик → заполнить</span>
-                      </div>
-                      <div className="text-gray-600 mt-0.5 font-mono text-[11px]">
-                        <span>логин: {cred.login}</span>
-                        <span className="mx-1.5">•</span>
-                        <span>пароль: {showDemoPassword ? cred.password : '••••••••'}</span>
-                      </div>
+                      Роль: {cred.label}
                     </button>
-                  ))}
-                </div>
-              )}
+                  );
+                })}
+              </div>
             </div>
           )}
         </CardContent>

@@ -957,18 +957,21 @@ export const OnlineTireBookingWizard: React.FC<OnlineTireBookingWizardProps> = (
                       <QrCode className={cn("w-6 h-6", paymentMethod === 'QR-code' ? "text-primary" : "text-gray-400")} />
                       <span className={cn("font-bold text-sm", paymentMethod === 'QR-code' ? "" : "text-gray-400")}>QR-code</span>
                     </button>
-                    <button
-                      onClick={() => setPaymentMethod('СБП')}
-                      className={cn(
-                        "border-2 rounded-xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer min-h-[80px]",
-                        paymentMethod === 'СБП'
-                          ? "border-primary bg-blue-50"
-                          : "border hover:border-primary hover:bg-blue-50"
-                      )}
-                    >
-                      <Building2 className={cn("w-6 h-6", paymentMethod === 'СБП' ? "text-primary" : "text-gray-400")} />
-                      <span className={cn("font-bold text-sm", paymentMethod === 'СБП' ? "" : "text-gray-400")}>СБП</span>
-                    </button>
+                    {/* СБП отключён в DEMO */}
+                    {false && (
+                      <button
+                        onClick={() => setPaymentMethod('СБП')}
+                        className={cn(
+                          "border-2 rounded-xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer min-h-[80px]",
+                          paymentMethod === 'СБП'
+                            ? "border-primary bg-blue-50"
+                            : "border hover:border-primary hover:bg-blue-50"
+                        )}
+                      >
+                        <Building2 className={cn("w-6 h-6", paymentMethod === 'СБП' ? "text-primary" : "text-gray-400")} />
+                        <span className={cn("font-bold text-sm", paymentMethod === 'СБП' ? "" : "text-gray-400")}>СБП</span>
+                      </button>
+                    )}
                     <button
                       onClick={() => setPaymentMethod('Ведомость')}
                       className={cn(

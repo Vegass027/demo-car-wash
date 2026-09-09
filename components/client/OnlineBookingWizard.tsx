@@ -669,23 +669,26 @@ export const OnlineBookingWizard: React.FC<OnlineBookingWizardProps> = ({
                       : "border hover:border-primary hover:bg-blue-50"
                   )}
                 >
-                  <Send className={cn("w-6 h-6", paymentMethod === 'Перевод' ? "text-primary" : "text-gray-400")} />
-                  <span className={cn("font-bold text-sm", paymentMethod === 'Перевод' ? "" : "text-gray-400")}>Перевод</span>
-                </button>
-                <button
-                  onClick={() => setPaymentMethod('СБП')}
-                  className={cn(
-                    "border-2 rounded-xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer",
-                    paymentMethod === 'СБП'
-                      ? "border-primary bg-blue-50"
-                      : "border hover:border-primary hover:bg-blue-50"
-                  )}
-                >
-                  <Building2 className={cn("w-6 h-6", paymentMethod === 'СБП' ? "text-primary" : "text-gray-400")} />
-                  <span className={cn("font-bold text-sm", paymentMethod === 'СБП' ? "" : "text-gray-400")}>СБП</span>
-                </button>
-                <button
-                  onClick={() => setPaymentMethod('QR-code')}
+                   <Send className={cn("w-6 h-6", paymentMethod === 'Перевод' ? "text-primary" : "text-gray-400")} />
+                   <span className={cn("font-bold text-sm", paymentMethod === 'Перевод' ? "" : "text-gray-400")}>Перевод</span>
+                 </button>
+                 {/* СБП отключён в DEMO */}
+                 {false && (
+                   <button
+                     onClick={() => setPaymentMethod('СБП')}
+                     className={cn(
+                       "border-2 rounded-xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer",
+                       paymentMethod === 'СБП'
+                         ? "border-primary bg-blue-50"
+                         : "border hover:border-primary hover:bg-blue-50"
+                     )}
+                   >
+                     <Building2 className={cn("w-6 h-6", paymentMethod === 'СБП' ? "text-primary" : "text-gray-400")} />
+                     <span className={cn("font-bold text-sm", paymentMethod === 'СБП' ? "" : "text-gray-400")}>СБП</span>
+                   </button>
+                 )}
+                 <button
+                   onClick={() => setPaymentMethod('QR-code')}
                   className={cn(
                     "border-2 rounded-xl p-4 flex flex-col items-center justify-center gap-2 cursor-pointer",
                     paymentMethod === 'QR-code'
