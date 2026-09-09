@@ -1,5 +1,4 @@
 import { createClient } from '@supabase/supabase-js';
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -140,7 +139,7 @@ async function hasOpenShift(workerId: string, workerType: 'worker' | 'tire_worke
   return !!(data && data.length > 0);
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   const startTime = new Date();
   console.log(`[SIMULATE-DAY] Started at: ${startTime.toISOString()}`);
 
