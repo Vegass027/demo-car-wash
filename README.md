@@ -1,20 +1,42 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# CarWash Demo
 
-# Run and deploy your AI Studio app
+Демо-копия [carwash-admin-pro](../carwash-admin-pro) для безопасной проверки миграций, фиксов и security-локадауна **без касания прода**.
 
-This contains everything you need to run your app locally.
+## Стек (как в проде)
 
-View your app in AI Studio: https://ai.studio/apps/drive/1vxGKz24Tx5A-fOamCI96cvEdkdr0Ggbm
+- React 18 + TypeScript + Vite + Tailwind + Radix UI
+- Supabase (test-проект `danobongqzbxilyvdwig` — НЕ продовый)
+- Telegram Mini App (test-бот)
+- Vercel (preview-деплои: `demo-car-wash.vercel.app`)
 
-## Run Locally
+## Что здесь другое (vs прод)
 
-**Prerequisites:**  Node.js
+| | Прод | Demo |
+|---|---|---|
+| Supabase project | `avajtwihzjfpytimfbaw` | `danobongqzbxilyvdwig` |
+| Telegram bot | прод-токен | test-токен |
+| Vercel URL | прод-домен | `demo-car-wash.vercel.app` |
+| GitHub | `Vegass027/avtomoika-crm-dovatora-prod` | `Vegass027/demo-car-wash` |
+| БД | реальные клиенты мойки | синтетические seed-данные |
 
+## Локальный запуск
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```bash
+pnpm install
+# заполнить .env.local (test-ключи Supabase + Telegram-бота)
+pnpm dev
+```
+
+## Деплой
+
+Push в `main` → авто-деплой на Vercel preview.
+
+## Документация
+
+Вся документация лежит локально в `docs/` (НЕ в гите — см. `.gitignore`):
+- `docs/architecture/` — текущее состояние и инструкции
+- `docs/security/` — планы локадауна
+- `docs/business/` — бизнес-логика
+- `docs/archive/` — старые планы, миграции, SQL
+
+Прод-репо: `github.com/Vegass027/avtomoika-crm-dovatora-prod` (`/Users/dmitriy/Downloads/carwash-admin-pro`).
