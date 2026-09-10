@@ -11,16 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
-
-# Environment variables (NEVER commit secrets)
 .env
-.env.*
-!.env.example
-
-# Database dumps (contain sensitive data)
-дамп/
-dump/
-*.sql.gz
 
 # Editor directories and files
 .vscode/*
@@ -32,20 +23,52 @@ dump/
 *.njsproj
 *.sln
 *.sw?
-
-# Platform configs
 .vercel
-.kilo
-.kilocode
 
-# Supabase CLI temp
+# AI agent / IDE configs (state lives locally, never in repo)
+.kilo/
+.kilocode/
+.cursor/
+.aider*
+
+# Local-only documentation (kept on disk, not shared)
+docs/
+
+# Database migrations (applied via Supabase MCP; not committed to repo)
+migrations/
+supabase/migrations/
 supabase/.temp/
 
-# Local smoke/test scripts (NEVER commit — review with owner first)
+# Database dumps and one-off backups
+дамп/
+*.dump
+*.dump.sql
+*.bak
+*.sql.gz
+
+# Local-only binary assets (landing mockups, etc.)
+photo-lending/
+
+# Local-only test/smoke scripts
+tests/
+browser-smoke-checklist.mjs
+phase-b-smoke.mjs
+realtime-*-smoke.mjs
+realtime-*-diag*.mjs
 realtime-smoke.mjs
-*-smoke.mjs
-*smoke-checklist.mjs
-*diag*.mjs
-*isolation*.mjs
-*get-client-jwt.mjs
-*realtime-diag2.mjs
+realtime-diag.mjs
+realtime-diag2.mjs
+realtime-isolation-*.mjs
+recon-*.mjs
+recon-*.md
+get-client-jwt.mjs
+test-*.mjs
+test-*.sh
+test-003-*.sh
+test-slice1-*.mjs
+test-slice1-*.sh
+test-slice2-*.mjs
+test-slice2-*.sh
+
+# TypeScript build info
+*.tsbuildinfo
