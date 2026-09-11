@@ -122,10 +122,17 @@ export const MyGarage: React.FC<MyGarageProps> = ({
     // брони должен увидеть её мгновенно через этот канал. Dedup по id
     // уже внутри appendCarwashBooking/appendTireBooking.
     const handleBookingCreated = (e: Event) => {
-      const ce = e as CustomEvent<{ booking: Booking } | { booking: TireBooking }>;
+      const ce = e as CustomEvent<{ type?: 'carwash' | 'tire'; booking: Booking | TireBooking }>;
       const booking = ce.detail?.booking;
       if (!booking) return;
-      if ('services_with_quantities' in booking || 'estimated_duration' in booking) {
+      // ✅ BUG3 v2: type discriminator from event detail. Both ClientBookingWrapper
+      // and ClientTireBookingWrapper now dispatch with type='carwash'|'tire'.
+      // Falls back to duck-typing only if older wrapper omitted type (defensive).
+      if (ce.detail?.type === 'tire') {
+        appendTireBooking(booking as TireBooking);
+      } else if (ce.detail?.type === 'carwash') {
+        appendCarwashBooking(booking as Booking);
+      } else if ('estimated_duration' in booking) {
         appendTireBooking(booking as TireBooking);
       } else {
         appendCarwashBooking(booking as Booking);
