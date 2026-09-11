@@ -15,9 +15,11 @@ export function useActiveBookings(
   profileId: string | null | undefined,
   driverIds: string[]
 ): ActiveBookingData {
-  // [BUG3-DIAG v2] Fires on every render (before any early-return). Confirms
-  // the hook is being called by the component.
-  console.log(`[BUG3-DIAG v2] useActiveBookings render profileId=${profileId} driverIds.length=${driverIds?.length ?? 0}`);
+  // [BUG3-DIAG v2] DOM-based diagnostic (no console.log, iOS WebView may filter).
+  // Updates document.title which is visible in Telegram tab title bar.
+  if (typeof document !== 'undefined') {
+    document.title = `[AB pid=${profileId ?? 'null'} di=${driverIds?.length ?? 0}]`;
+  }
   const [carwashBookings, setCarwashBookings] = useState<Booking[]>([]);
   const [tireBookings, setTireBookings] = useState<TireBooking[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -81,7 +83,10 @@ export function useActiveBookings(
         table: 'bookings',
         filter: `created_by_profile_id=eq.${profileId}`
       }, async (payload: any) => {
-        console.log(`[BUG3-DIAG] bookings eventType=${payload.eventType} id=${payload?.new?.id} status=${payload?.new?.status} date=${payload?.new?.booking_date}`);
+        // [BUG3-DIAG v2] DOM-based diagnostic.
+        if (typeof document !== 'undefined') {
+          document.title = `[AB bk ev=${payload.eventType} st=${payload?.new?.status}]`;
+        }
 
         // ✅ Оптимистичное обновление без мигания
         if (payload.eventType === 'UPDATE' && payload.new) {
@@ -115,7 +120,10 @@ export function useActiveBookings(
         }
       })
       .subscribe((status) => {
-        console.log(`[BUG3-DIAG] channel active-bookings:bookings status=${status}`);
+        // [BUG3-DIAG v2] DOM-based diagnostic.
+        if (typeof document !== 'undefined') {
+          document.title = `[AB bs=${status}]`;
+        }
       });
 
     // Подписка на tire_bookings (шиномонтаж) с фильтрацией по profile_id

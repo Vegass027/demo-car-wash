@@ -56,14 +56,14 @@ export const MyGarage: React.FC<MyGarageProps> = ({
 
   // Загрузка данных клиента
   const loadClientData = async () => {
-    // [BUG3-DIAG v2] Fires every time loadClientData runs (mount + manual retry).
-    console.log('[BUG3-DIAG v2] MyGarage.loadClientData START');
+    // [BUG3-DIAG v2] DOM-based diagnostic (iOS WebView may filter console.log).
+    if (typeof document !== 'undefined') document.title = '[MG lcd START]';
     try {
       // Phase 1.6b: HMAC-verified /api/telegram-auth replaces 4-step lookup.
       // Server-side role-check ensures admin/owner with linked Telegram
       // get 403, not a stolen client UI.
       const { profile_id } = await loginViaTelegram();
-      console.log(`[BUG3-DIAG v2] loginViaTelegram returned profile_id=${profile_id}`);
+      if (typeof document !== 'undefined') document.title = `[MG lcd login pid=${profile_id}]`;
 
       // profilePhone теперь приходит из useClientCars (data.client.phone из
       // /api/client?action=get-my-cars) — см. sync-effect ниже. Прямой supabase
@@ -75,7 +75,7 @@ export const MyGarage: React.FC<MyGarageProps> = ({
         .select('id')
         .eq('profile_id', profile_id)
         .single();
-      console.log(`[BUG3-DIAG v2] clients lookup client=${client?.id} error=${clientError?.message ?? 'none'}`);
+      if (typeof document !== 'undefined') document.title = `[MG lcd cli cl=${client?.id} err=${clientError?.message ?? 'none'}]`;
 
       if (clientError || !client) {
         setError('Клиент не найден');
@@ -85,7 +85,7 @@ export const MyGarage: React.FC<MyGarageProps> = ({
 
       setProfileId(profile_id);
       setClientId(client.id);
-      console.log('[BUG3-DIAG v2] MyGarage.loadClientData DONE setProfileId=' + profile_id);
+      if (typeof document !== 'undefined') document.title = `[MG lcd DONE pid=${profile_id}]`;
     } catch (err) {
       // TelegramAuthError → typed UI; other errors → generic.
       const maybeAuthErr = err as Partial<TelegramAuthError>;
