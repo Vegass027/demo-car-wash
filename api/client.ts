@@ -316,17 +316,27 @@ async function createBooking(claims: { profile_id: string }, body: AnyObj): Prom
     if (!own) return { status: 403, body: { error: 'client_car_id_not_owned' } };
   }
   if (driver_id) {
+    if (!organization_id) {
+      return { status: 400, body: { error: 'organization_id_required_for_driver' } };
+    }
     if (!ownPhone) return { status: 403, body: { error: 'driver_id_phone_missing' } };
-    const { data: own, error } = await supabaseAdmin
+    const { data: ownDriver, error: driverError } = await supabaseAdmin
       .from('organization_drivers')
-      .select('id').eq('id', driver_id).eq('phone', ownPhone).eq('is_active', true).maybeSingle();
-    if (error) {
-      console.error('[client:create-booking] driver_id ownership error:', error.message);
+      .select('id')
+      .eq('id', driver_id)
+      .eq('organization_id', organization_id)
+      .eq('phone', ownPhone)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (driverError) {
+      console.error('[client:create-booking] driver ownership check failed:', driverError.message);
       return failAction(500, 'db_error');
     }
-    if (!own) return { status: 403, body: { error: 'driver_id_not_owned' } };
+    if (!ownDriver) {
+      return { status: 403, body: { error: 'driver_organization_not_owned' } };
+    }
   }
-  if (organization_id) {
+  if (organization_id && !driver_id) {
     if (!ownPhone) return { status: 403, body: { error: 'organization_id_phone_missing' } };
     const { data: own, error } = await supabaseAdmin
       .from('organization_drivers').select('id')
@@ -716,17 +726,26 @@ async function createTireBooking(claims: { profile_id: string }, body: AnyObj): 
     if (!own) return { status: 403, body: { error: 'client_car_id_not_owned' } };
   }
   if (driver_id) {
+    if (!organization_id) {
+      return { status: 400, body: { error: 'organization_id_required_for_driver' } };
+    }
     if (!ownPhone) return { status: 403, body: { error: 'driver_id_phone_missing' } };
-    const { data: own, error } = await supabaseAdmin
+    const { data: ownDriver, error: driverError } = await supabaseAdmin
       .from('organization_drivers').select('id')
-      .eq('id', driver_id).eq('phone', ownPhone).eq('is_active', true).maybeSingle();
-    if (error) {
-      console.error('[client:create-tire-booking] driver_id ownership error:', error.message);
+      .eq('id', driver_id)
+      .eq('organization_id', organization_id)
+      .eq('phone', ownPhone)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (driverError) {
+      console.error('[client:create-tire-booking] driver ownership check failed:', driverError.message);
       return failAction(500, 'db_error');
     }
-    if (!own) return { status: 403, body: { error: 'driver_id_not_owned' } };
+    if (!ownDriver) {
+      return { status: 403, body: { error: 'driver_organization_not_owned' } };
+    }
   }
-  if (organization_id) {
+  if (organization_id && !driver_id) {
     if (!ownPhone) return { status: 403, body: { error: 'organization_id_phone_missing' } };
     const { data: own, error } = await supabaseAdmin
       .from('organization_drivers').select('id')
