@@ -603,11 +603,11 @@ export default function App() {
   };
 
   // Функции загрузки заказов из Supabase с кэшированием
-  const loadBookings = async (date?: string) => {
+  const loadBookings = async (date?: string, force = false) => {
     const targetDate = date || selectedDate;
-    
-    // Проверяем, есть ли данные в кэше
-    if (bookingsByDate[targetDate] && bookingsByDate[targetDate].length > 0) {
+
+    // Проверяем, есть ли данные в кэше (если не force)
+    if (!force && bookingsByDate[targetDate] && bookingsByDate[targetDate].length > 0) {
       console.log(`[App] Загрузка заказов из кэша для даты: ${targetDate}`);
       return bookingsByDate[targetDate];
     }
@@ -662,15 +662,20 @@ export default function App() {
   };
 
   // Функция для обновления данных без race condition
+  // Всегда форсирует refetch (обходит кэш) и, если передана newDate,
+  // синхронизирует selectedDate с ней, чтобы DayTimeline показал
+  // именно ту дату, на которую только что создали бронь.
   const refreshBookingsData = async (newDate?: string) => {
     if (newDate && newDate !== selectedDate) {
-      // Дата изменилась → useEffect перезагрузит автоматически
       setSelectedDate(newDate);
-    } else {
-      // Дата та же → загружаем вручную
-      await loadBookings();
-      await loadQuickBookings();
+      // Дата сменится → useEffect перезагрузит автоматически, ничего не делаем
+      return;
     }
+    // Дата та же (или не передана) → загружаем вручную с force=true,
+    // чтобы гарантированно увидеть только что созданную бронь,
+    // даже если для этой даты в кэше уже есть >0 записей.
+    await loadBookings(undefined, true);
+    await loadQuickBookings();
   };
 
   // Функция для обновления данных шиномонтажа без race condition
@@ -735,13 +740,11 @@ export default function App() {
         
         // Определяем дату изменённого заказа
         const bookingDate = payload.new?.booking_date || payload.old?.booking_date;
-        console.log('[App][realtime-bookings] payload booking_date=', bookingDate, 'eventType=', payload.eventType, 'selectedDate=', selectedDate);
 
         if (bookingDate) {
           // Перезагружаем данные из БД для конкретной даты (игнорируя кэш)
           try {
             const data = await getBookingsByDate(bookingDate);
-            console.log('[App][realtime-bookings] refetched date=', bookingDate, 'count=', data?.length, 'ids=', (data || []).map(b => b.id).join(','));
             setBookingsByDate(prev => cleanOldCache({
               ...prev,
               [bookingDate]: data || []

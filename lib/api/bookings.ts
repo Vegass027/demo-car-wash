@@ -134,7 +134,6 @@ export async function getBookingsByDate(date: string): Promise<Booking[]> {
     .order('start_time', { ascending: true, nullsFirst: false });
 
   if (error) throw error;
-  console.log('[getBookingsByDate] date=', date, 'count=', data?.length, 'ids=', (data || []).map(b => `${b.id.slice(0,8)}(${b.start_time})`).join(','));
   return data as Booking[];
 }
 
