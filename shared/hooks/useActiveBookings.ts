@@ -13,7 +13,7 @@ export interface ActiveBookingData {
 
 export function useActiveBookings(
   profileId: string | null | undefined,
-  profilePhone?: string | null
+  driverIds: string[]
 ): ActiveBookingData {
   const [carwashBookings, setCarwashBookings] = useState<Booking[]>([]);
   const [tireBookings, setTireBookings] = useState<TireBooking[]>([]);
@@ -33,14 +33,16 @@ export function useActiveBookings(
       setError(null);
 
       // ✅ Получаем ВСЕ записи клиента (личные + организационные)
-      const allCarwashBookings = await getAllBookingsForClient(profileId, profilePhone);
+      // driverIds приходят из useClientCars → get-my-cars (server-resolved).
+      // Не делаем собственный client-side запрос к organization_drivers.
+      const allCarwashBookings = await getAllBookingsForClient(profileId, driverIds);
       // Фильтруем только активные (ОЖИДАЕТ, В РАБОТЕ)
       const activeCarwashBookings = allCarwashBookings.filter(
         (booking) => booking.status === 'ОЖИДАЕТ' || booking.status === 'В РАБОТЕ'
       );
 
       // ✅ Получаем ВСЕ записи шиномонтажа (личные + организационные)
-      const allTireBookings = await getAllTireBookingsForClient(profileId, profilePhone);
+      const allTireBookings = await getAllTireBookingsForClient(profileId, driverIds);
       // Фильтруем только активные (ОЖИДАЕТ, В РАБОТЕ)
       const activeTireBookings = allTireBookings.filter(
         (booking) => booking.status === 'ОЖИДАЕТ' || booking.status === 'В РАБОТЕ'
@@ -59,7 +61,7 @@ export function useActiveBookings(
   // Первичная загрузка при монтировании
   useEffect(() => {
     fetchActiveBookings();
-  }, [profileId, profilePhone]);
+  }, [profileId, driverIds]);
 
   // ✅ Supabase Realtime подписка на изменения в bookings и tire_bookings
   useEffect(() => {

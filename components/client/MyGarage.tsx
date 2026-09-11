@@ -45,8 +45,8 @@ export const MyGarage: React.FC<MyGarageProps> = ({
   const [showAddCarForm, setShowAddCarForm] = useState(false);
 
   // Хуки для данных
-  const { cars, isLoading: carsLoading, addCar, appendCar, refetch: refetchCars, profilePhone: hookPhone } = useClientCars(profileId);
-  const { carwashBookings, tireBookings, isLoading: activeBookingsLoading, refetch: refetchActiveBookings } = useActiveBookings(profileId, profilePhone);
+  const { cars, isLoading: carsLoading, addCar, appendCar, refetch: refetchCars, profilePhone: hookPhone, driverIds } = useClientCars(profileId);
+  const { carwashBookings, tireBookings, isLoading: activeBookingsLoading, refetch: refetchActiveBookings } = useActiveBookings(profileId, driverIds);
   const { 
     carwashBookings: historyCarwash, 
     tireBookings: historyTire, 

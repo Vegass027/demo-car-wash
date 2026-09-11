@@ -706,10 +706,10 @@ export async function getTireBookingsByProfileId(profileId: string): Promise<Tir
  */
 export async function getAllTireBookingsForClient(
   profileId: string,
-  profilePhone?: string
+  driverIds: string[]
 ): Promise<TireBooking[]> {
-  console.log('[getAllTireBookingsForClient] profileId:', profileId, 'phone:', profilePhone);
-  
+  console.log('[getAllTireBookingsForClient] profileId:', profileId, 'driverIds:', driverIds);
+
   // 1. Получаем личные записи клиента
   const { data: personalBookings, error: personalError } = await supabase
     .from('tire_bookings')
@@ -722,33 +722,16 @@ export async function getAllTireBookingsForClient(
 
   console.log('[getAllTireBookingsForClient] Личных записей:', personalBookings?.length || 0);
 
-  // Если телефон не передан, возвращаем только личные записи
-  if (!profilePhone) {
+  // Если driver_ids пуст, возвращаем только личные записи
+  if (driverIds.length === 0) {
     return (personalBookings || []) as TireBooking[];
   }
 
-  // 2. Находим driver_id по телефону
-  const normalizedPhone = normalizePhoneNumber(profilePhone);
-  const { data: driver, error: driverError } = await supabase
-    .from('organization_drivers')
-    .select('id')
-    .eq('phone', normalizedPhone)
-    .eq('is_active', true)
-    .single();
-
-  if (driverError || !driver) {
-    // Водитель не найден - возвращаем только личные записи
-    console.log('[getAllTireBookingsForClient] Водитель не найден для телефона:', normalizedPhone);
-    return (personalBookings || []) as TireBooking[];
-  }
-
-  console.log('[getAllTireBookingsForClient] Найден водитель:', driver.id);
-
-  // 3. Получаем записи организации для этого водителя
+  // 2. Получаем записи организации через driver_id IN (мульти-org корректно)
   const { data: orgBookings, error: orgError } = await supabase
     .from('tire_bookings')
     .select('*')
-    .eq('driver_id', driver.id);
+    .in('driver_id', driverIds);
 
   if (orgError) {
     console.error('[getAllTireBookingsForClient] Error fetching organization bookings:', orgError);

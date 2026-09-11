@@ -23,6 +23,7 @@ export interface UseClientCarsResult {
   isLoading: boolean;
   error: string | null;
   profilePhone: string | null;
+  driverIds: string[];
   addCar: (carModel: string, plateNumber: string, carType: string) => Promise<void>;
   appendCar: (car: CombinedCar) => void;
   refetch: () => Promise<void>;
@@ -49,6 +50,7 @@ export function useClientCars(profileId: string | null | undefined): UseClientCa
   const [error, setError] = useState<string | null>(null);
   const [clientId, setClientId] = useState<string | null>(null);
   const [serverPhone, setServerPhone] = useState<string | null>(null);
+  const [driverIds, setDriverIds] = useState<string[]>([]);
 
   const fetchCars = async () => {
     if (!profileId) {
@@ -94,6 +96,8 @@ export function useClientCars(profileId: string | null | undefined): UseClientCa
       setClientId(ownId);
       const ownPhone: string | null = data?.client?.phone ?? null;
       setServerPhone(ownPhone);
+      const ids: string[] = Array.isArray(data?.driver_ids) ? data!.driver_ids : [];
+      setDriverIds(ids);
 
       const serverCars: CombinedCar[] = Array.isArray(data?.combined_cars)
         ? data.combined_cars
@@ -186,6 +190,7 @@ export function useClientCars(profileId: string | null | undefined): UseClientCa
     isLoading,
     error,
     profilePhone: serverPhone,
+    driverIds,
     addCar,
     appendCar,
     refetch: fetchCars,

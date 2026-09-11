@@ -172,20 +172,23 @@ async function getMyCars(claims: { profile_id: string }): Promise<ActionResult> 
     });
   }
 
+  const driverIds: string[] = [];
   if (ownPhone) {
     const { data: drivers, error: driverErr } = await supabaseAdmin
       .from('organization_drivers')
       .select('id, organization_id')
       .eq('phone', ownPhone)
-      .eq('is_active', true)
-      .limit(1);
+      .eq('is_active', true);
     if (driverErr) {
       console.error('[client:get-my-cars] org_drivers lookup error:', driverErr.message);
       return failAction(500, 'db_error');
     }
-    const driver = drivers?.[0];
-    if (driver) {
-      const orgId = driver.organization_id as string;
+    const orgIds = new Set<string>();
+    for (const driver of drivers ?? []) {
+      driverIds.push(driver.id as string);
+      orgIds.add(driver.organization_id as string);
+    }
+    for (const orgId of orgIds) {
       const [{ data: org, error: orgErr }, { data: orgCars, error: orgCarsErr }] = await Promise.all([
         supabaseAdmin.from('organizations').select('name').eq('id', orgId).maybeSingle(),
         supabaseAdmin
@@ -219,6 +222,7 @@ async function getMyCars(claims: { profile_id: string }): Promise<ActionResult> 
       data: {
         client: { id: ownClientId, phone: ownPhone, online_booking_blocked_until: blockedUntil },
         combined_cars,
+        driver_ids: driverIds,
       },
     },
   };

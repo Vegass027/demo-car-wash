@@ -697,10 +697,10 @@ export async function getBookingsByProfileId(profileId: string): Promise<Booking
  */
 export async function getAllBookingsForClient(
   profileId: string,
-  profilePhone?: string
+  driverIds: string[]
 ): Promise<Booking[]> {
-  console.log('[getAllBookingsForClient] profileId:', profileId, 'phone:', profilePhone);
-  
+  console.log('[getAllBookingsForClient] profileId:', profileId, 'driverIds:', driverIds);
+
   // 1. Получаем личные записи клиента
   const { data: personalBookings, error: personalError } = await supabase
     .from('bookings')
@@ -713,33 +713,16 @@ export async function getAllBookingsForClient(
 
   console.log('[getAllBookingsForClient] Личных записей:', personalBookings?.length || 0);
 
-  // Если телефон не передан, возвращаем только личные записи
-  if (!profilePhone) {
+  // Если driver_ids пуст (клиент не водитель), возвращаем только личные записи
+  if (driverIds.length === 0) {
     return (personalBookings || []) as Booking[];
   }
 
-  // 2. Находим driver_id по телефону
-  const normalizedPhone = normalizePhoneNumber(profilePhone);
-  const { data: driver, error: driverError } = await supabase
-    .from('organization_drivers')
-    .select('id')
-    .eq('phone', normalizedPhone)
-    .eq('is_active', true)
-    .single();
-
-  if (driverError || !driver) {
-    // Водитель не найден - возвращаем только личные записи
-    console.log('[getAllBookingsForClient] Водитель не найден для телефона:', normalizedPhone);
-    return (personalBookings || []) as Booking[];
-  }
-
-  console.log('[getAllBookingsForClient] Найден водитель:', driver.id);
-
-  // 3. Получаем записи организации для этого водителя
+  // 2. Получаем записи организации через driver_id IN (мульти-org корректно)
   const { data: orgBookings, error: orgError } = await supabase
     .from('bookings')
     .select('*')
-    .eq('driver_id', driver.id);
+    .in('driver_id', driverIds);
 
   if (orgError) {
     console.error('Error fetching organization bookings:', orgError);
