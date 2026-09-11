@@ -735,11 +735,13 @@ export default function App() {
         
         // Определяем дату изменённого заказа
         const bookingDate = payload.new?.booking_date || payload.old?.booking_date;
-        
+        console.log('[App][realtime-bookings] payload booking_date=', bookingDate, 'eventType=', payload.eventType, 'selectedDate=', selectedDate);
+
         if (bookingDate) {
           // Перезагружаем данные из БД для конкретной даты (игнорируя кэш)
           try {
             const data = await getBookingsByDate(bookingDate);
+            console.log('[App][realtime-bookings] refetched date=', bookingDate, 'count=', data?.length, 'ids=', (data || []).map(b => b.id).join(','));
             setBookingsByDate(prev => cleanOldCache({
               ...prev,
               [bookingDate]: data || []
@@ -747,7 +749,7 @@ export default function App() {
           } catch (error) {
             console.error('[App] Ошибка загрузки заказов из БД:', error);
           }
-          
+
           // Если это быстрые заказы (только актуальная дата)
           const today = formatDate(new Date());
           if (bookingDate === today) {
