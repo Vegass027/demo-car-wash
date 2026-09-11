@@ -514,6 +514,19 @@ export function ClientBookingWrapper({
 
       setSelectedSlot(null);
       onWizardClose?.();
+
+      // ✅ Bug D fix: явный deterministic refetch после server-confirmed create.
+      // Не полагаемся на useEffect[isWizardOpen] — он не срабатывает, если визард
+      // уже был закрыт до повторного открытия (зафиксировано в логах Telegram
+      // Mini App 2026-09-11: isWizardOpen уже false до POST).
+      // Не полагаемся на Realtime-канал client-booking:bookings — он может
+      // не доставить INSERT (iOS WKWebView / unmount-remount / filter mismatch).
+      // useEffect[isWizardOpen] и realtime-handler остаются как fallback
+      // для сценариев, когда бронь создаёт кто-то другой на этом клиенте.
+      // Берём data.bookingDate (дату новой брони), а не selectedDate —
+      // чтобы при возможном расхождении дат обновить именно нужный слот кэша.
+      void loadOccupancyForDate(data.bookingDate);
+
       alert('Запись успешно создана!');
     } catch (err: any) {
       console.error('[ClientBookingWrapper] Ошибка создания:', err);
