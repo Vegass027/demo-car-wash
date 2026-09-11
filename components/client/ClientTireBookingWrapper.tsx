@@ -658,7 +658,7 @@ export function ClientTireBookingWrapper({
       // Dedup по id внутри appendTireBooking защищает от дубля, если Realtime
       // всё-таки доставит INSERT-событие параллельно.
       if (newTireBooking?.id) {
-        window.dispatchEvent(new CustomEvent('client-booking-created', { detail: { booking: newTireBooking } }));
+        window.dispatchEvent(new CustomEvent('client-booking-created', { detail: { type: 'tire', booking: newTireBooking } }));
       }
       // Успешно - закрываем мастер и перезагружаем заказы
       setSelectedSlot(null)

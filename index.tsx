@@ -6,7 +6,9 @@ import { initTelegramWebApp } from './shared/telegram/telegram';
 
 // 🔒 БЕЗОПАСНОСТЬ: Отключаем console.log, console.warn, console.info в продакшене
 // console.error оставляем для отладки реальных ошибок
-if (import.meta.env.PROD) {
+// Включить логи в проде для отладки: localStorage.setItem('debug', '1') в DevTools,
+// выключить обратно: localStorage.removeItem('debug') или localStorage.debug = '0'.
+if (import.meta.env.PROD && localStorage.getItem('debug') !== '1') {
   console.log = () => {};
   console.warn = () => {};
   console.info = () => {};

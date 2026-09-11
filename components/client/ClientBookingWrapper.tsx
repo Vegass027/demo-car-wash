@@ -506,7 +506,10 @@ export function ClientBookingWrapper({
       // всё-таки доставит INSERT-событие параллельно.
       const newBooking = result?.data?.booking;
       if (newBooking?.id) {
-        window.dispatchEvent(new CustomEvent('client-booking-created', { detail: { booking: newBooking } }));
+        // type='carwash' discriminator нужен в MyGarage listener чтобы НЕ
+        // ошибочно маршрутизировать carwash бронь в appendTireBooking
+        // (Booking.services_with_quantities есть в обоих типах ответов).
+        window.dispatchEvent(new CustomEvent('client-booking-created', { detail: { type: 'carwash', booking: newBooking } }));
       }
 
       setSelectedSlot(null);
