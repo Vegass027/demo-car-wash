@@ -173,6 +173,7 @@ async function getMyCars(claims: { profile_id: string }): Promise<ActionResult> 
   }
 
   const driverIds: string[] = [];
+  const orgIds = new Set<string>();
   if (ownPhone) {
     const { data: drivers, error: driverErr } = await supabaseAdmin
       .from('organization_drivers')
@@ -183,7 +184,6 @@ async function getMyCars(claims: { profile_id: string }): Promise<ActionResult> 
       console.error('[client:get-my-cars] org_drivers lookup error:', driverErr.message);
       return failAction(500, 'db_error');
     }
-    const orgIds = new Set<string>();
     for (const driver of drivers ?? []) {
       driverIds.push(driver.id as string);
       orgIds.add(driver.organization_id as string);
