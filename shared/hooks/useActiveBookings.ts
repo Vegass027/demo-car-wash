@@ -78,12 +78,13 @@ export function useActiveBookings(
         table: 'bookings',
         filter: `created_by_profile_id=eq.${profileId}`
       }, async (payload: any) => {
-        console.log('[useActiveBookings] Изменение в bookings:', payload);
+        console.log(`[BUG3-DIAG] bookings eventType=${payload.eventType} id=${payload?.new?.id} status=${payload?.new?.status} date=${payload?.new?.booking_date}`);
 
         // ✅ Оптимистичное обновление без мигания
         if (payload.eventType === 'UPDATE' && payload.new) {
           // Обновляем запись в массиве напрямую из payload
           setCarwashBookings(prev => {
+            console.log('[BUG3-DIAG] setCarwashBookings (UPDATE)');
             const updated = prev.map(booking =>
               booking.id === payload.new.id ? payload.new : booking
             );
@@ -95,6 +96,7 @@ export function useActiveBookings(
         } else if (payload.eventType === 'INSERT' && payload.new) {
           // Добавляем новую запись
           setCarwashBookings(prev => {
+            console.log('[BUG3-DIAG] setCarwashBookings (INSERT)');
             const withNew = [...prev, payload.new];
             // Фильтруем только активные
             return withNew.filter(
@@ -103,13 +105,14 @@ export function useActiveBookings(
           });
         } else if (payload.eventType === 'DELETE') {
           // Удаляем запись
-          setCarwashBookings(prev => prev.filter(booking => booking.id !== payload.old.id));
+          setCarwashBookings(prev => {
+            console.log('[BUG3-DIAG] setCarwashBookings (DELETE) id=' + payload?.old?.id);
+            return prev.filter(booking => booking.id !== payload.old.id);
+          });
         }
       })
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('[useActiveBookings] Подписано на active-bookings:bookings');
-        }
+        console.log(`[BUG3-DIAG] channel active-bookings:bookings status=${status}`);
       });
 
     // Подписка на tire_bookings (шиномонтаж) с фильтрацией по profile_id
@@ -121,12 +124,13 @@ export function useActiveBookings(
         table: 'tire_bookings',
         filter: `created_by_profile_id=eq.${profileId}`
       }, async (payload: any) => {
-        console.log('[useActiveBookings] Изменение в tire_bookings:', payload);
+        console.log(`[BUG3-DIAG] tire_bookings eventType=${payload.eventType} id=${payload?.new?.id} status=${payload?.new?.status} date=${payload?.new?.booking_date}`);
 
         // ✅ Оптимистичное обновление без мигания
         if (payload.eventType === 'UPDATE' && payload.new) {
           // Обновляем запись в массиве напрямую из payload
           setTireBookings(prev => {
+            console.log('[BUG3-DIAG] setTireBookings (UPDATE)');
             const updated = prev.map(booking =>
               booking.id === payload.new.id ? payload.new : booking
             );
@@ -138,6 +142,7 @@ export function useActiveBookings(
         } else if (payload.eventType === 'INSERT' && payload.new) {
           // Добавляем новую запись
           setTireBookings(prev => {
+            console.log('[BUG3-DIAG] setTireBookings (INSERT)');
             const withNew = [...prev, payload.new];
             // Фильтруем только активные
             return withNew.filter(
@@ -146,17 +151,18 @@ export function useActiveBookings(
           });
         } else if (payload.eventType === 'DELETE') {
           // Удаляем запись
-          setTireBookings(prev => prev.filter(booking => booking.id !== payload.old.id));
+          setTireBookings(prev => {
+            console.log('[BUG3-DIAG] setTireBookings (DELETE) id=' + payload?.old?.id);
+            return prev.filter(booking => booking.id !== payload.old.id);
+          });
         }
       })
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          console.log('[useActiveBookings] Подписано на active-bookings:tire_bookings');
-        }
+        console.log(`[BUG3-DIAG] channel active-bookings:tire_bookings status=${status}`);
       });
 
     return () => {
-      console.log('[useActiveBookings] Отключение от Realtime');
+      console.log('[BUG3-DIAG] cleanup: unsubscribing from both channels');
       bookingsSubscription.unsubscribe();
       tireBookingsSubscription.unsubscribe();
     };
