@@ -22,6 +22,7 @@ export interface UseClientCarsResult {
   cars: CombinedCar[];
   isLoading: boolean;
   error: string | null;
+  profilePhone: string | null;
   addCar: (carModel: string, plateNumber: string, carType: string) => Promise<void>;
   appendCar: (car: CombinedCar) => void;
   refetch: () => Promise<void>;
@@ -42,11 +43,12 @@ function mapServerError(code: string): string {
   return SERVER_ERRORS[code] ?? 'Не удалось обновить список машин';
 }
 
-export function useClientCars(profileId: string | null | undefined, profilePhone: string | null | undefined): UseClientCarsResult {
+export function useClientCars(profileId: string | null | undefined): UseClientCarsResult {
   const [cars, setCars] = useState<CombinedCar[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [clientId, setClientId] = useState<string | null>(null);
+  const [serverPhone, setServerPhone] = useState<string | null>(null);
 
   const fetchCars = async () => {
     if (!profileId) {
@@ -90,6 +92,8 @@ export function useClientCars(profileId: string | null | undefined, profilePhone
 
       const ownId: string | null = data?.client?.id ?? null;
       setClientId(ownId);
+      const ownPhone: string | null = data?.client?.phone ?? null;
+      setServerPhone(ownPhone);
 
       const serverCars: CombinedCar[] = Array.isArray(data?.combined_cars)
         ? data.combined_cars
@@ -181,6 +185,7 @@ export function useClientCars(profileId: string | null | undefined, profilePhone
     cars,
     isLoading,
     error,
+    profilePhone: serverPhone,
     addCar,
     appendCar,
     refetch: fetchCars,

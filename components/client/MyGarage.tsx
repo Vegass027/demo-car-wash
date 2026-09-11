@@ -45,7 +45,7 @@ export const MyGarage: React.FC<MyGarageProps> = ({
   const [showAddCarForm, setShowAddCarForm] = useState(false);
 
   // Хуки для данных
-  const { cars, isLoading: carsLoading, addCar, appendCar, refetch: refetchCars } = useClientCars(profileId, profilePhone);
+  const { cars, isLoading: carsLoading, addCar, appendCar, refetch: refetchCars, profilePhone: hookPhone } = useClientCars(profileId);
   const { carwashBookings, tireBookings, isLoading: activeBookingsLoading, refetch: refetchActiveBookings } = useActiveBookings(profileId, profilePhone);
   const { 
     carwashBookings: historyCarwash, 
@@ -62,19 +62,9 @@ export const MyGarage: React.FC<MyGarageProps> = ({
       // get 403, not a stolen client UI.
       const { profile_id } = await loginViaTelegram();
 
-      // profilePhone needed by useClientCars / useBookingHistory hooks (org-cars).
-      // /api/telegram-auth doesn't return phone (would expand payload),
-      // so we read it via wrapper-authenticated select. RLS-safe even
-      // before Phase 2 (clients table is public_all_access today).
-      const { data: profileRow, error: phoneErr } = await supabase
-        .from('profiles')
-        .select('phone')
-        .eq('id', profile_id)
-        .single();
-
-      if (!phoneErr && profileRow?.phone) {
-        setProfilePhone(profileRow.phone);
-      }
+      // profilePhone теперь приходит из useClientCars (data.client.phone из
+      // /api/client?action=get-my-cars) — см. sync-effect ниже. Прямой supabase
+      // SELECT к profiles убран (406 из-за отсутствия client_own_select RLS).
 
       // Найти client по profile_id
       const { data: client, error: clientError } = await supabase
@@ -128,6 +118,14 @@ export const MyGarage: React.FC<MyGarageProps> = ({
       window.removeEventListener('payment-succeeded', handlePaymentSuccess)
     }
   }, [refetchActiveBookings])
+
+  // Синхронизация profilePhone из useClientCars → state для других хуков.
+  // useClientCars уже делает get-my-cars; phone берётся из того же response.
+  useEffect(() => {
+    if (hookPhone && hookPhone !== profilePhone) {
+      setProfilePhone(hookPhone);
+    }
+  }, [hookPhone, profilePhone]);
 
   // Обработчик добавления машины
   const handleAddCar = async (carData: { client_id: string; car_model: string; plate_number: string; car_type: string }) => {
