@@ -14,11 +14,17 @@ export default async function handler(req: any, res: any) {
   const startTime = new Date();
   console.log(`[RESET-DAILY] Cron job started at: ${startTime.toISOString()}`);
 
-  // Проверка авторизации
-  const authHeader = req.headers['authorization'];
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    console.error('[RESET-DAILY] Unauthorized access attempt');
-    return res.status(401).json({ error: 'Unauthorized' });
+  // Vercel cron auth: accept x-vercel-cron-schedule header OR vercel-cron User-Agent
+  // (Vercel cron does NOT send Authorization Bearer). Also accept manual Bearer
+  // for debugging/curl invocations.
+  const cronHeader = req.headers['x-vercel-cron-schedule'] || req.headers['x-vercel-cron'];
+  const isVercelCron = !!cronHeader || req.headers['user-agent'] === 'vercel-cron/1.0';
+  if (!isVercelCron) {
+    const authHeader = req.headers['authorization'];
+    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+      console.error('[RESET-DAILY] Unauthorized access attempt');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   }
 
   if (req.method !== 'GET') {
