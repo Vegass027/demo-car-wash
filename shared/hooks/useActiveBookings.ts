@@ -15,6 +15,9 @@ export function useActiveBookings(
   profileId: string | null | undefined,
   driverIds: string[]
 ): ActiveBookingData {
+  // [BUG3-DIAG v2] Fires on every render (before any early-return). Confirms
+  // the hook is being called by the component.
+  console.log(`[BUG3-DIAG v2] useActiveBookings render profileId=${profileId} driverIds.length=${driverIds?.length ?? 0}`);
   const [carwashBookings, setCarwashBookings] = useState<Booking[]>([]);
   const [tireBookings, setTireBookings] = useState<TireBooking[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
