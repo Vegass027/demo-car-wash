@@ -14,7 +14,7 @@ import { SERVICE_CATEGORIES, isBonusService } from '../../lib/config/serviceCate
 import { Client, ClientCar } from '../../lib/api/clients';
 import { Booking } from '../../lib/api/bookings';
 import { CombinedCar, getClientCombinedCars } from '../../lib/api/combined-cars';
-import { findDriversByPhone } from '../../lib/api/organizations';
+import { getSessionToken } from '../../lib/supabase';
 import { getMyBlockStatusAction, getMyFreeWashStatusAction, getMyWashesUntilNextFreeWashAction } from '../../lib/api/client-actions';
 import { BankSelectionStep } from './BankSelectionStep';
 
@@ -61,6 +61,30 @@ interface OnlineBookingWizardProps {
 }
 
 const STEPS = 4; // 4 шага: 0-Выбор авто, 1-Услуги, 2-Выбор вида оплаты, 3-Подтверждение/Выбор банка
+
+async function apiPost(path: string, body: unknown): Promise<{ data?: { org_membership?: { is_driver: boolean; drivers: Array<{ driver_id: string; organization_id: string; organization_name: string; signature_data: string | null }> } } } | null> {
+  const token = getSessionToken();
+  if (!token) return null;
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+async function fetchOrgMembershipForWizard(): Promise<Array<{
+  driver_id: string; organization_id: string; organization_name: string; signature_data: string | null;
+}>> {
+  try {
+    const r = await apiPost('/api/client?action=get-org-membership', {});
+    return r?.data?.org_membership?.drivers ?? [];
+  } catch (err) {
+    console.error('[OnlineBookingWizard] get-org-membership error:', err);
+    return [];
+  }
+}
 
 export const OnlineBookingWizard: React.FC<OnlineBookingWizardProps> = ({
   onBack,
@@ -178,18 +202,9 @@ export const OnlineBookingWizard: React.FC<OnlineBookingWizardProps> = ({
     if (type === 'organization' && profilePhone) {
       setIsLoadingSignature(true);
       try {
-        const drivers = await findDriversByPhone(profilePhone);
-        if (drivers && drivers.length > 0) {
-          // Находим водителя из этой организации
-          const driver = drivers.find(d => d.organization.id === car.organization_id);
-          if (driver?.driver.signature_data) {
-            setDriverSignature(driver.driver.signature_data);
-          } else {
-            setDriverSignature(null);
-          }
-        } else {
-          setDriverSignature(null);
-        }
+        const drivers = await fetchOrgMembershipForWizard();
+        const driver = drivers.find(d => d.organization_id === car.organization_id);
+        setDriverSignature(driver?.signature_data ?? null);
       } catch (error) {
         console.error('Ошибка при загрузке подписи:', error);
         setDriverSignature(null);
@@ -199,7 +214,7 @@ export const OnlineBookingWizard: React.FC<OnlineBookingWizardProps> = ({
     } else {
       setDriverSignature(null);
     }
-    
+
     // Переходим к следующему шагу (Услуги)
     setStep(2);
   };
@@ -218,17 +233,9 @@ export const OnlineBookingWizard: React.FC<OnlineBookingWizardProps> = ({
     if (carType === 'organization' && profilePhone) {
       setIsLoadingSignature(true);
       try {
-        const drivers = await findDriversByPhone(profilePhone);
-        if (drivers && drivers.length > 0) {
-          const driver = drivers.find(d => d.organization.id === booking.organization_id);
-          if (driver?.driver.signature_data) {
-            setDriverSignature(driver.driver.signature_data);
-          } else {
-            setDriverSignature(null);
-          }
-        } else {
-          setDriverSignature(null);
-        }
+        const drivers = await fetchOrgMembershipForWizard();
+        const driver = drivers.find(d => d.organization_id === booking.organization_id);
+        setDriverSignature(driver?.signature_data ?? null);
       } catch (error) {
         console.error('Ошибка при загрузке подписи:', error);
         setDriverSignature(null);

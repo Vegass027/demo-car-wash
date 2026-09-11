@@ -72,6 +72,8 @@ const ALLOWED_ACTIONS = new Set([
   'get-my-profile',
   'get-my-client',
   'get-my-client-email',
+  // Phase B+ — server-resolved org driver membership (no client-side phone lookup):
+  'get-org-membership',
 ]);
 
 const ACTIVE_STATUSES = ['ОЖИДАЕТ', 'В РАБОТЕ'] as const;
@@ -217,6 +219,65 @@ async function getMyCars(claims: { profile_id: string }): Promise<ActionResult> 
       data: {
         client: { id: ownClientId, phone: ownPhone, online_booking_blocked_until: blockedUntil },
         combined_cars,
+      },
+    },
+  };
+}
+
+// === Phase B+ action: get-org-membership ===
+//
+// Server-resolved lookup of the current client's organization-drivers membership.
+// Reads phone from server-resolved clients row (via JWT profile_id), never trusts
+// client input. Filters strictly: phone = ownPhone AND is_active = true. Returns
+// minimal DTO: driver_id, organization_id, organization_name, signature_data.
+// Does NOT return: phone, login, telegram_id, created_at, updated_at, is_active,
+// third-party driver data.
+async function getOrgMembership(claims: { profile_id: string }): Promise<ActionResult> {
+  // 1. Resolve own phone from server-side clients lookup (NOT from request body).
+  const { data: clientRow, error: clientErr } = await supabaseAdmin
+    .from('clients')
+    .select('phone')
+    .eq('profile_id', claims.profile_id)
+    .maybeSingle();
+  if (clientErr) return failAction(500, 'db_error', { detail: clientErr.message });
+  if (!clientRow || !clientRow.phone) {
+    return { status: 200, body: { data: { org_membership: { is_driver: false, drivers: [] } } } };
+  }
+  const ownPhone: string = clientRow.phone as string;
+
+  // 2. Server-side filtered query — strictly this phone, only active drivers.
+  //    Joined organizations for name only; no other fields exposed.
+  const { data: driverRows, error: driverErr } = await supabaseAdmin
+    .from('organization_drivers')
+    .select(`
+      id,
+      organization_id,
+      signature_data,
+      organizations:organization_id (
+        id,
+        name
+      )
+    `)
+    .eq('phone', ownPhone)
+    .eq('is_active', true);
+  if (driverErr) return failAction(500, 'db_error', { detail: driverErr.message });
+
+  // 3. Map to minimal DTO. No phone, login, telegram_id, timestamps, etc.
+  const drivers = (driverRows ?? []).map((d: AnyObj) => ({
+    driver_id: d.id as string,
+    organization_id: d.organization_id as string,
+    organization_name: ((d.organizations?.name ?? '') as string),
+    signature_data: ((d.signature_data ?? null) as string | null),
+  }));
+
+  return {
+    status: 200,
+    body: {
+      data: {
+        org_membership: {
+          is_driver: drivers.length > 0,
+          drivers,
+        },
       },
     },
   };
@@ -1152,6 +1213,10 @@ export default async function handler(req: any, res: any) {
       }
       case 'get-my-client-email': {
         result = await getMyClientEmail(guard.claims);
+        break;
+      }
+      case 'get-org-membership': {
+        result = await getOrgMembership(guard.claims);
         break;
       }
       default:

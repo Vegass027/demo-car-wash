@@ -4,7 +4,6 @@ import { TireTimeline } from '../admin/TireTimeline'
 import { supabase, getSessionToken } from '../../lib/supabase'
 import { loginViaTelegram, telegramAuthErrorUI, reloadMiniApp, TelegramAuthError } from '../../lib/client-auth'
 import { getTireBookingsByProfileId } from '../../lib/api/tire-bookings'
-import { findDriversByPhone } from '../../lib/api/organizations'
 import { getClientOrganizationIds } from '../../lib/api/bookings'
 import { normalizePhoneNumber } from '../../shared/utils/phone'
 import { formatDate, addDays } from '../../shared/utils/date'
@@ -608,12 +607,13 @@ export function ClientTireBookingWrapper({
       
       // Если это организационная машина - находим driver_id по телефону
       let driverId = data.driver_id;
-      if (isOrg && !driverId && profilePhone) {
+      if (isOrg && !driverId && data.organization_id) {
         try {
-          const driversData = await findDriversByPhone(profilePhone);
-          if (driversData && driversData.length > 0) {
-            driverId = driversData[0].driver.id;
-          }
+          const orgResult = await apiPost('/api/client?action=get-org-membership', {});
+          const drivers: Array<{ driver_id: string; organization_id: string; organization_name: string; signature_data: string | null }> =
+            orgResult?.data?.org_membership?.drivers ?? [];
+          const driver = drivers.find(d => d.organization_id === data.organization_id);
+          if (driver) driverId = driver.driver_id;
         } catch (error) {
           console.error('Error finding driver:', error);
         }

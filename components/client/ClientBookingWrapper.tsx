@@ -5,7 +5,6 @@ import { supabase, getSessionToken } from '../../lib/supabase'
 import { loginViaTelegram, telegramAuthErrorUI, reloadMiniApp, TelegramAuthError } from '../../lib/client-auth'
 import { Booking } from '../../lib/api/bookings'
 import { formatDate, addDays } from '../../shared/utils/date'
-import { findDriversByPhone } from '../../lib/api/organizations'
 import { Service } from '../../lib/api/services'
 import { Organization, OrganizationDriver, OrganizationCar } from '../../entities/organization/model'
 import { Client } from '../../lib/api/clients'
@@ -474,12 +473,12 @@ export function ClientBookingWrapper({
 
       // Find driver_id if org car selected.
       let driverId: string | undefined;
-      if (data.isOrganizationCar && data.organizationId && profilePhone) {
-        const drivers = await findDriversByPhone(profilePhone);
-        if (drivers && drivers.length > 0) {
-          const driver = drivers.find(d => d.organization.id === data.organizationId);
-          if (driver) driverId = driver.driver.id;
-        }
+      if (data.isOrganizationCar && data.organizationId) {
+        const orgResult = await apiPost('/api/client?action=get-org-membership', {});
+        const drivers: Array<{ driver_id: string; organization_id: string; organization_name: string; signature_data: string | null }> =
+          orgResult?.data?.org_membership?.drivers ?? [];
+        const driver = drivers.find(d => d.organization_id === data.organizationId);
+        if (driver) driverId = driver.driver_id;
       }
 
       const payload: Record<string, unknown> = {

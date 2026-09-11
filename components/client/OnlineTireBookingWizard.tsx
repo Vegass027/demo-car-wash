@@ -12,8 +12,8 @@ import { getTireServices, groupServicesByCategory } from '../../lib/api/tire-ser
 import type { TireService as TireServiceType } from '../../lib/api/tire-services';
 import { getTireBookingsByProfileId } from '../../lib/api/tire-bookings';
 import { getClientCombinedCars } from '../../lib/api/combined-cars';
-import { findDriversByPhone } from '../../lib/api/organizations';
 import type { CombinedCar } from '../../lib/api/combined-cars';
+import { getSessionToken } from '../../lib/supabase';
 import { addMinutesToTime, isValidTimeRange, formatTimeWithoutSeconds, calculateEndTime } from '../../shared/utils/time';
 import { DURATION_OPTIONS } from '../../shared/config/tire-booking';
 import { findAvailableTireTimeSlots } from '../../shared/utils/time';
@@ -63,6 +63,30 @@ interface OnlineTireBookingWizardProps {
 }
 
 const STEPS = 4; // 4 шага: 1-История, 2-Услуги, 3-Время, 4-Оплата и подтверждение
+
+async function apiPost(path: string, body: unknown): Promise<{ data?: { org_membership?: { is_driver: boolean; drivers: Array<{ driver_id: string; organization_id: string; organization_name: string; signature_data: string | null }> } } } | null> {
+  const token = getSessionToken();
+  if (!token) return null;
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return null;
+  return res.json().catch(() => null);
+}
+
+async function fetchOrgMembershipForWizard(): Promise<Array<{
+  driver_id: string; organization_id: string; organization_name: string; signature_data: string | null;
+}>> {
+  try {
+    const r = await apiPost('/api/client?action=get-org-membership', {});
+    return r?.data?.org_membership?.drivers ?? [];
+  } catch (err) {
+    console.error('[OnlineTireBookingWizard] get-org-membership error:', err);
+    return [];
+  }
+}
 
 export const OnlineTireBookingWizard: React.FC<OnlineTireBookingWizardProps> = ({
   onBack,
@@ -185,18 +209,9 @@ export const OnlineTireBookingWizard: React.FC<OnlineTireBookingWizardProps> = (
     if (car.type === 'organization' && profilePhone) {
       setIsLoadingSignature(true);
       try {
-        const driversData = await findDriversByPhone(profilePhone);
-        if (driversData && driversData.length > 0) {
-          // Находим водителя из этой организации
-          const driver = driversData.find(d => d.organization.id === car.organization_id);
-          if (driver?.driver.signature_data) {
-            setDriverSignature(driver.driver.signature_data);
-          } else {
-            setDriverSignature(null);
-          }
-        } else {
-          setDriverSignature(null);
-        }
+        const driversData = await fetchOrgMembershipForWizard();
+        const driver = driversData.find(d => d.organization_id === car.organization_id);
+        setDriverSignature(driver?.signature_data ?? null);
       } catch (error) {
         console.error('Ошибка при загрузке подписи водителя:', error);
         setDriverSignature(null);
@@ -229,18 +244,9 @@ export const OnlineTireBookingWizard: React.FC<OnlineTireBookingWizardProps> = (
     if (isOrg && profilePhone) {
       setIsLoadingSignature(true);
       try {
-        const driversData = await findDriversByPhone(profilePhone);
-        if (driversData && driversData.length > 0) {
-          // Находим водителя из этой организации
-          const driver = driversData.find(d => d.organization.id === booking.organization_id);
-          if (driver?.driver.signature_data) {
-            setDriverSignature(driver.driver.signature_data);
-          } else {
-            setDriverSignature(null);
-          }
-        } else {
-          setDriverSignature(null);
-        }
+        const driversData = await fetchOrgMembershipForWizard();
+        const driver = driversData.find(d => d.organization_id === booking.organization_id);
+        setDriverSignature(driver?.signature_data ?? null);
       } catch (error) {
         console.error('Ошибка при загрузке подписи водителя:', error);
         setDriverSignature(null);
