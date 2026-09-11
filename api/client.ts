@@ -223,6 +223,7 @@ async function getMyCars(claims: { profile_id: string }): Promise<ActionResult> 
         client: { id: ownClientId, phone: ownPhone, online_booking_blocked_until: blockedUntil },
         combined_cars,
         driver_ids: driverIds,
+        organization_ids: Array.from(orgIds),
       },
     },
   };

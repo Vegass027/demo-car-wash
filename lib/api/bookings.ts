@@ -747,25 +747,14 @@ export async function getAllBookingsForClient(
 }
 
 /**
- * Получить ID организаций, где клиент является водителем
- * @param profilePhone - Телефон профиля клиента
- * @returns Массив ID организаций
+ * Получить ID организаций, где клиент является водителем.
+ * Принимает уже server-resolved organization_ids из get-my-cars (api/client.ts).
+ * Никаких client-side запросов — вся data приходит через JWT-authenticated
+ * server endpoint. profileId оставлен в сигнатуре для API consistency с
+ * getAllBookingsForClient (оба хелпера принимают одинаковые параметры).
  */
-export async function getClientOrganizationIds(profilePhone: string): Promise<string[]> {
-  const normalizedPhone = normalizePhoneNumber(profilePhone);
-  
-  const { data: drivers, error } = await supabase
-    .from('organization_drivers')
-    .select('organization_id')
-    .eq('phone', normalizedPhone)
-    .eq('is_active', true);
-
-  if (error) {
-    console.error('Error fetching client organizations:', error);
-    return [];
-  }
-
-  return (drivers || []).map(d => d.organization_id);
+export async function getClientOrganizationIds(_profileId: string, organizationIds: string[]): Promise<string[]> {
+  return Array.from(new Set(organizationIds));
 }
 
 /**

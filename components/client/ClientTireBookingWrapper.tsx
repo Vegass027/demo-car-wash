@@ -526,11 +526,24 @@ export function ClientTireBookingWrapper({
       setProfileName(full_name || '');
       setProfilePhone(resolvedPhone || '');
 
-      // Загружаем организации, где клиент — водитель (по phone из clients)
-      if (resolvedPhone) {
+      // Загружаем организации, где клиент — водитель.
+      // Driver IDs и organization IDs теперь приходят server-side из /api/client?action=get-my-cars
+      // (organization_drivers RLS не позволяет прямой client SELECT).
+      if (profile_id) {
         try {
-          const orgIds = await getClientOrganizationIds(resolvedPhone);
-          setDriverOrganizationIds(orgIds);
+          const token = getSessionToken();
+          if (token) {
+            const myCarsRes = await fetch('/api/client?action=get-my-cars', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+              body: JSON.stringify({}),
+            });
+            if (myCarsRes.ok) {
+              const myCarsBody = await myCarsRes.json().catch(() => ({}));
+              const orgIds: string[] = Array.isArray(myCarsBody?.data?.organization_ids) ? myCarsBody.data.organization_ids : [];
+              setDriverOrganizationIds(orgIds);
+            }
+          }
         } catch (error) {
           console.error('[ClientTireBookingWrapper] Ошибка загрузки организаций клиента:', error);
         }
