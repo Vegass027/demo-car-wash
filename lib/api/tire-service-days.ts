@@ -14,13 +14,19 @@ export interface TireServiceDay {
 /**
  * Получить статус работы шиномонтажа на конкретную дату
  * Если записи нет - возвращается is_open: true (по умолчанию открыт)
+ *
+ * Контракт: 0 или 1 строка на service_date (гарантировано UNIQUE INDEX
+ * tire_service_days_service_date_key). .single() выбрасывает 406 на 0 строк
+ * (Supabase REST) — заменено на .maybeSingle() который корректно возвращает
+ * { data: null, error: null } при отсутствии строки. PGRST116-ветка оставлена
+ * как защита для старых версий supabase-js и реальных ошибок сети.
  */
 export async function getTireServiceDayStatus(date: string): Promise<boolean> {
   const { data, error } = await supabase
     .from('tire_service_days')
     .select('is_open')
     .eq('service_date', date)
-    .single();
+    .maybeSingle();
 
   if (error) {
     // Если запись не найдена - день открыт по умолчанию
