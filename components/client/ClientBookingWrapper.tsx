@@ -205,7 +205,7 @@ export function ClientBookingWrapper({
     return () => {
       subscription.unsubscribe();
     };
-  }, [profileId])
+  }, [profileId, clientId])
 
   // --------- Realtime: closed_boxes (still anon-channel for now) ---------
   useEffect(() => {
