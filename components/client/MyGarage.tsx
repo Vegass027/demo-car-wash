@@ -14,6 +14,8 @@ import { useClientCars } from '../../shared/hooks/useClientCars';
 import { useActiveBookings } from '../../shared/hooks/useActiveBookings';
 import { useBookingHistory } from '../../shared/hooks/useBookingHistory';
 import { Service } from '../../lib/api/services';
+import { Booking } from '../../lib/api/bookings';
+import { TireBooking } from '../../lib/api/tire-bookings';
 import { Organization, OrganizationDriver, OrganizationCar } from '../../lib/api/organizations';
 import { Client } from '../../lib/api/clients';
 // deleteClientCar removed: soft-delete routes through POST /api/client?action=delete-car
@@ -46,7 +48,7 @@ export const MyGarage: React.FC<MyGarageProps> = ({
 
   // Хуки для данных
   const { cars, isLoading: carsLoading, addCar, appendCar, refetch: refetchCars, profilePhone: hookPhone, driverIds } = useClientCars(profileId);
-  const { carwashBookings, tireBookings, isLoading: activeBookingsLoading, refetch: refetchActiveBookings } = useActiveBookings(profileId, driverIds);
+  const { carwashBookings, tireBookings, isLoading: activeBookingsLoading, refetch: refetchActiveBookings, appendCarwashBooking, appendTireBooking } = useActiveBookings(profileId, driverIds);
   const { 
     carwashBookings: historyCarwash, 
     tireBookings: historyTire, 
@@ -56,14 +58,11 @@ export const MyGarage: React.FC<MyGarageProps> = ({
 
   // Загрузка данных клиента
   const loadClientData = async () => {
-    // [BUG3-DIAG v2] DOM-based diagnostic (iOS WebView may filter console.log).
-    if (typeof document !== 'undefined') document.title = '[MG lcd START]';
     try {
       // Phase 1.6b: HMAC-verified /api/telegram-auth replaces 4-step lookup.
       // Server-side role-check ensures admin/owner with linked Telegram
       // get 403, not a stolen client UI.
       const { profile_id } = await loginViaTelegram();
-      if (typeof document !== 'undefined') document.title = `[MG lcd login pid=${profile_id}]`;
 
       // profilePhone теперь приходит из useClientCars (data.client.phone из
       // /api/client?action=get-my-cars) — см. sync-effect ниже. Прямой supabase
@@ -75,7 +74,6 @@ export const MyGarage: React.FC<MyGarageProps> = ({
         .select('id')
         .eq('profile_id', profile_id)
         .single();
-      if (typeof document !== 'undefined') document.title = `[MG lcd cli cl=${client?.id} err=${clientError?.message ?? 'none'}]`;
 
       if (clientError || !client) {
         setError('Клиент не найден');
@@ -85,7 +83,6 @@ export const MyGarage: React.FC<MyGarageProps> = ({
 
       setProfileId(profile_id);
       setClientId(client.id);
-      if (typeof document !== 'undefined') document.title = `[MG lcd DONE pid=${profile_id}]`;
     } catch (err) {
       // TelegramAuthError → typed UI; other errors → generic.
       const maybeAuthErr = err as Partial<TelegramAuthError>;
@@ -113,16 +110,35 @@ export const MyGarage: React.FC<MyGarageProps> = ({
   // ✅ Перезагружаем активные записи после успешной оплаты (для СБП оплаты)
   useEffect(() => {
     const handlePaymentSuccess = () => {
-      console.log('[MyGarage] Платеж успешен, перезагружаем активные записи')
-      refetchActiveBookings()
+      void refetchActiveBookings();
     };
 
-    window.addEventListener('payment-succeeded', handlePaymentSuccess)
+    window.addEventListener('payment-succeeded', handlePaymentSuccess);
+
+    // ✅ BUG3 fix: локальный append брони сразу после server-confirmed create.
+    // ClientBookingWrapper/ClientTireBookingWrapper диспатчат это событие ПОСЛЕ
+    // успешного POST /api/client?action=create-(tire-)booking. Realtime-подписка
+    // может не доставить INSERT в Telegram WKWebView, поэтому создатель
+    // брони должен увидеть её мгновенно через этот канал. Dedup по id
+    // уже внутри appendCarwashBooking/appendTireBooking.
+    const handleBookingCreated = (e: Event) => {
+      const ce = e as CustomEvent<{ booking: Booking } | { booking: TireBooking }>;
+      const booking = ce.detail?.booking;
+      if (!booking) return;
+      if ('services_with_quantities' in booking || 'estimated_duration' in booking) {
+        appendTireBooking(booking as TireBooking);
+      } else {
+        appendCarwashBooking(booking as Booking);
+      }
+    };
+
+    window.addEventListener('client-booking-created', handleBookingCreated as EventListener);
 
     return () => {
-      window.removeEventListener('payment-succeeded', handlePaymentSuccess)
-    }
-  }, [refetchActiveBookings])
+      window.removeEventListener('payment-succeeded', handlePaymentSuccess);
+      window.removeEventListener('client-booking-created', handleBookingCreated as EventListener);
+    };
+  }, [refetchActiveBookings, appendCarwashBooking, appendTireBooking]);
 
   // Синхронизация profilePhone из useClientCars → state для других хуков.
   // useClientCars уже делает get-my-cars; phone берётся из того же response.

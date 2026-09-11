@@ -1,25 +1,45 @@
 import { useState, useEffect } from 'react';
-import { getBookingsByProfileId, Booking, getAllBookingsForClient } from '../../lib/api/bookings';
-import { getTireBookingsByProfileId, TireBooking, getAllTireBookingsForClient } from '../../lib/api/tire-bookings';
 import { supabase } from '../../lib/supabase';
+import { Booking, getAllBookingsForClient } from '../../lib/api/bookings';
+import { TireBooking, getAllTireBookingsForClient } from '../../lib/api/tire-bookings';
 
-export interface ActiveBookingData {
+const ACTIVE_STATUSES = ['ОЖИДАЕТ', 'В РАБОТЕ'] as const;
+
+function isActive(booking: { status: string }): boolean {
+  return ACTIVE_STATUSES.includes(booking.status as typeof ACTIVE_STATUSES[number]);
+}
+
+/**
+ * useActiveBookings — управляет списком активных (ОЖИДАЕТ/В РАБОТЕ) броней
+ * клиента для вкладки "Мой гараж".
+ *
+ * Источники обновления:
+ *   1. Initial fetch через REST (`getAllBookingsForClient` + getAllTireBookingsForClient).
+ *   2. Realtime subscription на postgres_changes с фильтром
+ *      `created_by_profile_id=eq.${profileId}`.
+ *   3. Локальный append после успешного create (BUG3 fix): если Realtime
+ *      событие не дошло в Telegram WKWebView, создатель брони всё равно
+ *      увидит её мгновенно. Dedup по id защищает от дубля, если Realtime
+ *      тоже сработает.
+ *
+ * Cancel-flow уже обработан: ActiveBookingCard вызывает onDelete после
+ * успешного cancel-API, что удаляет запись из state сразу (не зависит от
+ * Realtime UPDATE-события).
+ */
+export interface UseActiveBookingsResult {
   carwashBookings: Booking[];
   tireBookings: TireBooking[];
   isLoading: boolean;
   error: string | null;
   refetch: () => Promise<void>;
+  appendCarwashBooking: (booking: Booking) => void;
+  appendTireBooking: (booking: TireBooking) => void;
 }
 
 export function useActiveBookings(
   profileId: string | null | undefined,
   driverIds: string[]
-): ActiveBookingData {
-  // [BUG3-DIAG v2] DOM-based diagnostic (no console.log, iOS WebView may filter).
-  // Updates document.title which is visible in Telegram tab title bar.
-  if (typeof document !== 'undefined') {
-    document.title = `[AB pid=${profileId ?? 'null'} di=${driverIds?.length ?? 0}]`;
-  }
+): UseActiveBookingsResult {
   const [carwashBookings, setCarwashBookings] = useState<Booking[]>([]);
   const [tireBookings, setTireBookings] = useState<TireBooking[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -37,147 +57,114 @@ export function useActiveBookings(
       setIsLoading(true);
       setError(null);
 
-      // ✅ Получаем ВСЕ записи клиента (личные + организационные)
-      // driverIds приходят из useClientCars → get-my-cars (server-resolved).
-      // Не делаем собственный client-side запрос к organization_drivers.
-      const allCarwashBookings = await getAllBookingsForClient(profileId, driverIds);
-      // Фильтруем только активные (ОЖИДАЕТ, В РАБОТЕ)
-      const activeCarwashBookings = allCarwashBookings.filter(
-        (booking) => booking.status === 'ОЖИДАЕТ' || booking.status === 'В РАБОТЕ'
-      );
+      const [cw, tb] = await Promise.all([
+        getAllBookingsForClient(profileId, driverIds ?? []),
+        getAllTireBookingsForClient(profileId, driverIds ?? []),
+      ]);
 
-      // ✅ Получаем ВСЕ записи шиномонтажа (личные + организационные)
-      const allTireBookings = await getAllTireBookingsForClient(profileId, driverIds);
-      // Фильтруем только активные (ОЖИДАЕТ, В РАБОТЕ)
-      const activeTireBookings = allTireBookings.filter(
-        (booking) => booking.status === 'ОЖИДАЕТ' || booking.status === 'В РАБОТЕ'
-      );
-
-      setCarwashBookings(activeCarwashBookings);
-      setTireBookings(activeTireBookings);
-    } catch (err) {
-      console.error('Error fetching active bookings:', err);
-      setError('Не удалось загрузить актуальные записи');
+      setCarwashBookings(cw.filter(isActive));
+      setTireBookings(tb.filter(isActive));
+    } catch (err: any) {
+      console.error('[useActiveBookings] fetchActiveBookings error:', err);
+      setError(err?.message || 'Не удалось загрузить бронирования');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Первичная загрузка при монтировании
+  // Initial / deps-change fetch
   useEffect(() => {
     fetchActiveBookings();
   }, [profileId, driverIds]);
 
-  // ✅ Supabase Realtime подписка на изменения в bookings и tire_bookings
+  // Realtime subscription. Фильтр по created_by_profile_id матчит оба
+  // сценария: личная бронь (создал сам клиент) и орг-бронь от водителя
+  // (но физлицо, не менеджер — см. policy RLS на стороне сервера).
   useEffect(() => {
     if (!profileId) return;
 
-    console.log('[useActiveBookings] Подключение к Realtime для bookings и tire_bookings');
+    const filter = `created_by_profile_id=eq.${profileId}`;
 
-    // Подписка на bookings (автомойка) с фильтрацией по profile_id
     const bookingsSubscription = supabase
       .channel('active-bookings:bookings')
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'bookings',
-        filter: `created_by_profile_id=eq.${profileId}`
-      }, async (payload: any) => {
-        // [BUG3-DIAG v2] DOM-based diagnostic.
-        if (typeof document !== 'undefined') {
-          document.title = `[AB bk ev=${payload.eventType} st=${payload?.new?.status}]`;
-        }
-
-        // ✅ Оптимистичное обновление без мигания
+        filter,
+      }, (payload: any) => {
         if (payload.eventType === 'UPDATE' && payload.new) {
-          // Обновляем запись в массиве напрямую из payload
           setCarwashBookings(prev => {
-            console.log('[BUG3-DIAG] setCarwashBookings (UPDATE)');
             const updated = prev.map(booking =>
               booking.id === payload.new.id ? payload.new : booking
             );
-            // Фильтруем только активные
-            return updated.filter(
-              (booking) => booking.status === 'ОЖИДАЕТ' || booking.status === 'В РАБОТЕ'
-            );
+            return updated.filter(isActive);
           });
         } else if (payload.eventType === 'INSERT' && payload.new) {
-          // Добавляем новую запись
           setCarwashBookings(prev => {
-            console.log('[BUG3-DIAG] setCarwashBookings (INSERT)');
-            const withNew = [...prev, payload.new];
-            // Фильтруем только активные
-            return withNew.filter(
-              (booking) => booking.status === 'ОЖИДАЕТ' || booking.status === 'В РАБОТЕ'
-            );
+            if (prev.some(b => b.id === payload.new.id)) return prev;
+            return [...prev, payload.new].filter(isActive);
           });
         } else if (payload.eventType === 'DELETE') {
-          // Удаляем запись
-          setCarwashBookings(prev => {
-            console.log('[BUG3-DIAG] setCarwashBookings (DELETE) id=' + payload?.old?.id);
-            return prev.filter(booking => booking.id !== payload.old.id);
-          });
+          setCarwashBookings(prev =>
+            prev.filter(booking => booking.id !== payload.old.id)
+          );
         }
       })
-      .subscribe((status) => {
-        // [BUG3-DIAG v2] DOM-based diagnostic.
-        if (typeof document !== 'undefined') {
-          document.title = `[AB bs=${status}]`;
-        }
-      });
+      .subscribe();
 
-    // Подписка на tire_bookings (шиномонтаж) с фильтрацией по profile_id
     const tireBookingsSubscription = supabase
       .channel('active-bookings:tire_bookings')
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'tire_bookings',
-        filter: `created_by_profile_id=eq.${profileId}`
-      }, async (payload: any) => {
-        console.log(`[BUG3-DIAG] tire_bookings eventType=${payload.eventType} id=${payload?.new?.id} status=${payload?.new?.status} date=${payload?.new?.booking_date}`);
-
-        // ✅ Оптимистичное обновление без мигания
+        filter,
+      }, (payload: any) => {
         if (payload.eventType === 'UPDATE' && payload.new) {
-          // Обновляем запись в массиве напрямую из payload
           setTireBookings(prev => {
-            console.log('[BUG3-DIAG] setTireBookings (UPDATE)');
             const updated = prev.map(booking =>
               booking.id === payload.new.id ? payload.new : booking
             );
-            // Фильтруем только активные
-            return updated.filter(
-              (booking) => booking.status === 'ОЖИДАЕТ' || booking.status === 'В РАБОТЕ'
-            );
+            return updated.filter(isActive);
           });
         } else if (payload.eventType === 'INSERT' && payload.new) {
-          // Добавляем новую запись
           setTireBookings(prev => {
-            console.log('[BUG3-DIAG] setTireBookings (INSERT)');
-            const withNew = [...prev, payload.new];
-            // Фильтруем только активные
-            return withNew.filter(
-              (booking) => booking.status === 'ОЖИДАЕТ' || booking.status === 'В РАБОТЕ'
-            );
+            if (prev.some(b => b.id === payload.new.id)) return prev;
+            return [...prev, payload.new].filter(isActive);
           });
         } else if (payload.eventType === 'DELETE') {
-          // Удаляем запись
-          setTireBookings(prev => {
-            console.log('[BUG3-DIAG] setTireBookings (DELETE) id=' + payload?.old?.id);
-            return prev.filter(booking => booking.id !== payload.old.id);
-          });
+          setTireBookings(prev =>
+            prev.filter(booking => booking.id !== payload.old.id)
+          );
         }
       })
-      .subscribe((status) => {
-        console.log(`[BUG3-DIAG] channel active-bookings:tire_bookings status=${status}`);
-      });
+      .subscribe();
 
     return () => {
-      console.log('[BUG3-DIAG] cleanup: unsubscribing from both channels');
-      bookingsSubscription.unsubscribe();
-      tireBookingsSubscription.unsubscribe();
+      void bookingsSubscription.unsubscribe();
+      void tireBookingsSubscription.unsubscribe();
     };
   }, [profileId]);
+
+  // BUG3 fix: локальный append после server-confirmed create. Срабатывает
+  // РАНЬШЕ Realtime (если он вообще доставит событие), и не зависит от
+  // iOS WKWebView WS quirks. Dedup by id защищает от дубля.
+  const appendCarwashBooking = (booking: Booking) => {
+    setCarwashBookings(prev => {
+      if (prev.some(b => b.id === booking.id)) return prev;
+      if (!isActive(booking)) return prev;
+      return [...prev, booking];
+    });
+  };
+
+  const appendTireBooking = (booking: TireBooking) => {
+    setTireBookings(prev => {
+      if (prev.some(b => b.id === booking.id)) return prev;
+      if (!isActive(booking)) return prev;
+      return [...prev, booking];
+    });
+  };
 
   return {
     carwashBookings,
@@ -185,5 +172,7 @@ export function useActiveBookings(
     isLoading,
     error,
     refetch: fetchActiveBookings,
+    appendCarwashBooking,
+    appendTireBooking,
   };
 }

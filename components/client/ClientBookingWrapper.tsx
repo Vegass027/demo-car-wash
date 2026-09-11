@@ -500,6 +500,15 @@ export function ClientBookingWrapper({
       const result = await apiPost('/api/client?action=create-booking', payload);
       console.log('[ClientBookingWrapper] Бронь создана:', result?.data?.booking?.id);
 
+      // ✅ BUG3 fix: синхронный локальный append в state Гаража через window event.
+      // Не зависит от Realtime-доставки (которая в iOS WKWebView нестабильна).
+      // Dedup по id внутри appendCarwashBooking защищает от дубля, если Realtime
+      // всё-таки доставит INSERT-событие параллельно.
+      const newBooking = result?.data?.booking;
+      if (newBooking?.id) {
+        window.dispatchEvent(new CustomEvent('client-booking-created', { detail: { booking: newBooking } }));
+      }
+
       setSelectedSlot(null);
       onWizardClose?.();
       alert('Запись успешно создана!');

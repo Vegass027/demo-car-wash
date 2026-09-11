@@ -636,7 +636,7 @@ export function ClientTireBookingWrapper({
       // (Phase 2 / Slice #2 — service_role INSERT, server-resolves
       // client_id + created_by_profile_id, validates 4-ID ownership,
       // overlap-checked via find_tire_booking_overlap RPC).
-      await postTireBookingToDispatcher({
+      const newTireBooking = await postTireBookingToDispatcher({
         car_model: data.carModel,
         plate_number: data.plateNumber,
         services: data.services,
@@ -651,7 +651,15 @@ export function ClientTireBookingWrapper({
         client_car_id: data.client_car_id || undefined,
       });
 
-      console.log('[ClientTireBookingWrapper] Заказ создан успешно')
+      console.log('[ClientTireBookingWrapper] Заказ создан успешно:', newTireBooking?.id);
+
+      // ✅ BUG3 fix: синхронный локальный append в state Гаража через window event.
+      // Не зависит от Realtime-доставки (которая в iOS WKWebView нестабильна).
+      // Dedup по id внутри appendTireBooking защищает от дубля, если Realtime
+      // всё-таки доставит INSERT-событие параллельно.
+      if (newTireBooking?.id) {
+        window.dispatchEvent(new CustomEvent('client-booking-created', { detail: { booking: newTireBooking } }));
+      }
       // Успешно - закрываем мастер и перезагружаем заказы
       setSelectedSlot(null)
       onWizardClose?.() // ✅ Вызываем callback для скрытия подвала
