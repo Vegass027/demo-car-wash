@@ -712,7 +712,11 @@ async function getTireBookings(claims: { profile_id: string }, body: AnyObj): Pr
     .select('id, booking_date, start_time, estimated_duration, end_time, status, '
       + 'client_name, phone, car_model, plate_number, services, total_price, '
       + 'payment_method, is_paid, is_org, organization_id, driver_id, car_id, '
-      + 'client_car_id, signature_data, signature_obtained_at, '
+      // ✅ Bug F root cause fix: client_id MUST be in SELECT so the client's
+      // TireTimeline ownership check (currentClientId && booking.client_id
+      // === currentClientId) can match admin-created bookings. Was filtered
+      // by WHERE but never returned.
+      + 'client_id, client_car_id, signature_data, signature_obtained_at, '
       + 'worker_id, worker_name, created_at, updated_at, booking_source, '
       + 'created_by_profile_id')
     .eq('booking_date', date)
