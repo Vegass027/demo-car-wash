@@ -1794,14 +1794,19 @@ export const TireBookingWizard: React.FC<TireBookingWizardProps> = ({
 
                    setSaveError(null);
 
-                   try {
-                     const estimatedDuration = startTime && endTime
-                       ? (() => {
-                           const [startH, startM] = startTime.split(':').map(Number);
-                           const [endH, endM] = endTime.split(':').map(Number);
-                           return (endH * 60 + endM) - (startH * 60 + startM);
-                         })()
-                       : 0;
+                    try {
+                      // ✅ Bug E fix: endTime must be STRICTLY AFTER startTime.
+                      // Without this guard, endTime <= startTime yielded negative duration
+                      // (e.g. -360 min), which server rejects with 400
+                      // `estimated_duration_out_of_range` (server requires 5..1440).
+                      const [startH, startM] = startTime.split(':').map(Number);
+                      const [endH, endM] = endTime.split(':').map(Number);
+                      const rawDuration = (endH * 60 + endM) - (startH * 60 + startM);
+                      if (!(rawDuration >= 5)) {
+                        setSaveError('Время окончания должно быть минимум на 5 минут позже времени начала');
+                        return;
+                      }
+                      const estimatedDuration = rawDuration;
 
                       await onComplete({
                         clientType,
