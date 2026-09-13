@@ -525,6 +525,9 @@ async function createBooking(claims: { profile_id: string }, body: AnyObj): Prom
     services_with_quantities,
     price,
     payment_method,
+    // Bug F: mirror clients.phone onto the booking so admin order details
+    // never show empty phone for online-created bookings either.
+    phone: ownPhone,
     is_paid: false,
   };
   if (client_car_id) insertPayload.client_car_id = client_car_id;

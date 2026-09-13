@@ -1683,7 +1683,7 @@ async function createStaffBookingAction(claims: StaffClaims, body: AnyObj): Prom
   }
 
   const phoneRaw = body.phone;
-  const phone = phoneRaw ? normalizePhoneNumber(String(phoneRaw)) : null;
+  let phone: string | null = phoneRaw ? normalizePhoneNumber(String(phoneRaw)) : null;
 
   const paymentMethod = body.payment_method !== undefined && body.payment_method !== null
     ? readPaymentMethod(body, 'payment_method')
@@ -1707,6 +1707,22 @@ async function createStaffBookingAction(claims: StaffClaims, body: AnyObj): Prom
   }
   if (working_mode === 'pair' && (!worker_id || !worker_id_2)) {
     throw new ValidationError('worker_id_2_required_when_pair');
+  }
+
+  // Bug F: phone was missing when staff picks an existing client without
+  // retyping the number. Fall back to clients.phone BEFORE the RPC insert
+  // so admin order details never get an empty phone again.
+  if (!phone && client_id) {
+    const { data: clientRow, error: clientPhoneErr } = await supabaseAdmin
+      .from('clients')
+      .select('phone')
+      .eq('id', client_id)
+      .maybeSingle();
+    if (clientPhoneErr) {
+      console.error('[staff:create-staff-booking] client phone fallback lookup error:', clientPhoneErr.message);
+    } else if (clientRow?.phone) {
+      phone = clientRow.phone;
+    }
   }
 
   // is_quick_booking parsed at the top of this function (before box_number
