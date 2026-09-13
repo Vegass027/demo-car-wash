@@ -16,6 +16,27 @@ export function formatTimeWithoutSeconds(time: string): string {
 }
 
 /**
+ * Нормализует время в строгом HH:MM с лидирующими нулями.
+ *
+ * <input type="time"> в Chrome на Android возвращает e.target.value без
+ * лидирующего нуля в часах (например "8:00" вместо "08:00"). Серверная
+ * regex `^([01]\d|2[0-3]):[0-5]\d$` такие значения не принимает и
+ * возвращает `start_time_bad_format` / `end_time_bad_format`.
+ *
+ * Принимает "H:MM", "HH:MM", "HH:MM:SS" (секунды отбрасываются).
+ * Невалидный ввод возвращает как есть — пусть валидация сообщит.
+ */
+export function normalizeHHMM(t: string): string {
+  if (typeof t !== 'string') return t;
+  const parts = t.split(':');
+  if (parts.length < 2) return t;
+  const h = Number(parts[0]);
+  const m = Number(parts[1]);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return t;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/**
  * Добавляет минуты к времени в формате HH:mm
  * @param time - время в формате HH:mm
  * @param minutes - количество минут для добавления

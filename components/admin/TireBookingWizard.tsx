@@ -12,7 +12,7 @@ import { getTireServices, groupServicesByCategory } from '../../lib/api/tire-ser
 import type { TireService as TireServiceType } from '../../lib/api/tire-services';
 import { getOrganizations, getDriverSignature, Organization } from '../../lib/api/organizations';
 import { formatDate } from '../../shared/utils/date';
-import { addMinutesToTime, isValidTimeRange, findOverlappingTireBookings, findAvailableTireTimeSlots, calculateEndTime, formatTimeWithoutSeconds } from '../../shared/utils/time';
+import { addMinutesToTime, isValidTimeRange, findOverlappingTireBookings, findAvailableTireTimeSlots, calculateEndTime, formatTimeWithoutSeconds, normalizeHHMM } from '../../shared/utils/time';
 import { DURATION_OPTIONS } from '../../shared/config/tire-booking';
 import { searchByPhone, searchByPlateNumber } from '../../lib/api/search';
 import { SearchResult } from '../../lib/api/search';
@@ -1795,12 +1795,20 @@ export const TireBookingWizard: React.FC<TireBookingWizardProps> = ({
                    setSaveError(null);
 
                     try {
-                      // ✅ Bug E fix: endTime must be STRICTLY AFTER startTime.
-                      // Without this guard, endTime <= startTime yielded negative duration
-                      // (e.g. -360 min), which server rejects with 400
-                      // `estimated_duration_out_of_range` (server requires 5..1440).
-                      const [startH, startM] = startTime.split(':').map(Number);
-                      const [endH, endM] = endTime.split(':').map(Number);
+                      // ✅ Bug E fix v2: normalize HH:MM (Android <input type="time">
+                      // returns "8:00" without leading zero) + endTime must be strictly
+                      // after startTime. Without these guards server returns 400
+                      // with `start_time_bad_format` (single-digit hour) or
+                      // `estimated_duration_out_of_range` (negative duration).
+                      const startTimeNorm = normalizeHHMM(startTime);
+                      const endTimeNorm = normalizeHHMM(endTime);
+                      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTimeNorm) ||
+                          !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTimeNorm)) {
+                        setSaveError('Неверный формат времени (HH:MM)');
+                        return;
+                      }
+                      const [startH, startM] = startTimeNorm.split(':').map(Number);
+                      const [endH, endM] = endTimeNorm.split(':').map(Number);
                       const rawDuration = (endH * 60 + endM) - (startH * 60 + startM);
                       if (!(rawDuration >= 5)) {
                         setSaveError('Время окончания должно быть минимум на 5 минут позже времени начала');
@@ -1823,8 +1831,8 @@ export const TireBookingWizard: React.FC<TireBookingWizardProps> = ({
                           comment: item.comment,
                         })),
                         price,
-                       startTime,
-                       endTime,
+                       startTime: startTimeNorm,
+                       endTime: endTimeNorm,
                        paymentType,
                        date: selectedDate || formatDate(new Date()),
                        orgName: organizationName,

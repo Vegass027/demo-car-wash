@@ -14,7 +14,7 @@ import { getTireBookingsByProfileId } from '../../lib/api/tire-bookings';
 import { getClientCombinedCars } from '../../lib/api/combined-cars';
 import type { CombinedCar } from '../../lib/api/combined-cars';
 import { getSessionToken } from '../../lib/supabase';
-import { addMinutesToTime, isValidTimeRange, formatTimeWithoutSeconds, calculateEndTime } from '../../shared/utils/time';
+import { addMinutesToTime, isValidTimeRange, formatTimeWithoutSeconds, calculateEndTime, normalizeHHMM } from '../../shared/utils/time';
 import { DURATION_OPTIONS } from '../../shared/config/tire-booking';
 import { findAvailableTireTimeSlots } from '../../shared/utils/time';
 import { BankSelectionStep } from './BankSelectionStep';
@@ -381,11 +381,20 @@ export const OnlineTireBookingWizard: React.FC<OnlineTireBookingWizardProps> = (
     setValidationError(null);
 
     try {
-      // ✅ Bug E fix: endTime must be STRICTLY AFTER startTime.
-      // Without this guard, endTime <= startTime yielded negative duration
-      // (e.g. -360 min), which server rejects with 400 `estimated_duration_out_of_range`.
-      const [startH, startM] = startTime.split(':').map(Number);
-      const [endH, endM] = endTime.split(':').map(Number);
+      // ✅ Bug E fix v2: normalize HH:MM (Android <input type="time">
+      // returns "8:00" without leading zero) + endTime must be strictly
+      // after startTime. Without these guards server returns 400 with
+      // `start_time_bad_format` (single-digit hour) or
+      // `estimated_duration_out_of_range` (negative duration).
+      const startTimeNorm = normalizeHHMM(startTime);
+      const endTimeNorm = normalizeHHMM(endTime);
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTimeNorm) ||
+          !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTimeNorm)) {
+        setValidationError('Неверный формат времени (HH:MM)');
+        return;
+      }
+      const [startH, startM] = startTimeNorm.split(':').map(Number);
+      const [endH, endM] = endTimeNorm.split(':').map(Number);
       const rawDuration = (endH * 60 + endM) - (startH * 60 + startM);
       if (!(rawDuration >= 5)) {
         setValidationError('Время окончания должно быть минимум на 5 минут позже времени начала');
@@ -399,8 +408,8 @@ export const OnlineTireBookingWizard: React.FC<OnlineTireBookingWizardProps> = (
         plateNumber,
         services: selectedServices,
         price,
-        startTime,
-        endTime,
+        startTime: startTimeNorm,
+        endTime: endTimeNorm,
         paymentMethod,
         bookingDate: selectedDate,
         estimatedDuration,
