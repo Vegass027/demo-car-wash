@@ -18,6 +18,9 @@ interface TireTimelineProps {
   // ✅ Новые пропсы для онлайн-записи
   userRole?: 'admin' | 'client';
   currentProfileId?: string;
+  // ✅ Bug F fix: client_id нужен, чтобы распознать "свою" запись,
+  // созданную админом на этого клиента (created_by_profile_id будет = админу).
+  currentClientId?: string;
   // ✅ Проп для скрытия кнопки "Добавить"
   showAddButton?: boolean;
   // ✅ Новый проп: день открыт/закрыт
@@ -37,6 +40,7 @@ export const TireTimeline: React.FC<TireTimelineProps> = ({
   onOpenHistory,
   userRole = 'admin',
   currentProfileId,
+  currentClientId,
   showAddButton = true,
   isDayOpen = true,
   nextOpenDateText,
@@ -48,9 +52,15 @@ export const TireTimeline: React.FC<TireTimelineProps> = ({
 
   // ✅ Определяем, является ли запись собственной для клиента.
   // Объявлен ДО getFilteredBookings чтобы избежать TDZ при вызове во время рендера.
+  // Bug F fix: проверяем не только created_by_profile_id, но и client_id —
+  // для броней, которые админ создал на клиента: created_by_profile_id будет
+  // равен profile_id админа, а не клиента, поэтому старая проверка возвращала false
+  // и запись редиактилась в "Занято".
   const isOwnTireBooking = (booking: TireBooking): boolean => {
     if (userRole !== 'client') return false;
-    const isPersonal = !!(currentProfileId && booking.created_by_profile_id === currentProfileId);
+    const isPersonal =
+      !!(currentProfileId && booking.created_by_profile_id === currentProfileId) ||
+      !!(currentClientId && booking.client_id === currentClientId);
     const isOrg = !!(booking.is_org && booking.organization_id && driverOrganizationIds.includes(booking.organization_id));
     return isPersonal || isOrg;
   };
@@ -389,7 +399,7 @@ export const TireTimeline: React.FC<TireTimelineProps> = ({
                   } ${isSlotDisabled ? 'opacity-50 cursor-not-allowed hover:scale-100 hover:border-gray-200 hover:bg-white hover:shadow-none' : 'cursor-pointer'}`}
                 >
                   {booking ? (
-                    <BookingCellContent booking={booking} userRole={userRole} currentProfileId={currentProfileId} driverOrganizationIds={driverOrganizationIds} />
+                    <BookingCellContent booking={booking} userRole={userRole} currentProfileId={currentProfileId} currentClientId={currentClientId} driverOrganizationIds={driverOrganizationIds} />
                   ) : (
                     <EmptyCell />
                   )}
@@ -455,17 +465,22 @@ interface BookingCellContentProps {
   booking: TireBooking;
   userRole?: 'admin' | 'client';
   currentProfileId?: string;
+  // ✅ Bug F fix: client_id нужен для распознавания "своей" записи, созданной админом
+  currentClientId?: string;
   // ✅ NEW: ID организаций, где клиент является водителем
   driverOrganizationIds?: string[];
 }
 
-const BookingCellContent: React.FC<BookingCellContentProps> = ({ booking, userRole = 'admin', currentProfileId, driverOrganizationIds = [] }) => {
+const BookingCellContent: React.FC<BookingCellContentProps> = ({ booking, userRole = 'admin', currentProfileId, currentClientId, driverOrganizationIds = [] }) => {
   // ✅ Для клиента показываем только интервал времени, без деталей
   const showFullDetails = userRole === 'admin';
 
   // ✅ Проверяем, является ли запись собственной для клиента
-  // Это может быть личная запись (created_by_profile_id) или запись через организацию (organization_id)
-  const isPersonalBooking = currentProfileId && booking.created_by_profile_id === currentProfileId;
+  // Это может быть личная запись (created_by_profile_id или client_id) или запись через организацию (organization_id)
+  // Bug F fix: OR-расширение через client_id для админских записей
+  const isPersonalBooking =
+    (currentProfileId && booking.created_by_profile_id === currentProfileId) ||
+    (currentClientId && booking.client_id === currentClientId);
   const isOrgBooking = booking.is_org && booking.organization_id && driverOrganizationIds.includes(booking.organization_id);
   const isOwnBooking = userRole === 'client' && (isPersonalBooking || isOrgBooking);
 

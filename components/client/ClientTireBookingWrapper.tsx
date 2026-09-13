@@ -800,6 +800,7 @@ export function ClientTireBookingWrapper({
           bookings={mergedBookings}
           userRole="client"
           currentProfileId={profileId}
+          currentClientId={clientId}
           driverOrganizationIds={driverOrganizationIds}
           selectedDate={selectedDate}
           onDateChange={setSelectedDate}
