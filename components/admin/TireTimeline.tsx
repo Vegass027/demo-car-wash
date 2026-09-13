@@ -484,6 +484,25 @@ const BookingCellContent: React.FC<BookingCellContentProps> = ({ booking, userRo
   const isOrgBooking = booking.is_org && booking.organization_id && driverOrganizationIds.includes(booking.organization_id);
   const isOwnBooking = userRole === 'client' && (isPersonalBooking || isOrgBooking);
 
+  // ✅ Bug F diagnostic: временный лог для подтверждения runtime-значений
+  // Удалить после живого подтверждения, что Bug F починен.
+  // Включается только для client-role чтобы не спамить в админке.
+  if (userRole === 'client') {
+    console.log('[BugF-diag]', {
+      bookingId: booking.id,
+      bookingSource: booking.booking_source,
+      bookingClientId: booking.client_id,
+      bookingCreatedBy: booking.created_by_profile_id,
+      currentProfileId,
+      currentClientId,
+      isPersonalBooking,
+      isOrgBooking,
+      isOwnBooking,
+      matchesProfileId: currentProfileId === booking.created_by_profile_id,
+      matchesClientId: currentClientId === booking.client_id,
+    });
+  }
+
   // Synthetic foreign slot: estimated_duration === 0 (RPC не возвращает).
   // Real own bookings всегда имеют estimated_duration > 0.
   const displayEnd = booking.estimated_duration > 0
