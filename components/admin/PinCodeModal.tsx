@@ -68,6 +68,11 @@ export const PinCodeModal: React.FC<PinCodeModalProps> = ({
           </button>
         </div>
 
+        {/* Демо-PIN подсказка — чтобы пользователь демо мог сразу создавать заказы */}
+        <div className="mb-4 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-sm text-center font-medium">
+          Демо PIN: <span className="font-bold tracking-wider">0000</span>
+        </div>
+
         <div className="flex justify-center gap-4 mb-8">
           {[0, 1, 2, 3].map((i) => (
             <div
